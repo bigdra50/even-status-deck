@@ -282,6 +282,15 @@ body {
   color: var(--ok);
   font-size: var(--fs-sm);
 }
+.status-err {
+  color: var(--err);
+  font-size: var(--fs-sm);
+  margin-bottom: var(--space-2);
+}
+.status-testing {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
 .detect {
   display: flex;
   gap: var(--space-3);

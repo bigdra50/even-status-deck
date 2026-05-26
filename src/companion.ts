@@ -16,6 +16,7 @@ import {
   fetchMachine,
   fetchUsage,
   type MachineInfo,
+  setDataBase,
   type Usage,
 } from './data'
 import { SOURCES, type Source, sourceById } from './sources'
@@ -28,6 +29,11 @@ let claude: ClaudeLimits | null = null
 let codex: CodexLimits | null = null
 let usage: Usage | null = null
 let root: HTMLElement | null = null
+
+// Machine Edit の接続テスト状態
+let testState: 'idle' | 'testing' | 'ok' | 'error' = 'idle'
+let testError = ''
+let testUrl = ''
 
 function activeCfg(): MachineCfg | null {
   const id = config.activeMachine
@@ -158,31 +164,44 @@ function renderHome(): string {
   `
 }
 
-function renderMachineEdit(): string {
+function renderDetected(): string {
   const m = machine
-  const has = (id: string) => m?.availableSources.includes(id) ?? false
-  const detected = m
-    ? `<div class="field"><label>マシン名 (hostname を自動取得)</label><div class="autoval">${m.label}</div></div>
-       <div class="field"><label>machineId (自動)</label><div class="autoval mono">${m.machineId}</div></div>
-       <div class="field"><label>利用可能なツール (自動検出)</label>
-         <div class="detect">
-           <span class="${has('claude-code') ? 'ok' : 'no'}">Claude Code ${has('claude-code') ? '✓' : '✗'}</span>
-           <span class="${has('codex') ? 'ok' : 'no'}">Codex ${has('codex') ? '✓' : '✗'}</span>
-           <span class="no">Gemini ✗</span>
-         </div></div>
-       <div class="status-ok">✓ 接続OK</div>`
-    : '<div class="cmp-sub">接続テストすると、マシン名・利用可能ツールを自動取得します。</div>'
+  if (!m) return ''
+  const has = (id: string) => m.availableSources.includes(id)
+  return `<div class="field"><label>マシン名 (hostname を自動取得)</label><div class="autoval">${m.label}</div></div>
+     <div class="field"><label>machineId (自動)</label><div class="autoval mono">${m.machineId}</div></div>
+     <div class="field"><label>利用可能なツール (自動検出)</label>
+       <div class="detect">
+         <span class="${has('claude-code') ? 'ok' : 'no'}">Claude Code ${has('claude-code') ? '✓' : '✗'}</span>
+         <span class="${has('codex') ? 'ok' : 'no'}">Codex ${has('codex') ? '✓' : '✗'}</span>
+         <span class="no">Gemini ✗</span>
+       </div></div>`
+}
+
+// 接続テストの状態を表示する (idle / testing / ok / error)。
+function renderTestStatus(): string {
+  if (testState === 'testing') return '<div class="status-testing">⋯ 接続中…</div>'
+  if (testState === 'ok') return `<div class="status-ok">✓ 接続OK</div>${renderDetected()}`
+  if (testState === 'error')
+    return `<div class="status-err">✗ 接続失敗: ${testError}</div>
+      <div class="cmp-sub">URL とローカルサーバーの起動を確認してください。</div>`
+  return '<div class="cmp-sub">接続テストすると、マシン名・利用可能ツールを自動取得します。</div>'
+}
+
+function renderMachineEdit(): string {
+  const url = testUrl || location.origin
+  const testing = testState === 'testing'
   return `
     <div class="topbar"><button class="nav-btn" data-action="home">← Home</button>
       <span class="h-title">Machine 設定</span><span></span></div>
     <div class="field"><label>接続先 (Mac の dev server URL)</label>
       <div class="field-row">
-        <input type="text" value="${location.origin}" placeholder="http://192.168.1.5:5173" />
-        <button class="test-btn" data-action="test">接続テスト</button>
+        <input type="text" value="${url}" placeholder="http://192.168.1.5:5173" />
+        <button class="test-btn" data-action="test" ${testing ? 'disabled' : ''}>${testing ? '…' : '接続テスト'}</button>
       </div>
       <span class="help-link" data-action="help">ローカルサーバーの設定方法 →</span>
     </div>
-    ${detected}
+    ${renderTestStatus()}
   `
 }
 
@@ -258,6 +277,9 @@ async function onClick(e: MouseEvent): Promise<void> {
   const mc = activeCfg()
   switch (t.dataset.action) {
     case 'edit-machine':
+      // 既に接続済みマシンを編集 → そのマシンの検出結果を表示
+      testState = machine ? 'ok' : 'idle'
+      testUrl = ''
       view = 'machine-edit'
       render()
       break
@@ -298,8 +320,40 @@ async function onClick(e: MouseEvent): Promise<void> {
       await saveConfig(config)
       render()
       break
+    case 'test':
+      await runConnectionTest()
+      break
     default:
-      break // test / help は Phase2 以降
+      break // help は #2 で実装
+  }
+}
+
+// 入力された URL に /api/machine を投げて接続を検証し、状態 (testing/ok/error) を更新する。
+// 成功時はその URL をデータ取得のベースに切り替え、マシン情報を反映する。
+async function runConnectionTest(): Promise<void> {
+  const input = root?.querySelector<HTMLInputElement>('.field-row input[type="text"]')
+  const url = (input?.value ?? '').trim() || location.origin
+  testUrl = url
+  testState = 'testing'
+  testError = ''
+  render()
+  try {
+    const clean = url.replace(/\/+$/, '')
+    const res = await fetch(`${clean}/api/machine`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const m = (await res.json()) as MachineInfo
+    machine = m
+    setDataBase(clean)
+    if (!config.activeMachine) config.activeMachine = m.machineId
+    ensureMachine(config, m.machineId, m.availableSources)
+    await saveConfig(config)
+    testState = 'ok'
+    render()
+    await refreshData() // 新しいベース URL でデータを取り直す
+  } catch (err) {
+    testState = 'error'
+    testError = err instanceof Error ? err.message : '接続に失敗しました'
+    render()
   }
 }
 
@@ -309,6 +363,9 @@ async function onChange(e: Event): Promise<void> {
   ) as HTMLSelectElement | null
   if (!t) return
   if (t.value === '__add__') {
+    // 新規マシン追加 → URL 未入力・idle 状態で開始
+    testState = 'idle'
+    testUrl = ''
     view = 'machine-edit'
     render()
   } else {

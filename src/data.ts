@@ -30,9 +30,15 @@ export type Usage = {
   error?: string
 }
 
+// データ取得のベース URL。既定は同一オリジン (相対)。接続テスト成功時に切り替える。
+let base = ''
+export function setDataBase(url: string): void {
+  base = url.replace(/\/+$/, '')
+}
+
 async function getJson<T>(url: string): Promise<T | null> {
   try {
-    const res = await fetch(url)
+    const res = await fetch(base + url)
     if (!res.ok) return null
     return (await res.json()) as T
   } catch {
