@@ -152,6 +152,8 @@
       .node-body .miniature { width: 100%; min-height: 100%; }
       .node.glass, .frame.glass { width: 576px; }
       .node.glass .node-body, .frame.glass .frame-body { height: 288px; max-height: 288px; background: #000; }
+      /* miniature を 288px に固定し glass-screen(height:100%) を伸ばす → ヒント(margin-top:auto)が最下端へ */
+      .node.glass .miniature, .frame.glass .miniature { height: 100%; }
       .edges { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
       .edges path { fill: none; stroke: #9aa0ac; stroke-width: 1.5; opacity: 0.5; }
       .edges path.primary { stroke: var(--accent); opacity: 0.9; }
