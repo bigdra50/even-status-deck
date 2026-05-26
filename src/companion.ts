@@ -1,9 +1,11 @@
+import Sortable from 'sortablejs'
 import {
   type Config,
   emptyConfig,
   ensureMachine,
   loadConfig,
   type MachineCfg,
+  type SourceCfg,
   saveConfig,
 } from './config'
 import {
@@ -16,7 +18,7 @@ import {
   type MachineInfo,
   type Usage,
 } from './data'
-import { SOURCES, sourceById } from './sources'
+import { SOURCES, type Source, sourceById } from './sources'
 
 // companion (スマホ WebView) の Home / Machine Edit。bridge は不要 (API fetch + config 永続化)。
 let view: 'home' | 'machine-edit' = 'home'
@@ -76,33 +78,52 @@ function glassPreviewHtml(): string {
   return `<div class="glass-screen"><div>${body}</div>${hint}</div>`
 }
 
-function renderSourceList(): string {
+function renderSourceRow(src: Source, scfg: SourceCfg): string {
+  const caret = scfg.expanded ? '▾' : '▸'
+  // メトリックは scfg.metrics の順 (並べ替え可)。名前は SOURCES から引く。
+  const metrics = scfg.expanded
+    ? `<div class="src-metrics" data-src="${src.id}">${scfg.metrics
+        .map(
+          (mc2) =>
+            `<div class="metric-row"><span class="mgrip">⋮⋮</span>
+              <span class="mname">${metricName(src.id, mc2.id)}</span>
+              <span class="mval">${metricValue(src.id, mc2.id)}</span>
+              <button class="tg sm ${mc2.enabled ? 'on' : ''}" data-action="toggle-metric" data-src="${src.id}" data-metric="${mc2.id}"></button></div>`,
+        )
+        .join('')}</div>`
+    : ''
+  return `<div class="src" data-src="${src.id}"><div class="src-head"><span class="src-grip">⋮⋮</span>
+    <span class="src-caret" data-action="expand" data-src="${src.id}">${caret}</span>
+    <span class="src-name" data-action="expand" data-src="${src.id}">${src.name}</span>
+    <button class="tg ${scfg.enabled ? 'on' : ''}" data-action="toggle-source" data-src="${src.id}"></button></div>${metrics}</div>`
+}
+
+// 利用可能ソース (mc.sourceOrder 順, ドラッグ並べ替え対象 → #source-list 内)
+function renderAvailableSources(): string {
   const mc = activeCfg()
   if (!mc) return ''
   const avail = machine?.availableSources ?? []
-  return SOURCES.map((src) => {
-    const scfg = mc.sources[src.id]
-    if (!avail.includes(src.id) || !scfg) {
-      return `<div class="src dim"><div class="src-head"><span class="src-grip">⋮⋮</span>
-        <span class="src-caret">▸</span><span class="src-name">${src.name}</span>
-        <span class="src-note">未検出</span><button class="tg" disabled></button></div></div>`
-    }
-    const caret = scfg.expanded ? '▾' : '▸'
-    const metrics = scfg.expanded
-      ? `<div class="src-metrics">${src.metrics
-          .map((m) => {
-            const enabled = scfg.metrics.find((x) => x.id === m.id)?.enabled ?? false
-            return `<div class="metric-row"><span class="mgrip">⋮⋮</span>
-              <span class="mname">${m.name}</span><span class="mval">${metricValue(src.id, m.id)}</span>
-              <button class="tg sm ${enabled ? 'on' : ''}" data-action="toggle-metric" data-src="${src.id}" data-metric="${m.id}"></button></div>`
-          })
-          .join('')}</div>`
-      : ''
-    return `<div class="src"><div class="src-head"><span class="src-grip">⋮⋮</span>
-      <span class="src-caret" data-action="expand" data-src="${src.id}">${caret}</span>
-      <span class="src-name" data-action="expand" data-src="${src.id}">${src.name}</span>
-      <button class="tg ${scfg.enabled ? 'on' : ''}" data-action="toggle-source" data-src="${src.id}"></button></div>${metrics}</div>`
-  }).join('')
+  return mc.sourceOrder
+    .filter((id) => avail.includes(id) && mc.sources[id])
+    .map((id) => {
+      const src = sourceById(id)
+      const scfg = mc.sources[id]
+      return src && scfg ? renderSourceRow(src, scfg) : ''
+    })
+    .join('')
+}
+
+// 未検出ソース (グレーアウト, 並べ替え対象外)
+function renderUnavailableSources(): string {
+  const avail = machine?.availableSources ?? []
+  return SOURCES.filter((s) => !avail.includes(s.id))
+    .map(
+      (src) =>
+        `<div class="src dim"><div class="src-head"><span class="src-grip">⋮⋮</span>
+          <span class="src-caret">▸</span><span class="src-name">${src.name}</span>
+          <span class="src-note">未検出</span><button class="tg" disabled></button></div></div>`,
+    )
+    .join('')
 }
 
 function renderHome(): string {
@@ -124,8 +145,9 @@ function renderHome(): string {
       <button class="gear-btn" data-action="edit-machine" title="このマシンの設定">⚙</button>
     </div>
 
-    <div class="cmp-label">表示設定 (ドラッグで並べ替え)</div>
-    ${renderSourceList()}
+    <div class="cmp-label">表示設定 (グリップ ⋮⋮ をドラッグで並べ替え)</div>
+    <div id="source-list">${renderAvailableSources()}</div>
+    ${renderUnavailableSources()}
     <div class="src"><div class="src-head">
       <span class="src-name" style="font-size:var(--fs-md);font-weight:500;">glass の操作ヒントを表示</span>
       <button class="tg sm ${config.glassHints ? 'on' : ''}" data-action="toggle-hints"></button></div></div>
@@ -165,7 +187,69 @@ function renderMachineEdit(): string {
 }
 
 function render(): void {
-  if (root) root.innerHTML = view === 'machine-edit' ? renderMachineEdit() : renderHome()
+  if (!root) return
+  root.innerHTML = view === 'machine-edit' ? renderMachineEdit() : renderHome()
+  if (view === 'home') attachSortables()
+}
+
+// glass プレビューのみ部分更新 (並べ替え中に全体 re-render すると Sortable が壊れるため)。
+function updateGlassPreview(): void {
+  const el = root?.querySelector('.gpv-screen')
+  if (el) el.innerHTML = glassPreviewHtml()
+}
+
+// SortableJS の drag handle。render() のたびに作り直す (古いインスタンスは破棄)。
+let sortables: Sortable[] = []
+function attachSortables(): void {
+  for (const s of sortables) s.destroy()
+  sortables = []
+  const list = document.getElementById('source-list')
+  if (list) {
+    sortables.push(
+      Sortable.create(list, {
+        handle: '.src-grip',
+        animation: 150,
+        onEnd: (e) => onSourceReorder(e.oldIndex, e.newIndex),
+      }),
+    )
+  }
+  for (const el of document.querySelectorAll<HTMLElement>('.src-metrics')) {
+    const srcId = el.dataset.src ?? ''
+    sortables.push(
+      Sortable.create(el, {
+        handle: '.mgrip',
+        animation: 150,
+        onEnd: (e) => onMetricReorder(srcId, e.oldIndex, e.newIndex),
+      }),
+    )
+  }
+}
+
+// 利用可能ソースの並べ替え。indices は #source-list 内 (= 利用可能サブセット) 基準。
+// 利用不可ソースは sourceOrder 末尾に温存する。
+function onSourceReorder(oldIndex?: number, newIndex?: number): void {
+  const mc = activeCfg()
+  if (!mc || oldIndex == null || newIndex == null || oldIndex === newIndex) return
+  const avail = machine?.availableSources ?? []
+  const ordered = mc.sourceOrder.filter((id) => avail.includes(id) && mc.sources[id])
+  const [moved] = ordered.splice(oldIndex, 1)
+  if (!moved) return
+  ordered.splice(newIndex, 0, moved)
+  const rest = mc.sourceOrder.filter((id) => !ordered.includes(id))
+  mc.sourceOrder = [...ordered, ...rest]
+  void saveConfig(config)
+  updateGlassPreview()
+}
+
+// メトリックの並べ替え。indices は scfg.metrics 基準。
+function onMetricReorder(srcId: string, oldIndex?: number, newIndex?: number): void {
+  const scfg = activeCfg()?.sources[srcId]
+  if (!scfg || oldIndex == null || newIndex == null || oldIndex === newIndex) return
+  const [moved] = scfg.metrics.splice(oldIndex, 1)
+  if (!moved) return
+  scfg.metrics.splice(newIndex, 0, moved)
+  void saveConfig(config)
+  updateGlassPreview()
 }
 
 async function onClick(e: MouseEvent): Promise<void> {

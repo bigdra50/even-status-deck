@@ -14,12 +14,14 @@
     "format": "biome format --write src/"
   },
   "dependencies": {
-    "@evenrealities/even_hub_sdk": "^0.0.10"
+    "@evenrealities/even_hub_sdk": "^0.0.10",
+    "sortablejs": "^1.15.7"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.10",
     "@evenrealities/evenhub-cli": "^0.1.11",
     "@evenrealities/evenhub-simulator": "^0.6.2",
+    "@types/sortablejs": "^1.15.9",
     "playwright": "^1.60.0",
     "typescript": "~6.0.2",
     "vite": "^8.0.4"
