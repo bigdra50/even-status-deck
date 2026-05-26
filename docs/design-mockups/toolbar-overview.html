@@ -52,7 +52,10 @@
       .cmp-sub { color: var(--text-dim); font-size: var(--font-size-md); }
 
       /* machine: select + gear */
-      .machine-bar { display: flex; gap: var(--space-2); }
+      .machine-bar { display: flex; gap: var(--space-2); align-items: center; }
+      .conn-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto;
+        background: var(--ok); box-shadow: 0 0 6px var(--ok); }       /* 接続中 */
+      .conn-dot.off { background: var(--text-dim); box-shadow: none; } /* 未接続 */
       .machine-select { flex: 1; background: var(--input-bg); border: 1px solid var(--border);
         border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); color: var(--text);
         font-size: var(--font-size-base); font-family: var(--font-sans); cursor: pointer; }
@@ -302,6 +305,7 @@
       return `<div class="cmp" data-theme="${theme}">
         <div class="cmp-label">Machine</div>
         <div class="machine-bar">
+          <span class="conn-dot" title="接続中"></span>
           <select class="machine-select" data-action="select-machine-dd">${opts}<option value="__add__">+ マシンを追加…</option></select>
           <button class="gear-btn" data-action="edit-machine" data-machine="${m.id}" title="このマシンの設定">⚙</button>
         </div>
