@@ -323,8 +323,12 @@ async function onClick(e: MouseEvent): Promise<void> {
     case 'test':
       await runConnectionTest()
       break
+    case 'help':
+      // 同梱の設定ガイド (public/help.html) を別タブで開く
+      window.open('/help.html', '_blank')
+      break
     default:
-      break // help は #2 で実装
+      break
   }
 }
 
