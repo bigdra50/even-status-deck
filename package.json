@@ -1,0 +1,26 @@
+{
+  "name": "eveng2-toolbar",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "sim": "evenhub-simulator http://localhost:5173",
+    "pack": "npm run build && evenhub pack app.json dist -o eveng2-toolbar.ehpk",
+    "qr": "evenhub qr --url \"http://$(ipconfig getifaddr en0):5173\"",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
+    "format": "biome format --write src/"
+  },
+  "dependencies": {
+    "@evenrealities/even_hub_sdk": "^0.0.10"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.10",
+    "@evenrealities/evenhub-cli": "^0.1.11",
+    "@evenrealities/evenhub-simulator": "^0.6.2",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.4"
+  }
+}

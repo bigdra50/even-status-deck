@@ -67,25 +67,31 @@ Machine (このマシン)                          ← レベル1: マシン毎
 - 未インストールのツールは companion でグレーアウトし、有効化できない（自動検出）。これにより「未インストールを有効化してデータ取得エラー」を防ぐ。
 - glass 表示時は接続中マシンの `machineId` で `config.machines[id]` を引き、`availableSources` ∩ `enabled` の metric を順序通り描画。
 
-## 4. companion の画面構成（マシン中心 / design-guidelines トークン）
+## 4. companion の画面構成（Home 集約 / design-guidelines トークン）
 
-マシンを軸に 5 画面で構成する。
+Home に集約し、別画面は Machine Edit のみ。
 
 ```
-Home ─┬─ Machines ──→ Machine Edit (label / 接続先 / 接続テスト / 削除)
-      │     ├ 行タップ = 接続切替 (active machine)
-      │     └ [+ 追加] = 新規 Machine Edit
-      ├─ Sources & Metrics (接続中マシンの表示設定)
-      └─ Preview (接続中マシンの glass 表示)
+Home (縦並び)
+ ├ Machine   : 接続中インジケータ(●) + マシン選択ドロップダウン + ⚙(設定ボタン)
+ ├ 表示設定  : Source(Claude Code/Codex)をジャンル折りたたみ(既定=閉) + Metric トグル + 並べ替え grip
+ │            + glass 操作ヒント表示トグル
+ └ Glass     : プレビュー (最下部)
+      │  ⚙ / 「+ マシンを追加」
+      ▼
+Machine Edit : 接続先 URL + 接続テスト + 「ローカルサーバーの設定方法」リンク(Pages, 後日)
+               / マシン名(hostname 自動取得) / machineId(自動) / 利用可能ツール(自動検出) / 削除
 ```
 
 | 画面 | 役割 |
 |---|---|
-| Home | トップ。接続中マシンを常時表示し「どのマシンか」を明示。glass mini プレビュー + 各画面への入口 |
-| Machines | 登録マシン一覧。`✓`=接続中、行タップで接続切替、`[編集]`、`[+ マシンを追加]` |
-| Machine Edit | 1 マシンの設定: label / 接続方式 (sideload・cloud) / 接続先 URL / 接続テスト / machineId (接続先が返す) / availableSources (自動検出) / 削除 |
-| Sources & Metrics | 接続中マシンの Source/Metric トグル + 並べ替え (§1 の階層)。未検出ツールはグレーアウト |
-| Preview | 接続中マシンの glass 表示 (summary + 詳細ゲージ)。ヘッダにマシン名 |
+| Home | 全部入り。Machine 選択(=接続切替) + 表示設定(折りたたみ) + glass プレビュー |
+| Machine Edit | ⚙ / 追加から。接続先 URL のみ入力、マシン名・machineId・利用可能ツールは接続先から自動取得 |
+
+- マシン選択はドロップダウン（接続切替 = active machine）。「+ マシンを追加」で新規 Machine Edit。
+- マシン名は接続先（`/api/machine` の hostname）を自動取得。手動入力しない。
+- glass: summary(最小・既定) → swipe → Claude/Codex 詳細。操作ヒントは画面最下端、設定で非表示可。
+- 「ローカルサーバーの設定方法」は別途 Pages 等で用意し、Machine Edit からリンク（Phase 2 以降）。
 
 - 「Preview」は旧「Usage」を改名。役割は「設定が glass にどう出るかの確認 + 現値の確認」に限定する。rate limit の深掘り分析は公式アプリ (Claude / ChatGPT) に委ね、本アプリは glass 表示と設定に集中する。
 - 接続方式: `sideload` = LAN の Mac dev server URL、`cloud` = 固定ドメイン (Cloudflare Worker 等)。Machine Edit で切替。複数マシン (複数 PC / cloud) を登録し、Machines で接続先を切り替える。

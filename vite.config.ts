@@ -1,0 +1,262 @@
+import { execFile, spawn } from 'node:child_process'
+import { readdir, readFile, stat } from 'node:fs/promises'
+import { hostname, homedir } from 'node:os'
+import { join } from 'node:path'
+import { createInterface } from 'node:readline'
+import { promisify } from 'node:util'
+import { defineConfig, type ViteDevServer } from 'vite'
+
+const pexec = promisify(execFile)
+
+// =============================================================================
+// dev server 専用データソース (sideload)。トークン/認証はサーバー内に留め、
+// フロントには集計済み値だけ返す。store 配布(.ehpk)時は固定クラウドに差し替える。
+// =============================================================================
+
+// --- (0) machine: hostname + ツール自動検出 -----------------------------------
+let machineCache: { data: unknown; at: number } | null = null
+const MACHINE_TTL_MS = 60_000
+
+async function hasCli(cmd: string): Promise<boolean> {
+  try {
+    await pexec(cmd, ['--version'])
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function machineInfo(): Promise<unknown> {
+  if (machineCache && Date.now() - machineCache.at < MACHINE_TTL_MS) return machineCache.data
+  const host = hostname()
+  const machineId = host.toLowerCase().replace(/\.local$/, '').replace(/[^a-z0-9]+/g, '-')
+  const available: string[] = []
+  if (await hasCli('claude')) available.push('claude-code')
+  if (await hasCli('codex')) available.push('codex')
+  const data = { machineId, label: host, availableSources: available }
+  machineCache = { data, at: Date.now() }
+  return data
+}
+
+// --- (1) Claude Code rate limit: /api/oauth/usage (非公式, keychain OAuth) -----
+let claudeCache: { data: unknown; at: number } | null = null
+const CLAUDE_TTL_MS = 120_000
+
+async function oauthToken(): Promise<string | null> {
+  try {
+    const { stdout } = await pexec('security', [
+      'find-generic-password',
+      '-s',
+      'Claude Code-credentials',
+      '-w',
+    ])
+    return JSON.parse(stdout)?.claudeAiOauth?.accessToken ?? null
+  } catch {
+    return null
+  }
+}
+
+async function claudeVersion(): Promise<string> {
+  try {
+    const { stdout } = await pexec('claude', ['--version'])
+    return stdout.match(/\d+\.\d+\.\d+/)?.[0] ?? '2.0.0'
+  } catch {
+    return '2.0.0'
+  }
+}
+
+async function fetchClaudeLimits(): Promise<unknown> {
+  if (claudeCache && Date.now() - claudeCache.at < CLAUDE_TTL_MS) return claudeCache.data
+  const token = await oauthToken()
+  if (!token) return { error: 'no oauth token (keychain)' }
+  const ver = await claudeVersion()
+  try {
+    const res = await fetch('https://api.anthropic.com/api/oauth/usage', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+        'Content-Type': 'application/json',
+        'User-Agent': `claude-code/${ver}`,
+      },
+    })
+    if (!res.ok) return { error: `usage http ${res.status}` }
+    const data = await res.json()
+    claudeCache = { data, at: Date.now() }
+    return data
+  } catch (e) {
+    return { error: String(e) }
+  }
+}
+
+// --- (2) Codex CLI rate limit: codex app-server JSON-RPC (experimental) --------
+let codexCache: { data: unknown; at: number } | null = null
+const CODEX_TTL_MS = 60_000
+
+function fetchCodexLimits(): Promise<unknown> {
+  if (codexCache && Date.now() - codexCache.at < CODEX_TTL_MS) return Promise.resolve(codexCache.data)
+  return new Promise((resolve) => {
+    const proc = spawn('codex', ['app-server'], { stdio: ['pipe', 'pipe', 'ignore'] })
+    const rl = createInterface({ input: proc.stdout })
+    let done = false
+    const send = (m: unknown) => proc.stdin.write(`${JSON.stringify(m)}\n`)
+    const finish = (data: unknown, ok: boolean) => {
+      if (done) return
+      done = true
+      try {
+        proc.kill()
+      } catch {
+        /* noop */
+      }
+      if (ok) codexCache = { data, at: Date.now() }
+      resolve(data)
+    }
+    rl.on('line', (line) => {
+      let msg: { id?: number; error?: unknown; result?: { rateLimits?: { primary?: unknown } } }
+      try {
+        msg = JSON.parse(line)
+      } catch {
+        return
+      }
+      if (msg.id === 0) {
+        send({ method: 'initialized' })
+        // 認証完了を待つ (500ms だと primary が null になることがある)
+        setTimeout(() => send({ id: 1, method: 'account/rateLimits/read', params: {} }), 1500)
+      } else if (msg.id === 1) {
+        if (msg.error) finish({ error: 'codex rpc error' }, false)
+        else {
+          const rl2 = msg.result?.rateLimits
+          finish(rl2 ?? { error: 'no rateLimits' }, Boolean(rl2?.primary))
+        }
+      }
+    })
+    proc.on('error', () => finish({ error: 'codex spawn failed' }, false))
+    setTimeout(() => finish({ error: 'codex timeout' }, false), 9000)
+    send({
+      id: 0,
+      method: 'initialize',
+      params: { clientInfo: { name: 'eveng2-toolbar', title: 'Toolbar', version: '0.1.0' } },
+    })
+  })
+}
+
+// --- (3) Claude Code 累積トークン (今日分): cost / msgs 用 ----------------------
+type Pricing = { input: number; output: number; cacheWrite: number; cacheRead: number }
+const PRICING: Record<string, Pricing> = {
+  opus: { input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.5 },
+  sonnet: { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
+  haiku: { input: 0.8, output: 4, cacheWrite: 1, cacheRead: 0.08 },
+}
+function pricingFor(model: string): Pricing {
+  if (model.includes('opus')) return PRICING.opus
+  if (model.includes('haiku')) return PRICING.haiku
+  return PRICING.sonnet
+}
+function localDateKey(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+type UsageLine = {
+  type?: string
+  timestamp?: string
+  message?: {
+    model?: string
+    usage?: {
+      input_tokens?: number
+      output_tokens?: number
+      cache_creation_input_tokens?: number
+      cache_read_input_tokens?: number
+    }
+  }
+}
+async function collectUsage(): Promise<unknown> {
+  const root = join(homedir(), '.claude', 'projects')
+  const todayKey = localDateKey(new Date())
+  const sinceMs = Date.now() - 36 * 3600 * 1000
+  let rel: string[]
+  try {
+    rel = (await readdir(root, { recursive: true })).filter((p) => p.endsWith('.jsonl'))
+  } catch {
+    return { date: todayKey, error: 'no ~/.claude/projects' }
+  }
+  let input = 0
+  let output = 0
+  let cacheWrite = 0
+  let cacheRead = 0
+  let messages = 0
+  let cost = 0
+  for (const r of rel) {
+    const file = join(root, r)
+    try {
+      const st = await stat(file)
+      if (st.mtimeMs < sinceMs) continue
+      const text = await readFile(file, 'utf8')
+      for (const line of text.split('\n')) {
+        if (!line.includes('"usage"')) continue
+        let obj: UsageLine
+        try {
+          obj = JSON.parse(line) as UsageLine
+        } catch {
+          continue
+        }
+        const u = obj.message?.usage
+        if (obj.type !== 'assistant' || !u || !obj.timestamp) continue
+        if (localDateKey(new Date(obj.timestamp)) !== todayKey) continue
+        const model = obj.message?.model ?? 'sonnet'
+        const inT = u.input_tokens ?? 0
+        const outT = u.output_tokens ?? 0
+        const cwT = u.cache_creation_input_tokens ?? 0
+        const crT = u.cache_read_input_tokens ?? 0
+        input += inT
+        output += outT
+        cacheWrite += cwT
+        cacheRead += crT
+        messages += 1
+        const p = pricingFor(model)
+        cost += (inT * p.input + outT * p.output + cwT * p.cacheWrite + crT * p.cacheRead) / 1e6
+      }
+    } catch {
+      /* skip unreadable */
+    }
+  }
+  return {
+    date: todayKey,
+    messages,
+    input,
+    output,
+    cacheWrite,
+    cacheRead,
+    estCostUsd: Math.round(cost * 100) / 100,
+  }
+}
+
+function devApiPlugin() {
+  return {
+    name: 'toolbar-dev-api',
+    configureServer(server: ViteDevServer) {
+      const endpoints: Record<string, () => Promise<unknown>> = {
+        '/api/machine': machineInfo,
+        '/api/claude-limits': fetchClaudeLimits,
+        '/api/codex-limits': fetchCodexLimits,
+        '/api/claude-usage': collectUsage,
+      }
+      for (const [path, handler] of Object.entries(endpoints)) {
+        server.middlewares.use(path, async (_req, res) => {
+          res.setHeader('Content-Type', 'application/json')
+          try {
+            res.end(JSON.stringify(await handler()))
+          } catch (e) {
+            res.statusCode = 500
+            res.end(JSON.stringify({ error: String(e) }))
+          }
+        })
+      }
+    },
+  }
+}
+
+export default defineConfig({
+  server: { host: true },
+  plugins: [devApiPlugin()],
+})
