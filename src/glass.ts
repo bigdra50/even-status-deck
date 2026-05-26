@@ -80,11 +80,19 @@ async function poll(): Promise<void> {
 }
 
 // companion で設定変更 (saveConfig) されたら即再描画する。
+// 接続テストで base URL が切り替わるため machine も取り直す。これをしないと
+// glass 側の data.machine が null のままで availableSources 空 → 全ソース除外 →
+// 「(no metric)」になる (companion プレビューは companion 側の machine を使うので出る)。
 async function onConfigChanged(): Promise<void> {
   data.config = await loadConfig()
+  const hadMachine = data.machine != null
+  const m = await fetchMachine()
+  if (m) data.machine = m // 取得失敗時は既存を保持し、誤って (no metric) にしない
   views = buildViews(data)
   if (idx >= views.length) idx = 0
   refresh()
+  // 初回接続 (machine を今取得した) ならメトリック値も新しい base で取り直す
+  if (!hadMachine && data.machine) await poll()
 }
 
 export async function initGlass(bridge: EvenAppBridge): Promise<void> {
