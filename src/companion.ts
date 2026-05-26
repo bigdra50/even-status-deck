@@ -80,7 +80,7 @@ function glassPreviewHtml(): string {
   const body = lines.length
     ? lines.map((l) => `<span class="grow">${l}</span>`).join('')
     : '<span class="grow">(no metric)</span>'
-  const hint = config.glassHints ? '<span class="grow ghint">swipe: 詳細  tap: 戻る</span>' : ''
+  const hint = config.glassHints ? '<span class="grow ghint">swipe: detail  tap: back</span>' : ''
   return `<div class="glass-screen"><div>${body}</div>${hint}</div>`
 }
 

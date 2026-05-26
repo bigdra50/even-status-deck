@@ -118,7 +118,7 @@ function metricRow(d: GlassData, srcId: string, metricId: string): Row {
 function renderSummary(d: GlassData): string {
   const mc = activeCfg(d)
   const avail = d.machine?.availableSources ?? []
-  const lines = ['AI Usage']
+  const lines: string[] = []
   if (mc) {
     for (const id of mc.sourceOrder) {
       const scfg = mc.sources[id]
@@ -131,8 +131,8 @@ function renderSummary(d: GlassData): string {
       lines.push(`${src.name}  ${ms}`)
     }
   }
-  if (lines.length === 1) lines.push('(no metric)')
-  return withBottomHint(lines, d.config.glassHints ? 'swipe: 詳細  tap: 戻る' : null)
+  if (lines.length === 0) lines.push('(no metric)')
+  return withBottomHint(lines, d.config.glassHints ? 'swipe: detail  tap: back' : null)
 }
 
 // 詳細: そのソースの全 metric を bar 表示 (DESIGN.md §5)。
@@ -148,7 +148,7 @@ function renderDetail(d: GlassData, srcId: string): string {
       lines.push(`${pad(m.name, 8)} ${r.value}`)
     }
   }
-  return withBottomHint(lines, d.config.glassHints ? 'swipe / tap: 戻る' : null)
+  return withBottomHint(lines, d.config.glassHints ? 'swipe / tap: back' : null)
 }
 
 export function renderGlass(view: GView, d: GlassData): string {
