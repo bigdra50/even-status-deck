@@ -1,0 +1,373 @@
+/* companion (スマホ WebView) スタイル。everything-evenhub design-guidelines の Phone-Side トークン。
+   テーマは Even App のシステム設定に従う (prefers-color-scheme)。 */
+:root {
+  --bg: #111111;
+  --surface: #1a1a1a;
+  --surface-2: #242424;
+  --border: #2a2a2a;
+  --text: #ffffff;
+  --text-dim: #8a8a8a;
+  --input-bg: rgba(255, 255, 255, 0.08);
+  --accent: #fef991; /* Even brand yellow — accent only */
+  --glass: #3cfa44; /* glasses green — glass 表示のみ */
+  --ok: #6ee7b7;
+  --err: #fb7185;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+  --font-sans:
+    "FK Grotesk Neue", -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP",
+    "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Berkeley Mono", "Menlo", "Consolas", monospace;
+  --fs-sm: 11px;
+  --fs-md: 13px;
+  --fs-base: 16px;
+  --fs-lg: 18px;
+  --fs-xl: 24px;
+  color-scheme: dark light;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #ffffff;
+    --surface: #eeeeee;
+    --surface-2: #e4e4e4;
+    --border: #dddddd;
+    --text: #232323;
+    --text-dim: #7b7b7b;
+    --input-bg: rgba(35, 35, 35, 0.08);
+  }
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+}
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+#app {
+  max-width: 480px;
+  margin: 0 auto;
+  min-height: 100vh;
+  padding: var(--space-4);
+}
+
+.cmp-label {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: var(--space-5) 0 var(--space-2);
+}
+.cmp-label:first-child {
+  margin-top: 0;
+}
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.nav-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: var(--fs-base);
+  cursor: pointer;
+  padding: 0;
+}
+.h-title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.cmp-sub {
+  color: var(--text-dim);
+  font-size: var(--fs-md);
+}
+
+/* machine: select + gear */
+.machine-bar {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.conn-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--ok);
+  box-shadow: 0 0 6px var(--ok);
+}
+.conn-dot.off {
+  background: var(--text-dim);
+  box-shadow: none;
+}
+.machine-select {
+  flex: 1;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  color: var(--text);
+  font-size: var(--fs-base);
+  font-family: var(--font-sans);
+}
+.gear-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0 var(--space-4);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 18px;
+}
+
+/* source list (Home に展開, ジャンル折りたたみ) */
+.src {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-2);
+  overflow: hidden;
+}
+.src.dim {
+  opacity: 0.45;
+}
+.src-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+.src-grip {
+  color: var(--text-dim);
+  cursor: grab;
+}
+.src-caret {
+  color: var(--text-dim);
+  width: 12px;
+  cursor: pointer;
+}
+.src-name {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  flex: 1;
+  cursor: pointer;
+}
+.src-note {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+.src-metrics {
+  padding: 0 var(--space-4) var(--space-3) 40px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.metric-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+}
+.metric-row .mgrip {
+  color: var(--text-dim);
+  cursor: grab;
+}
+.metric-row .mname {
+  flex: 1;
+  font-size: var(--fs-md);
+}
+.metric-row .mval {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
+/* toggle */
+.tg {
+  width: 38px;
+  height: 22px;
+  border-radius: var(--radius-pill);
+  background: var(--input-bg);
+  position: relative;
+  cursor: pointer;
+  flex: 0 0 auto;
+  border: none;
+  transition: background 0.15s;
+}
+.tg::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+.tg.on {
+  background: var(--accent);
+}
+.tg.on::after {
+  transform: translateX(16px);
+}
+.tg.sm {
+  width: 32px;
+  height: 18px;
+}
+.tg.sm::after {
+  width: 14px;
+  height: 14px;
+}
+.tg.sm.on::after {
+  transform: translateX(14px);
+}
+
+/* machine edit form */
+.field {
+  margin-bottom: var(--space-4);
+}
+.field > label {
+  display: block;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  margin-bottom: var(--space-1);
+}
+.field input[type="text"] {
+  width: 100%;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-family: var(--font-mono);
+}
+.field-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.test-btn {
+  background: var(--accent);
+  color: #232323;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.status-ok {
+  color: var(--ok);
+  font-size: var(--fs-sm);
+}
+.detect {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+}
+.detect .ok {
+  color: var(--ok);
+}
+.detect .no {
+  color: var(--text-dim);
+}
+.help-link {
+  display: inline-block;
+  margin-top: var(--space-2);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.autoval {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  color: var(--text);
+  font-size: var(--fs-md);
+}
+.autoval.mono {
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+}
+.danger-btn {
+  width: 100%;
+  background: none;
+  border: 1px solid var(--err);
+  color: var(--err);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  cursor: pointer;
+  margin-top: var(--space-6);
+}
+.save-btn {
+  width: 100%;
+  background: var(--accent);
+  color: #232323;
+  border: none;
+  font-weight: 600;
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  cursor: pointer;
+  margin-top: var(--space-4);
+}
+
+/* glass preview (companion 内, 実機比率) */
+.gpv {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.gpv-cap {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+}
+.gpv-screen {
+  background: #000;
+  padding: 10px 12px;
+}
+.glass-screen {
+  background: #000;
+  color: var(--glass);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre;
+  display: flex;
+  flex-direction: column;
+  aspect-ratio: 576 / 288;
+  text-shadow: 0 0 6px rgba(60, 250, 68, 0.55);
+}
+.glass-screen .grow {
+  display: block;
+}
+.glass-screen .ghint {
+  margin-top: auto;
+  color: rgba(60, 250, 68, 0.5);
+}

@@ -1,32 +1,22 @@
-import {
-  CreateStartUpPageContainer,
-  TextContainerProperty,
-  waitForEvenAppBridge,
-} from '@evenrealities/even_hub_sdk'
+import { waitForEvenAppBridge } from '@evenrealities/even_hub_sdk'
+import { mountCompanion } from './companion'
+import { setConfigBridge } from './config'
+import './styles.css'
 
-// Phase 2 ②③④ で companion UI (Home / Machine Edit) と glass 描画 (設定駆動) を実装する。
-// 現時点はスキャフォールド確認用の最小実装: glass にアプリ名を出すだけ。
 async function main() {
-  const bridge = await waitForEvenAppBridge()
-  await bridge.createStartUpPageContainer(
-    new CreateStartUpPageContainer({
-      containerTotalNum: 1,
-      textObject: [
-        new TextContainerProperty({
-          xPosition: 0,
-          yPosition: 0,
-          width: 576,
-          height: 288,
-          borderWidth: 0,
-          paddingLength: 8,
-          containerID: 1,
-          containerName: 'main',
-          content: 'eveng2-toolbar',
-          isEventCapture: 1,
-        }),
-      ],
-    }),
-  )
+  // companion (スマホ WebView UI) は bridge 不要 (API fetch + config)。先に mount する。
+  const app = document.getElementById('app')
+  if (app) await mountCompanion(app)
+
+  // bridge は glass 描画 (Phase2 ④) と config の永続化 (setLocalStorage) に使う。
+  // ブラウザ単体では resolve しないため UI を止めないよう後回しにする。
+  try {
+    const bridge = await waitForEvenAppBridge()
+    setConfigBridge(bridge)
+    // TODO Phase2 ④: initGlass(bridge) — summary/claude/codex を SDK 描画
+  } catch {
+    // simulator / Even App 以外ではメモリフォールバック (config.ts)
+  }
 }
 
 main()
