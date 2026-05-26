@@ -10,6 +10,7 @@ import {
   syncMachineWithStatus,
 } from './config'
 import { fetchMachine, fetchStatus, type MachineInfo, setDataBase } from './data'
+import { esc } from './escape'
 import { hudLine } from './glass-render'
 import type { Group, StatusDoc } from './status-types'
 
@@ -56,9 +57,9 @@ function glassPreviewHtml(): string {
       const parts: string[] = []
       for (const m of scfg.metrics) {
         const seg = segs.get(m.id)
-        if (m.enabled && seg) parts.push(`${seg.label} ${seg.value}`)
+        if (m.enabled && seg) parts.push(`${esc(seg.label)} ${esc(seg.value)}`)
       }
-      if (parts.length) lines.push(`${g.label}  ${parts.join('  ')}`)
+      if (parts.length) lines.push(`${esc(g.label)}  ${parts.join('  ')}`)
     }
   }
   const metrics = lines.length
@@ -79,16 +80,16 @@ function renderSourceRow(g: Group, scfg: SourceCfg): string {
           const seg = segs.get(m.id)
           if (!seg) return ''
           return `<div class="metric-row"><span class="mgrip">⋮⋮</span>
-              <span class="mname">${seg.label}</span>
-              <span class="mval">${seg.value}</span>
-              <button class="tg sm ${m.enabled ? 'on' : ''}" data-action="toggle-metric" data-src="${g.id}" data-metric="${m.id}"></button></div>`
+              <span class="mname">${esc(seg.label)}</span>
+              <span class="mval">${esc(seg.value)}</span>
+              <button class="tg sm ${m.enabled ? 'on' : ''}" data-action="toggle-metric" data-src="${esc(g.id)}" data-metric="${esc(m.id)}"></button></div>`
         })
         .join('')}</div>`
     : ''
-  return `<div class="src" data-src="${g.id}"><div class="src-head"><span class="src-grip">⋮⋮</span>
-    <span class="src-caret" data-action="expand" data-src="${g.id}">${caret}</span>
-    <span class="src-name" data-action="expand" data-src="${g.id}">${g.label}</span>
-    <button class="tg ${scfg.enabled ? 'on' : ''}" data-action="toggle-source" data-src="${g.id}"></button></div>${metrics}</div>`
+  return `<div class="src" data-src="${esc(g.id)}"><div class="src-head"><span class="src-grip">⋮⋮</span>
+    <span class="src-caret" data-action="expand" data-src="${esc(g.id)}">${caret}</span>
+    <span class="src-name" data-action="expand" data-src="${esc(g.id)}">${esc(g.label)}</span>
+    <button class="tg ${scfg.enabled ? 'on' : ''}" data-action="toggle-source" data-src="${esc(g.id)}"></button></div>${metrics}</div>`
 }
 
 // status の group を config 順で並べる (ドラッグ並べ替え対象 → #source-list 内)。
@@ -113,10 +114,10 @@ function renderHome(): string {
     ? ids
         .map(
           (id) =>
-            `<option value="${id}" ${id === config.activeMachine ? 'selected' : ''}>${id === machine?.machineId ? label : id}</option>`,
+            `<option value="${esc(id)}" ${id === config.activeMachine ? 'selected' : ''}>${esc(id === machine?.machineId ? label : id)}</option>`,
         )
         .join('')
-    : `<option selected>${label}</option>`
+    : `<option selected>${esc(label)}</option>`
   return `
     <div class="cmp-label">Machine</div>
     <div class="machine-bar">
@@ -141,8 +142,8 @@ function renderDetected(): string {
   const m = machine
   if (!m) return ''
   const has = (id: string) => m.availableSources.includes(id)
-  return `<div class="field"><label>マシン名 (hostname を自動取得)</label><div class="autoval">${m.label}</div></div>
-     <div class="field"><label>machineId (自動)</label><div class="autoval mono">${m.machineId}</div></div>
+  return `<div class="field"><label>マシン名 (hostname を自動取得)</label><div class="autoval">${esc(m.label)}</div></div>
+     <div class="field"><label>machineId (自動)</label><div class="autoval mono">${esc(m.machineId)}</div></div>
      <div class="field"><label>利用可能なツール (自動検出)</label>
        <div class="detect">
          <span class="${has('claude-code') ? 'ok' : 'no'}">Claude Code ${has('claude-code') ? '✓' : '✗'}</span>
@@ -156,7 +157,7 @@ function renderTestStatus(): string {
   if (testState === 'testing') return '<div class="status-testing">⋯ 接続中…</div>'
   if (testState === 'ok') return `<div class="status-ok">✓ 接続OK</div>${renderDetected()}`
   if (testState === 'error')
-    return `<div class="status-err">✗ 接続失敗: ${testError}</div>
+    return `<div class="status-err">✗ 接続失敗: ${esc(testError)}</div>
       <div class="cmp-sub">URL とローカルサーバーの起動を確認してください。</div>`
   return '<div class="cmp-sub">接続テストすると、マシン名・利用可能ツールを自動取得します。</div>'
 }
@@ -169,7 +170,7 @@ function renderMachineEdit(): string {
       <span class="h-title">Machine 設定</span><span></span></div>
     <div class="field"><label>接続先 (Mac の dev server URL)</label>
       <div class="field-row">
-        <input type="text" value="${url}" placeholder="http://192.168.1.5:5173" />
+        <input type="text" value="${esc(url)}" placeholder="http://192.168.1.5:5173" />
         <button class="test-btn" data-action="test" ${testing ? 'disabled' : ''}>${testing ? '…' : '接続テスト'}</button>
       </div>
       <span class="help-link" data-action="help">ローカルサーバーの設定方法 →</span>
