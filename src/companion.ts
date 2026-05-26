@@ -19,6 +19,7 @@ import {
   setDataBase,
   type Usage,
 } from './data'
+import { hudLine } from './glass-render'
 import { SOURCES, type Source, sourceById } from './sources'
 
 // companion (スマホ WebView) の Home / Machine Edit。bridge は不要 (API fetch + config 永続化)。
@@ -77,11 +78,12 @@ function glassPreviewHtml(): string {
       lines.push(`${src.name}  ${ms}`)
     }
   }
-  const body = lines.length
+  const metrics = lines.length
     ? lines.map((l) => `<span class="grow">${l}</span>`).join('')
     : '<span class="grow">(no metric)</span>'
+  const hud = `<span class="grow ghud">${hudLine()}</span>`
   const hint = config.glassHints ? '<span class="grow ghint">swipe: detail  tap: back</span>' : ''
-  return `<div class="glass-screen"><div>${body}</div>${hint}</div>`
+  return `<div class="glass-screen"><div>${hud}${metrics}</div>${hint}</div>`
 }
 
 function renderSourceRow(src: Source, scfg: SourceCfg): string {

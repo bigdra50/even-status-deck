@@ -376,6 +376,10 @@ body {
 .glass-screen .grow {
   display: block;
 }
+.glass-screen .ghud {
+  color: rgba(60, 250, 68, 0.7);
+  margin-bottom: 4px;
+}
 .glass-screen .ghint {
   margin-top: auto;
   color: rgba(60, 250, 68, 0.5);

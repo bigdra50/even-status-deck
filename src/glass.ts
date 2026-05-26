@@ -8,6 +8,7 @@ import {
 } from '@evenrealities/even_hub_sdk'
 import { emptyConfig, loadConfig } from './config'
 import { fetchClaudeLimits, fetchCodexLimits, fetchMachine, fetchUsage } from './data'
+import { setGlassBattery } from './device-state'
 import { buildViews, type GlassData, type GView, renderGlass } from './glass-render'
 import { activateKeepAlive, deactivateKeepAlive } from './keep-alive'
 
@@ -30,6 +31,9 @@ let views: GView[] = ['summary']
 let idx = 0
 let lastClickAt = 0
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let clockTimer: ReturnType<typeof setTimeout> | null = null
+let deviceUnsub: (() => void) | null = null
+let glassesSn = '' // getDeviceInfo の sn。status 更新が他デバイス(ring 等)か判別する
 
 function refresh(): void {
   void gbridge?.textContainerUpgrade(
@@ -49,8 +53,39 @@ function cycle(dir: number): void {
 
 function cleanup(): void {
   if (pollTimer) clearInterval(pollTimer)
+  if (clockTimer) clearTimeout(clockTimer)
   pollTimer = null
+  clockTimer = null
+  deviceUnsub?.()
+  deviceUnsub = null
   deactivateKeepAlive()
+}
+
+// HUD の時刻を分境界で更新する (再描画のみ、fetch なし)。
+function tickClock(): void {
+  refresh()
+  const now = new Date()
+  const ms = (60 - now.getSeconds()) * 1000 - now.getMilliseconds()
+  clockTimer = setTimeout(tickClock, ms)
+}
+
+// グラス(G2) のバッテリーを取得・購読する。status は sn でグラスのものだけ採用する
+// (onDeviceStatusChanged は ring 等 他デバイスでも発火しうるが model フィールドが無い)。
+async function initDeviceBattery(bridge: EvenAppBridge): Promise<void> {
+  try {
+    const info = await bridge.getDeviceInfo()
+    if (info) {
+      glassesSn = info.sn
+      setGlassBattery(info.status?.batteryLevel ?? null, info.status?.isCharging ?? false)
+    }
+  } catch {
+    /* 取得不可は無視 (HUD は時刻/日付のみ表示) */
+  }
+  deviceUnsub = bridge.onDeviceStatusChanged((status) => {
+    if (glassesSn && status.sn !== glassesSn) return // 他デバイス(ring 等)は無視
+    setGlassBattery(status.batteryLevel ?? null, status.isCharging ?? false)
+    refresh()
+  })
 }
 
 // single click → summary、double click → 終了、swipe → ビュー巡回。
@@ -146,8 +181,11 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   bridge.onEvenHubEvent(onEvent)
   if (typeof window !== 'undefined') {
     window.addEventListener('toolbar:config-changed', () => void onConfigChanged())
+    window.addEventListener('beforeunload', cleanup)
   }
 
+  await initDeviceBattery(bridge) // HUD のグラスバッテリー
+  tickClock() // HUD の時刻を分境界で更新
   await poll()
   pollTimer = setInterval(() => void poll(), 60_000)
 }
