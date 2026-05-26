@@ -47,15 +47,64 @@ function pad(s: string, n: number): string {
 const MAX_ROWS = 10
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
-// 最上部 HUD: 時刻 / 日付 / グラス(G2) バッテリー。時刻は WebView のシステム時計。
+// 端末ロケールから 12/24h と日付順を判定する (純粋関数, テスト可能)。
+// 曜日/月名は英語維持のため Intl の名称ローカライズは使わず、数値の規約だけ採用。
+type DateOrder = 'mdy' | 'dmy' | 'ymd'
+export function formatProfile(locale: string | undefined): { hour12: boolean; order: DateOrder } {
+  try {
+    const hc = new Intl.DateTimeFormat(locale, { hour: 'numeric' }).resolvedOptions().hourCycle
+    const hour12 = hc === 'h11' || hc === 'h12'
+    const parts = new Intl.DateTimeFormat(locale, {
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+    }).formatToParts(new Date(2000, 0, 2))
+    const first = parts.find(
+      (p) => p.type === 'year' || p.type === 'month' || p.type === 'day',
+    )?.type
+    const order: DateOrder = first === 'year' ? 'ymd' : first === 'day' ? 'dmy' : 'mdy'
+    return { hour12, order }
+  } catch {
+    return { hour12: false, order: 'mdy' } // 判定不能時は 24h + M/D
+  }
+}
+
+let cachedProfile: { hour12: boolean; order: DateOrder } | null = null
+function profile(): { hour12: boolean; order: DateOrder } {
+  if (!cachedProfile) {
+    const loc = (typeof navigator !== 'undefined' ? navigator.language : undefined) || undefined
+    cachedProfile = formatProfile(loc)
+  }
+  return cachedProfile
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
+// 最上部 HUD: 時刻 / 日付 / グラス(G2) バッテリー。時刻は WebView のシステム時計、
+// 12/24h と日付順は端末ロケールに自動追従。曜日名は英語 (グラス英語方針)。
 export function hudLine(): string {
   const now = new Date()
-  const hh = String(now.getHours()).padStart(2, '0')
-  const mm = String(now.getMinutes()).padStart(2, '0')
-  const date = `${WEEKDAYS[now.getDay()]} ${now.getMonth() + 1}/${now.getDate()}`
+  const { hour12, order } = profile()
+
+  let h = now.getHours()
+  let suffix = ''
+  if (hour12) {
+    suffix = h < 12 ? ' AM' : ' PM'
+    h = h % 12 || 12
+  }
+  const time = `${hour12 ? String(h) : pad2(h)}:${pad2(now.getMinutes())}${suffix}`
+
+  const mo = now.getMonth() + 1
+  const da = now.getDate()
+  const num =
+    order === 'ymd' ? `${pad2(mo)}-${pad2(da)}` : order === 'dmy' ? `${da}/${mo}` : `${mo}/${da}`
+  const date = `${WEEKDAYS[now.getDay()]} ${num}`
+
   const { level, charging } = getGlassBattery()
   const bat = level != null ? `  G2 ${level}%${charging ? '+' : ''}` : ''
-  return `${hh}:${mm}  ${date}${bat}`
+  return `${time}  ${date}${bat}`
 }
 
 function metricName(srcId: string, metricId: string): string {
