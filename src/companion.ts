@@ -9,17 +9,17 @@ import {
   saveConfig,
   syncMachineWithStatus,
 } from './config'
-import { fetchMachine, fetchStatus, type MachineInfo, setDataBase } from './data'
+import { fetchMachineFrom, type MachineInfo } from './data'
 import { esc } from './escape'
 import { hudLine } from './glass-render'
-import type { Group, StatusDoc } from './status-types'
+import type { Group } from './status-types'
+import { getStatus, setSourceUrl, startPolling, subscribe } from './store'
 
 // companion (スマホ WebView) の Home / Machine Edit。bridge は不要 (API fetch + config 永続化)。
 // 表示要素は status (provider 集約) から取得し、設定は status の group/segment に対応。
 let view: 'home' | 'machine-edit' = 'home'
 let machine: MachineInfo | null = null
 let config: Config = emptyConfig()
-let status: StatusDoc | null = null
 let root: HTMLElement | null = null
 
 // Machine Edit の接続テスト状態
@@ -34,14 +34,15 @@ function activeCfg(): MachineCfg | null {
 
 function statusGroups(): Map<string, Group> {
   const m = new Map<string, Group>()
-  for (const g of status?.groups ?? []) m.set(g.id, g)
+  for (const g of getStatus()?.groups ?? []) m.set(g.id, g)
   return m
 }
 
 // active マシンの config を status に合わせ、追加があれば保存する。
 function syncActiveCfg(): void {
   const mc = activeCfg()
-  if (mc && status && syncMachineWithStatus(mc, status)) void saveConfig(config)
+  const s = getStatus()
+  if (mc && s && syncMachineWithStatus(mc, s)) void saveConfig(config)
 }
 
 function glassPreviewHtml(): string {
@@ -307,7 +308,7 @@ async function onClick(e: MouseEvent): Promise<void> {
 }
 
 // 入力された URL に /api/machine を投げて接続を検証し、状態 (testing/ok/error) を更新する。
-// 成功時はその URL をデータ取得のベースに切り替え、マシン情報を反映する。
+// 成功時はその URL を共有 store の接続先に設定し (store が status を取得・配信)、永続化する。
 async function runConnectionTest(): Promise<void> {
   const input = root?.querySelector<HTMLInputElement>('.field-row input[type="text"]')
   const url = (input?.value ?? '').trim() || location.origin
@@ -315,26 +316,23 @@ async function runConnectionTest(): Promise<void> {
   testState = 'testing'
   testError = ''
   render()
-  try {
-    const clean = url.replace(/\/+$/, '')
-    const res = await fetch(`${clean}/api/machine`)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const m = (await res.json()) as MachineInfo
-    machine = m
-    setDataBase(clean)
-    // 接続したマシンをアクティブにし、URL を永続化 (次回起動時に復元する)
-    config.activeMachine = m.machineId
-    const mc = ensureMachine(config, m.machineId)
-    mc.url = clean
-    await saveConfig(config)
-    testState = 'ok'
-    render()
-    await refreshData() // 新しいベース URL で status を取り直す
-  } catch (err) {
+  const clean = url.replace(/\/+$/, '')
+  const m = await fetchMachineFrom(clean)
+  if (!m) {
     testState = 'error'
-    testError = err instanceof Error ? err.message : '接続に失敗しました'
+    testError = '接続に失敗しました'
     render()
+    return
   }
+  machine = m
+  // 接続したマシンをアクティブにし、URL を永続化 (次回起動時に復元する)
+  config.activeMachine = m.machineId
+  const mc = ensureMachine(config, m.machineId)
+  mc.url = clean
+  await saveConfig(config)
+  testState = 'ok'
+  setSourceUrl(clean) // store が新 URL で status 取得 → onStoreUpdate で再描画
+  render()
 }
 
 async function onChange(e: Event): Promise<void> {
@@ -350,55 +348,56 @@ async function onChange(e: Event): Promise<void> {
     render()
   } else {
     config.activeMachine = t.value
-    // 切り替え先マシンの保存済み URL にデータ取得先を切り替えて再取得
+    // 切り替え先マシンの保存済み URL に store の接続先を切り替えて再取得
     const url = config.machines[t.value]?.url
     if (url) {
-      setDataBase(url)
-      machine = await fetchMachine()
+      setSourceUrl(url)
+      machine = await fetchMachineFrom(url)
     }
     await saveConfig(config)
     render()
-    await refreshData()
   }
 }
 
-async function refreshData(): Promise<void> {
-  // 表示要素は /api/status (provider 集約) 1 本で取得する。
-  const s = await fetchStatus()
-  if (s) {
-    status = s
-    syncActiveCfg() // 新しい group/segment を config に取り込み (変更時のみ保存)
-  }
+// store の status 更新で再描画する (新 group/segment を config に取り込み)。
+function onStoreUpdate(): void {
+  syncActiveCfg()
   render()
+}
+
+// 起動時の接続: machine を取得して config の machine entry / activeMachine を確立し、
+// store の接続先を設定する。machine が取れなければ store URL だけ設定する。
+async function connectTo(url: string): Promise<void> {
+  const m = await fetchMachineFrom(url)
+  if (m) {
+    machine = m
+    if (!config.activeMachine) config.activeMachine = m.machineId
+    const mc = ensureMachine(config, m.machineId)
+    if (!mc.url) mc.url = url
+    await saveConfig(config)
+  }
+  setSourceUrl(url)
 }
 
 export async function mountCompanion(el: HTMLElement): Promise<void> {
   root = el
   el.addEventListener('click', (e) => void onClick(e))
   el.addEventListener('change', (e) => void onChange(e))
+  subscribe(onStoreUpdate)
 
-  machine = await fetchMachine()
+  // bridge 接続前は永続 config を読めない (memory のみ)。接続先は保存済み URL か、
+  // 無ければ同一オリジン (dev-URL sideload / ブラウザ dev) を既定にする。
   config = await loadConfig()
-  if (machine) {
-    if (!config.activeMachine) config.activeMachine = machine.machineId
-    ensureMachine(config, machine.machineId)
-    await saveConfig(config)
-  }
+  await connectTo(activeCfg()?.url ?? location.origin)
+  startPolling()
   render()
-  await refreshData()
-  setInterval(() => void refreshData(), 60_000)
 }
 
 // bridge 接続後に呼ぶ。mountCompanion は bridge 接続前に走るため永続 config を
 // 読めない。ここで読み直し、前回接続した URL を復元して再接続する。
 export async function onCompanionBridgeReady(): Promise<void> {
   config = await loadConfig()
-  const url = config.activeMachine ? config.machines[config.activeMachine]?.url : undefined
-  if (url) {
-    setDataBase(url)
-    const m = await fetchMachine()
-    if (m) machine = m
-  }
+  // connectTo 内の setSourceUrl が URL 変化時に refresh する (同一 URL なら mount の取得を流用)。
+  await connectTo(activeCfg()?.url ?? location.origin)
   render()
-  await refreshData()
 }

@@ -7,13 +7,14 @@ import {
   TextContainerUpgrade,
 } from '@evenrealities/even_hub_sdk'
 import { emptyConfig, loadConfig, syncMachineWithStatus } from './config'
-import { fetchMachine, fetchStatus } from './data'
 import { setGlassBattery } from './device-state'
 import { buildViews, type GlassData, type GView, renderGlass } from './glass-render'
 import { activateKeepAlive, deactivateKeepAlive } from './keep-alive'
+import { getStatus, refresh as storeRefresh, subscribe } from './store'
 
 // glass (G2 576×288) の描画。companion と同じ WebView 内で動くが bridge 経由で
 // glass にだけ描く。純粋ロジックは glass-render.ts、ここは状態と bridge 配線。
+// status の取得・ポーリングは共有 store が担い、glass は購読して再描画する。
 const DISPLAY_W = 576
 const DISPLAY_H = 288
 const CONTAINER_ID = 1
@@ -22,15 +23,14 @@ const CONTAINER_NAME = 'toolbar'
 let gbridge: EvenAppBridge | null = null
 const data: GlassData = {
   config: emptyConfig(),
-  machine: null,
   status: null,
 }
 let views: GView[] = ['summary']
 let idx = 0
 let lastClickAt = 0
-let pollTimer: ReturnType<typeof setInterval> | null = null
 let clockTimer: ReturnType<typeof setTimeout> | null = null
 let deviceUnsub: (() => void) | null = null
+let storeUnsub: (() => void) | null = null
 let glassesSn = '' // getDeviceInfo の sn。status 更新が他デバイス(ring 等)か判別する
 
 function refresh(): void {
@@ -50,12 +50,12 @@ function cycle(dir: number): void {
 }
 
 function cleanup(): void {
-  if (pollTimer) clearInterval(pollTimer)
   if (clockTimer) clearTimeout(clockTimer)
-  pollTimer = null
   clockTimer = null
   deviceUnsub?.()
   deviceUnsub = null
+  storeUnsub?.()
+  storeUnsub = null
   deactivateKeepAlive()
 }
 
@@ -95,7 +95,7 @@ function onEvent(event: EvenHubEvent): void {
   if (sys) {
     const et = sys.eventType
     if (et === OsEventTypeList.FOREGROUND_ENTER_EVENT) {
-      void poll() // 復帰時に最新データへ更新
+      void storeRefresh() // 復帰時に最新データへ更新 (store 経由)
       return
     }
     if (et === OsEventTypeList.FOREGROUND_EXIT_EVENT) {
@@ -131,42 +131,29 @@ function syncActive(): void {
   if (mc && data.status) syncMachineWithStatus(mc, data.status)
 }
 
-async function poll(): Promise<void> {
-  // 表示要素は /api/status (provider 集約) 1 本で取得する。
-  const status = await fetchStatus()
-  if (status) {
-    data.status = status
-    syncActive()
-    views = buildViews(data)
-    if (idx >= views.length) idx = 0
-  }
-  refresh()
-}
-
-// companion で設定変更 (saveConfig) されたら即再描画する。
-// 接続テストで base URL が切り替わるため machine も取り直す。これをしないと
-// glass 側の data.machine が null のままで availableSources 空 → 全ソース除外 →
-// 「(no metric)」になる (companion プレビューは companion 側の machine を使うので出る)。
-async function onConfigChanged(): Promise<void> {
-  data.config = await loadConfig()
-  const hadMachine = data.machine != null
-  const m = await fetchMachine()
-  if (m) data.machine = m // 取得失敗時は既存を保持
+// store の status 更新で再描画する。
+function onStoreUpdate(): void {
+  data.status = getStatus()
   syncActive()
   views = buildViews(data)
   if (idx >= views.length) idx = 0
   refresh()
-  // 初回接続 (machine を今取得した) なら status も新しい base で取り直す
-  if (!hadMachine && data.machine) await poll()
+}
+
+// companion で設定変更 (saveConfig) されたら config を読み直して即再描画する。
+async function onConfigChanged(): Promise<void> {
+  data.config = await loadConfig()
+  syncActive()
+  views = buildViews(data)
+  if (idx >= views.length) idx = 0
+  refresh()
 }
 
 export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   gbridge = bridge
   activateKeepAlive() // phone ロック / バックグラウンドでも WebView を生かす
-  const [m, cfg, status] = await Promise.all([fetchMachine(), loadConfig(), fetchStatus()])
-  data.machine = m
-  data.config = cfg
-  data.status = status
+  data.config = await loadConfig()
+  data.status = getStatus() // store が既に取得済みなら反映 (companion が url 設定 + poll 起動済み)
   syncActive()
   views = buildViews(data)
   idx = 0
@@ -189,6 +176,7 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   )
 
   bridge.onEvenHubEvent(onEvent)
+  storeUnsub = subscribe(onStoreUpdate) // status 更新を購読
   if (typeof window !== 'undefined') {
     window.addEventListener('toolbar:config-changed', () => void onConfigChanged())
     window.addEventListener('beforeunload', cleanup)
@@ -196,6 +184,4 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
 
   await initDeviceBattery(bridge) // HUD のグラスバッテリー
   tickClock() // HUD の時刻を分境界で更新
-  await poll()
-  pollTimer = setInterval(() => void poll(), 60_000)
 }

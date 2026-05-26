@@ -1,5 +1,5 @@
-// データ層 API。マルチソース集約のため URL を明示して取得する純粋 API を提供する。
-// (旧: 単一 base グローバル + 相対 fetch。Ph2 で store に集約後に撤去予定)
+// データ層 API。URL を明示し timeout / abort 付きで取得する純粋関数 (マルチソース集約用)。
+// 可変 base グローバルは廃止 (store が接続先を保持し revision で遅延応答を破棄する)。
 import type { StatusDoc } from './status-types'
 
 export type MachineInfo = {
@@ -8,27 +8,7 @@ export type MachineInfo = {
   availableSources: string[]
 }
 
-// --- 旧 API (単一 base。Ph2 で撤去) -------------------------------------------
-let base = ''
-export function setDataBase(url: string): void {
-  base = url.replace(/\/+$/, '')
-}
-
-async function getJson<T>(url: string): Promise<T | null> {
-  try {
-    const res = await fetch(base + url)
-    if (!res.ok) return null
-    return (await res.json()) as T
-  } catch {
-    return null
-  }
-}
-
-export const fetchMachine = () => getJson<MachineInfo>('/api/machine')
-export const fetchStatus = () => getJson<StatusDoc>('/api/status')
-
-// --- 新 API: URL 明示 + timeout/abort (マルチソース集約用) ----------------------
-// caller の signal と 8s timeout の両方で abort する。base グローバルに依存しない。
+// caller の signal と 8s timeout の両方で abort する。
 const FETCH_TIMEOUT_MS = 8000
 async function getJsonFrom<T>(url: string, path: string, signal?: AbortSignal): Promise<T | null> {
   const clean = url.replace(/\/+$/, '')

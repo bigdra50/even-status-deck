@@ -1,5 +1,4 @@
 import type { Config, MachineCfg } from './config'
-import type { MachineInfo } from './data'
 import { getGlassBattery } from './device-state'
 import type { Group, StatusDoc } from './status-types'
 
@@ -8,7 +7,6 @@ import type { Group, StatusDoc } from './status-types'
 export type GView = string
 export type GlassData = {
   config: Config
-  machine: MachineInfo | null
   status: StatusDoc | null
 }
 
