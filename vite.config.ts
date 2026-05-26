@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { promisify } from 'node:util'
 import { defineConfig, type ViteDevServer } from 'vite'
+import type { Group, Segment, StatusDoc } from './src/status-types'
 
 const pexec = promisify(execFile)
 
@@ -231,12 +232,99 @@ async function collectUsage(): Promise<unknown> {
   }
 }
 
+// --- (4) status: provider 群を集約し segment を返す (モジュラーコア) -------------
+// provider を足すだけで表示要素が増える。value はサーバーで整形済み、percent は bar 用。
+function fmtReset(v: string | number | null | undefined): string {
+  if (v == null) return ''
+  const t = typeof v === 'number' ? v * 1000 : new Date(v).getTime()
+  const ms = t - Date.now()
+  if (ms <= 0) return 'now'
+  const h = Math.floor(ms / 3_600_000)
+  const m = Math.floor((ms % 3_600_000) / 60_000)
+  const d = Math.floor(h / 24)
+  if (d > 0) return `${d}d${h % 24}h`
+  if (h > 0) return `${h}h${m}m`
+  return `${m}m`
+}
+
+type PctWin = { utilization?: number; resets_at?: string | null }
+function pctSegment(
+  id: string,
+  label: string,
+  pct: number | undefined,
+  reset: string | number | null | undefined,
+  defaultEnabled: boolean,
+): Segment {
+  if (typeof pct === 'number') {
+    return { id, label, value: `${pct}%`, percent: pct, reset: fmtReset(reset), defaultEnabled }
+  }
+  return { id, label, value: 'n/a', defaultEnabled }
+}
+
+async function claudeProvider(): Promise<Group | null> {
+  if (!(await hasCli('claude'))) return null
+  const [limits, usage] = await Promise.all([fetchClaudeLimits(), collectUsage()])
+  const L = limits as {
+    five_hour?: PctWin
+    seven_day?: PctWin
+    seven_day_sonnet?: PctWin
+    seven_day_opus?: PctWin
+  }
+  const U = usage as { estCostUsd?: number; messages?: number }
+  const segments: Segment[] = [
+    pctSegment('session', 'Session', L.five_hour?.utilization, L.five_hour?.resets_at, true),
+    pctSegment('weekly', 'Weekly', L.seven_day?.utilization, L.seven_day?.resets_at, true),
+    pctSegment('sonnet', 'Sonnet', L.seven_day_sonnet?.utilization, L.seven_day_sonnet?.resets_at, false),
+    pctSegment('opus', 'Opus', L.seven_day_opus?.utilization, L.seven_day_opus?.resets_at, false),
+    {
+      id: 'cost',
+      label: 'Cost',
+      value: U.estCostUsd != null ? `$${Math.round(U.estCostUsd)}` : 'n/a',
+      defaultEnabled: true,
+    },
+    {
+      id: 'msgs',
+      label: 'Msgs',
+      value: U.messages != null ? String(U.messages) : 'n/a',
+      defaultEnabled: false,
+    },
+  ]
+  return { id: 'claude-code', label: 'Claude Code', segments }
+}
+
+async function codexProvider(): Promise<Group | null> {
+  if (!(await hasCli('codex'))) return null
+  const x = (await fetchCodexLimits()) as {
+    primary?: { usedPercent?: number; resetsAt?: number }
+    secondary?: { usedPercent?: number; resetsAt?: number }
+  }
+  return {
+    id: 'codex',
+    label: 'Codex',
+    segments: [
+      pctSegment('5h', '5h', x.primary?.usedPercent, x.primary?.resetsAt, true),
+      pctSegment('weekly', 'Weekly', x.secondary?.usedPercent, x.secondary?.resetsAt, true),
+    ],
+  }
+}
+
+// 新規 provider はここに足すだけ (例: Mac battery=pmset, git branch, now-playing 等)。
+const PROVIDERS: Array<() => Promise<Group | null>> = [claudeProvider, codexProvider]
+
+async function statusDoc(): Promise<StatusDoc> {
+  const results = await Promise.allSettled(PROVIDERS.map((p) => p()))
+  const groups: Group[] = []
+  for (const r of results) if (r.status === 'fulfilled' && r.value) groups.push(r.value)
+  return { version: 1, ts: Date.now(), groups }
+}
+
 function devApiPlugin() {
   return {
     name: 'toolbar-dev-api',
     configureServer(server: ViteDevServer) {
       const endpoints: Record<string, () => Promise<unknown>> = {
         '/api/machine': machineInfo,
+        '/api/status': statusDoc,
         '/api/claude-limits': fetchClaudeLimits,
         '/api/codex-limits': fetchCodexLimits,
         '/api/claude-usage': collectUsage,
