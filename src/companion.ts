@@ -7,28 +7,18 @@ import {
   type MachineCfg,
   type SourceCfg,
   saveConfig,
+  syncMachineWithStatus,
 } from './config'
-import {
-  type ClaudeLimits,
-  type CodexLimits,
-  fetchClaudeLimits,
-  fetchCodexLimits,
-  fetchMachine,
-  fetchUsage,
-  type MachineInfo,
-  setDataBase,
-  type Usage,
-} from './data'
+import { fetchMachine, fetchStatus, type MachineInfo, setDataBase } from './data'
 import { hudLine } from './glass-render'
-import { SOURCES, type Source, sourceById } from './sources'
+import type { Group, StatusDoc } from './status-types'
 
 // companion (スマホ WebView) の Home / Machine Edit。bridge は不要 (API fetch + config 永続化)。
+// 表示要素は status (provider 集約) から取得し、設定は status の group/segment に対応。
 let view: 'home' | 'machine-edit' = 'home'
 let machine: MachineInfo | null = null
 let config: Config = emptyConfig()
-let claude: ClaudeLimits | null = null
-let codex: CodexLimits | null = null
-let usage: Usage | null = null
+let status: StatusDoc | null = null
 let root: HTMLElement | null = null
 
 // Machine Edit の接続テスト状態
@@ -41,41 +31,34 @@ function activeCfg(): MachineCfg | null {
   return id ? (config.machines[id] ?? null) : null
 }
 
-function metricValue(srcId: string, metricId: string): string {
-  if (srcId === 'claude-code') {
-    if (metricId === 'session') return claude?.five_hour ? `${claude.five_hour.utilization}%` : '—'
-    if (metricId === 'weekly') return claude?.seven_day ? `${claude.seven_day.utilization}%` : '—'
-    if (metricId === 'sonnet')
-      return claude?.seven_day_sonnet ? `${claude.seven_day_sonnet.utilization}%` : '—'
-    if (metricId === 'opus')
-      return claude?.seven_day_opus ? `${claude.seven_day_opus.utilization}%` : '—'
-    if (metricId === 'cost') return usage?.estCostUsd != null ? `$${usage.estCostUsd}` : '—'
-    if (metricId === 'msgs') return usage?.messages != null ? String(usage.messages) : '—'
-  } else if (srcId === 'codex') {
-    if (metricId === '5h') return codex?.primary ? `${codex.primary.usedPercent}%` : '—'
-    if (metricId === 'weekly') return codex?.secondary ? `${codex.secondary.usedPercent}%` : '—'
-  }
-  return '—'
+function statusGroups(): Map<string, Group> {
+  const m = new Map<string, Group>()
+  for (const g of status?.groups ?? []) m.set(g.id, g)
+  return m
 }
 
-function metricName(srcId: string, metricId: string): string {
-  return sourceById(srcId)?.metrics.find((m) => m.id === metricId)?.name ?? metricId
+// active マシンの config を status に合わせ、追加があれば保存する。
+function syncActiveCfg(): void {
+  const mc = activeCfg()
+  if (mc && status && syncMachineWithStatus(mc, status)) void saveConfig(config)
 }
 
 function glassPreviewHtml(): string {
   const mc = activeCfg()
-  const avail = machine?.availableSources ?? []
+  const groups = statusGroups()
   const lines: string[] = []
   if (mc) {
-    for (const id of mc.sourceOrder) {
-      const scfg = mc.sources[id]
-      const src = sourceById(id)
-      if (!scfg?.enabled || !avail.includes(id) || !src) continue
-      const ms = scfg.metrics
-        .filter((m) => m.enabled)
-        .map((m) => `${metricName(id, m.id)} ${metricValue(id, m.id)}`)
-        .join('  ')
-      lines.push(`${src.name}  ${ms}`)
+    for (const gid of mc.sourceOrder) {
+      const scfg = mc.sources[gid]
+      const g = groups.get(gid)
+      if (!scfg?.enabled || !g) continue
+      const segs = new Map(g.segments.map((s) => [s.id, s]))
+      const parts: string[] = []
+      for (const m of scfg.metrics) {
+        const seg = segs.get(m.id)
+        if (m.enabled && seg) parts.push(`${seg.label} ${seg.value}`)
+      }
+      if (parts.length) lines.push(`${g.label}  ${parts.join('  ')}`)
     }
   }
   const metrics = lines.length
@@ -86,51 +69,40 @@ function glassPreviewHtml(): string {
   return `<div class="glass-screen"><div>${hud}${metrics}</div>${hint}</div>`
 }
 
-function renderSourceRow(src: Source, scfg: SourceCfg): string {
+// group 1 件の行。label/value は status から、enabled/order/expanded は config から。
+function renderSourceRow(g: Group, scfg: SourceCfg): string {
   const caret = scfg.expanded ? '▾' : '▸'
-  // メトリックは scfg.metrics の順 (並べ替え可)。名前は SOURCES から引く。
+  const segs = new Map(g.segments.map((s) => [s.id, s]))
   const metrics = scfg.expanded
-    ? `<div class="src-metrics" data-src="${src.id}">${scfg.metrics
-        .map(
-          (mc2) =>
-            `<div class="metric-row"><span class="mgrip">⋮⋮</span>
-              <span class="mname">${metricName(src.id, mc2.id)}</span>
-              <span class="mval">${metricValue(src.id, mc2.id)}</span>
-              <button class="tg sm ${mc2.enabled ? 'on' : ''}" data-action="toggle-metric" data-src="${src.id}" data-metric="${mc2.id}"></button></div>`,
-        )
+    ? `<div class="src-metrics" data-src="${g.id}">${scfg.metrics
+        .map((m) => {
+          const seg = segs.get(m.id)
+          if (!seg) return ''
+          return `<div class="metric-row"><span class="mgrip">⋮⋮</span>
+              <span class="mname">${seg.label}</span>
+              <span class="mval">${seg.value}</span>
+              <button class="tg sm ${m.enabled ? 'on' : ''}" data-action="toggle-metric" data-src="${g.id}" data-metric="${m.id}"></button></div>`
+        })
         .join('')}</div>`
     : ''
-  return `<div class="src" data-src="${src.id}"><div class="src-head"><span class="src-grip">⋮⋮</span>
-    <span class="src-caret" data-action="expand" data-src="${src.id}">${caret}</span>
-    <span class="src-name" data-action="expand" data-src="${src.id}">${src.name}</span>
-    <button class="tg ${scfg.enabled ? 'on' : ''}" data-action="toggle-source" data-src="${src.id}"></button></div>${metrics}</div>`
+  return `<div class="src" data-src="${g.id}"><div class="src-head"><span class="src-grip">⋮⋮</span>
+    <span class="src-caret" data-action="expand" data-src="${g.id}">${caret}</span>
+    <span class="src-name" data-action="expand" data-src="${g.id}">${g.label}</span>
+    <button class="tg ${scfg.enabled ? 'on' : ''}" data-action="toggle-source" data-src="${g.id}"></button></div>${metrics}</div>`
 }
 
-// 利用可能ソース (mc.sourceOrder 順, ドラッグ並べ替え対象 → #source-list 内)
+// status の group を config 順で並べる (ドラッグ並べ替え対象 → #source-list 内)。
 function renderAvailableSources(): string {
   const mc = activeCfg()
   if (!mc) return ''
-  const avail = machine?.availableSources ?? []
+  const groups = statusGroups()
   return mc.sourceOrder
-    .filter((id) => avail.includes(id) && mc.sources[id])
+    .filter((id) => groups.has(id) && mc.sources[id])
     .map((id) => {
-      const src = sourceById(id)
+      const g = groups.get(id)
       const scfg = mc.sources[id]
-      return src && scfg ? renderSourceRow(src, scfg) : ''
+      return g && scfg ? renderSourceRow(g, scfg) : ''
     })
-    .join('')
-}
-
-// 未検出ソース (グレーアウト, 並べ替え対象外)
-function renderUnavailableSources(): string {
-  const avail = machine?.availableSources ?? []
-  return SOURCES.filter((s) => !avail.includes(s.id))
-    .map(
-      (src) =>
-        `<div class="src dim"><div class="src-head"><span class="src-grip">⋮⋮</span>
-          <span class="src-caret">▸</span><span class="src-name">${src.name}</span>
-          <span class="src-note">未検出</span><button class="tg" disabled></button></div></div>`,
-    )
     .join('')
 }
 
@@ -155,7 +127,6 @@ function renderHome(): string {
 
     <div class="cmp-label">表示設定 (グリップ ⋮⋮ をドラッグで並べ替え)</div>
     <div id="source-list">${renderAvailableSources()}</div>
-    ${renderUnavailableSources()}
     <div class="src"><div class="src-head">
       <span class="src-name" style="font-size:var(--fs-md);font-weight:500;">glass の操作ヒントを表示</span>
       <button class="tg sm ${config.glassHints ? 'on' : ''}" data-action="toggle-hints"></button></div></div>
@@ -251,8 +222,8 @@ function attachSortables(): void {
 function onSourceReorder(oldIndex?: number, newIndex?: number): void {
   const mc = activeCfg()
   if (!mc || oldIndex == null || newIndex == null || oldIndex === newIndex) return
-  const avail = machine?.availableSources ?? []
-  const ordered = mc.sourceOrder.filter((id) => avail.includes(id) && mc.sources[id])
+  const groups = statusGroups()
+  const ordered = mc.sourceOrder.filter((id) => groups.has(id) && mc.sources[id])
   const [moved] = ordered.splice(oldIndex, 1)
   if (!moved) return
   ordered.splice(newIndex, 0, moved)
@@ -352,12 +323,12 @@ async function runConnectionTest(): Promise<void> {
     setDataBase(clean)
     // 接続したマシンをアクティブにし、URL を永続化 (次回起動時に復元する)
     config.activeMachine = m.machineId
-    const mc = ensureMachine(config, m.machineId, m.availableSources)
+    const mc = ensureMachine(config, m.machineId)
     mc.url = clean
     await saveConfig(config)
     testState = 'ok'
     render()
-    await refreshData() // 新しいベース URL でデータを取り直す
+    await refreshData() // 新しいベース URL で status を取り直す
   } catch (err) {
     testState = 'error'
     testError = err instanceof Error ? err.message : '接続に失敗しました'
@@ -391,14 +362,12 @@ async function onChange(e: Event): Promise<void> {
 }
 
 async function refreshData(): Promise<void> {
-  // claude / usage は速いので先に描画する。
-  // codex は app-server 起動 (~1.5-3s) で遅いため分離し、取れ次第 再描画する
-  // (Promise.all だと codex 待ちで claude/usage の表示まで遅れる)。
-  const [c, u] = await Promise.all([fetchClaudeLimits(), fetchUsage()])
-  claude = c
-  usage = u
-  render()
-  codex = await fetchCodexLimits()
+  // 表示要素は /api/status (provider 集約) 1 本で取得する。
+  const s = await fetchStatus()
+  if (s) {
+    status = s
+    syncActiveCfg() // 新しい group/segment を config に取り込み (変更時のみ保存)
+  }
   render()
 }
 
@@ -411,7 +380,7 @@ export async function mountCompanion(el: HTMLElement): Promise<void> {
   config = await loadConfig()
   if (machine) {
     if (!config.activeMachine) config.activeMachine = machine.machineId
-    ensureMachine(config, machine.machineId, machine.availableSources)
+    ensureMachine(config, machine.machineId)
     await saveConfig(config)
   }
   render()

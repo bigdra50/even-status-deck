@@ -322,12 +322,10 @@ function devApiPlugin() {
   return {
     name: 'toolbar-dev-api',
     configureServer(server: ViteDevServer) {
+      // 表示要素は /api/status に集約。claude/codex/usage は provider 内部で使う。
       const endpoints: Record<string, () => Promise<unknown>> = {
         '/api/machine': machineInfo,
         '/api/status': statusDoc,
-        '/api/claude-limits': fetchClaudeLimits,
-        '/api/codex-limits': fetchCodexLimits,
-        '/api/claude-usage': collectUsage,
       }
       for (const [path, handler] of Object.entries(endpoints)) {
         server.middlewares.use(path, async (_req, res) => {

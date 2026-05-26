@@ -6,8 +6,8 @@ import {
   TextContainerProperty,
   TextContainerUpgrade,
 } from '@evenrealities/even_hub_sdk'
-import { emptyConfig, loadConfig } from './config'
-import { fetchClaudeLimits, fetchCodexLimits, fetchMachine, fetchUsage } from './data'
+import { emptyConfig, loadConfig, syncMachineWithStatus } from './config'
+import { fetchMachine, fetchStatus } from './data'
 import { setGlassBattery } from './device-state'
 import { buildViews, type GlassData, type GView, renderGlass } from './glass-render'
 import { activateKeepAlive, deactivateKeepAlive } from './keep-alive'
@@ -23,9 +23,7 @@ let gbridge: EvenAppBridge | null = null
 const data: GlassData = {
   config: emptyConfig(),
   machine: null,
-  claude: null,
-  codex: null,
-  usage: null,
+  status: null,
 }
 let views: GView[] = ['summary']
 let idx = 0
@@ -126,13 +124,22 @@ function onEvent(event: EvenHubEvent): void {
   }
 }
 
+// active マシンの config を status に合わせて in-memory sync する (永続化は companion 側)。
+function syncActive(): void {
+  const id = data.config.activeMachine
+  const mc = id ? data.config.machines[id] : null
+  if (mc && data.status) syncMachineWithStatus(mc, data.status)
+}
+
 async function poll(): Promise<void> {
-  // claude / usage は速いので先に描画し、codex (app-server 起動が遅い) は取れ次第更新。
-  const [c, u] = await Promise.all([fetchClaudeLimits(), fetchUsage()])
-  data.claude = c
-  data.usage = u
-  refresh()
-  data.codex = await fetchCodexLimits()
+  // 表示要素は /api/status (provider 集約) 1 本で取得する。
+  const status = await fetchStatus()
+  if (status) {
+    data.status = status
+    syncActive()
+    views = buildViews(data)
+    if (idx >= views.length) idx = 0
+  }
   refresh()
 }
 
@@ -144,20 +151,23 @@ async function onConfigChanged(): Promise<void> {
   data.config = await loadConfig()
   const hadMachine = data.machine != null
   const m = await fetchMachine()
-  if (m) data.machine = m // 取得失敗時は既存を保持し、誤って (no metric) にしない
+  if (m) data.machine = m // 取得失敗時は既存を保持
+  syncActive()
   views = buildViews(data)
   if (idx >= views.length) idx = 0
   refresh()
-  // 初回接続 (machine を今取得した) ならメトリック値も新しい base で取り直す
+  // 初回接続 (machine を今取得した) なら status も新しい base で取り直す
   if (!hadMachine && data.machine) await poll()
 }
 
 export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   gbridge = bridge
   activateKeepAlive() // phone ロック / バックグラウンドでも WebView を生かす
-  const [m, cfg] = await Promise.all([fetchMachine(), loadConfig()])
+  const [m, cfg, status] = await Promise.all([fetchMachine(), loadConfig(), fetchStatus()])
   data.machine = m
   data.config = cfg
+  data.status = status
+  syncActive()
   views = buildViews(data)
   idx = 0
 
