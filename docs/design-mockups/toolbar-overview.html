@@ -113,9 +113,11 @@
         text-shadow: 0 0 6px rgba(60,250,68,0.55); white-space: pre; display: flex; flex-direction: column; }
       .glass-screen .grow { display: block; }
       .glass-screen .ghint { margin-top: auto; padding-top: 10px; }
-      .gpv-screen .glass-screen { height: auto; }
-      .gpv-screen .ghint { margin-top: 10px; }
+      .gpv-screen .glass-screen { height: auto; aspect-ratio: 576 / 288; }  /* 実機比率 → ヒント最下端 */
+      .gpv-screen .ghint { margin-top: auto; }
       .glass-hint { color: rgba(60,250,68,0.5); }
+      .help-link { display: inline-block; margin-top: var(--space-2); color: var(--accent);
+        font-size: var(--font-size-sm); cursor: pointer; }
     }
 
     @layer canvas {
@@ -319,34 +321,38 @@
     function renderMachineEdit(state) {
       const theme = state.theme ?? 'dark'
       const isNew = !editMachineId
-      const m = isNew ? null : machineById(editMachineId)
-      const has = id => m?.available.includes(id)
+      // 新規でも接続テスト後の取得結果をダミーで見せる (完成イメージ)
+      const m = isNew
+        ? { label: 'MacBook-Pro.local', url: 'http://192.168.1.5:5173', id: 'macbook-pro-a1b2', available: ['claude-code','codex'] }
+        : machineById(editMachineId)
+      const has = id => m.available.includes(id)
       return `<div class="cmp" data-theme="${theme}">
         <div class="topbar"><button class="nav-btn" data-action="nav" data-to="flow:home">← Home</button>
           <span class="h-title">${isNew ? 'マシンを追加' : 'Machine 設定'}</span><span></span></div>
 
         <div class="field"><label>接続先 (Mac の dev server URL)</label>
           <div class="row">
-            <input type="text" value="${m?.url ?? ''}" placeholder="http://192.168.1.5:5173" />
+            <input type="text" value="${m.url}" placeholder="http://192.168.1.5:5173" />
             <button class="test-btn" data-action="noop">接続テスト</button>
           </div>
+          <span class="help-link" data-action="noop">ローカルサーバーの設定方法 →</span>
         </div>
 
+        <div class="field"><label>マシン名 (hostname を自動取得)</label>
+          <div class="autoval">${m.label}</div></div>
+        <div class="field"><label>machineId (自動)</label>
+          <div class="autoval mono">${m.id}</div></div>
+        <div class="field"><label>利用可能なツール (自動検出)</label>
+          <div class="detect">
+            <span class="${has('claude-code')?'ok':'no'}">Claude Code ${has('claude-code')?'✓':'✗'}</span>
+            <span class="${has('codex')?'ok':'no'}">Codex ${has('codex')?'✓':'✗'}</span>
+            <span class="no">Gemini ✗</span>
+          </div></div>
+        <div class="status-ok">✓ 接続OK</div>
+
         ${isNew
-          ? `<div class="cmp-sub" style="margin-top:var(--space-2);">接続テストすると、マシン名・machineId・利用可能ツールを接続先から自動取得します。</div>
-             <button class="save-btn" data-action="nav" data-to="flow:home">保存して接続</button>`
-          : `<div class="field"><label>マシン名 (hostname を自動取得)</label>
-               <div class="autoval">${m.label}</div></div>
-             <div class="field"><label>machineId (自動)</label>
-               <div class="autoval mono">${m.id}</div></div>
-             <div class="field"><label>利用可能なツール (自動検出)</label>
-               <div class="detect">
-                 <span class="${has('claude-code')?'ok':'no'}">Claude Code ${has('claude-code')?'✓':'✗'}</span>
-                 <span class="${has('codex')?'ok':'no'}">Codex ${has('codex')?'✓':'✗'}</span>
-                 <span class="no">Gemini ✗</span>
-               </div></div>
-             <div class="status-ok">✓ 接続OK</div>
-             <button class="danger-btn" data-action="noop">このマシンを削除</button>`}
+          ? `<button class="save-btn" data-action="nav" data-to="flow:home">保存して接続</button>`
+          : `<button class="danger-btn" data-action="noop">このマシンを削除</button>`}
       </div>`
     }
 
