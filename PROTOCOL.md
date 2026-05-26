@@ -5,9 +5,11 @@ Even G2 toolbar が複数のデータソースから取り込み、グラスに�
 HTTP で segment を提供する。companion (toolbar) は複数ソースを集約し、ユーザーが表示を
 カスタムする。
 
-- 現行バージョン: **1**
+- 現行バージョン: **1** (公開・安定)
 - トランスポート: HTTP/1.1 (loopback `127.0.0.1` / LAN / cloud いずれも可)
 - 文字コード: UTF-8 JSON
+- companion 側の検証は `src/status-types.ts` の `parseStatusDoc()` が実装 (受信時に
+  shape 検証 + サニタイズ。不正 group/segment は破棄、想定外フィールドは除去)。
 
 ## 1. 用語
 

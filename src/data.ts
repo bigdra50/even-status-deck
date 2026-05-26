@@ -1,6 +1,6 @@
 // データ層 API。URL を明示し timeout / abort 付きで取得する純粋関数 (マルチソース集約用)。
 // 可変 base グローバルは廃止 (store が接続先を保持し revision で遅延応答を破棄する)。
-import type { StatusDoc } from './status-types'
+import { parseStatusDoc, type StatusDoc } from './status-types'
 
 export type MachineInfo = {
   machineId: string
@@ -29,7 +29,11 @@ async function getJsonFrom<T>(url: string, path: string, signal?: AbortSignal): 
   }
 }
 
-export const fetchStatusFrom = (url: string, signal?: AbortSignal) =>
-  getJsonFrom<StatusDoc>(url, '/api/status', signal)
+// status は受信時に検証・サニタイズする (不正データで描画を壊さない)。
+export const fetchStatusFrom = async (
+  url: string,
+  signal?: AbortSignal,
+): Promise<StatusDoc | null> =>
+  parseStatusDoc(await getJsonFrom<unknown>(url, '/api/status', signal))
 export const fetchMachineFrom = (url: string, signal?: AbortSignal) =>
   getJsonFrom<MachineInfo>(url, '/api/machine', signal)
