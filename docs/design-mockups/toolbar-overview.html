@@ -98,6 +98,9 @@
         border-radius: var(--radius-md); padding: var(--space-3); cursor: pointer; margin-top: var(--space-6); }
       .save-btn { width: 100%; background: var(--accent); color: #232323; border: none; font-weight: 600;
         border-radius: var(--radius-md); padding: var(--space-3); cursor: pointer; margin-top: var(--space-4); }
+      .autoval { background: var(--input-bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+        padding: var(--space-3); color: var(--text); font-size: var(--font-size-md); }
+      .autoval.mono { font-family: var(--font-mono); color: var(--text-dim); }
 
       /* glass preview */
       .gpv { border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border); }
@@ -316,33 +319,34 @@
     function renderMachineEdit(state) {
       const theme = state.theme ?? 'dark'
       const isNew = !editMachineId
-      const m = isNew ? { label: '', url: '', available: [] } : machineById(editMachineId)
-      const has = id => m.available.includes(id)
+      const m = isNew ? null : machineById(editMachineId)
+      const has = id => m?.available.includes(id)
       return `<div class="cmp" data-theme="${theme}">
         <div class="topbar"><button class="nav-btn" data-action="nav" data-to="flow:home">← Home</button>
           <span class="h-title">${isNew ? 'マシンを追加' : 'Machine 設定'}</span><span></span></div>
 
-        <div class="field"><label>名前</label>
-          <input type="text" value="${m.label}" placeholder="例: MacBook Pro" /></div>
-
         <div class="field"><label>接続先 (Mac の dev server URL)</label>
           <div class="row">
-            <input type="text" value="${m.url}" placeholder="http://192.168.1.5:5173" />
+            <input type="text" value="${m?.url ?? ''}" placeholder="http://192.168.1.5:5173" />
             <button class="test-btn" data-action="noop">接続テスト</button>
           </div>
-          ${isNew ? '' : `<div class="status-ok" style="margin-top:8px;">✓ 接続OK · machineId ${editMachineId}</div>`}
         </div>
 
-        ${isNew ? '' : `<div class="field"><label>利用可能なツール (自動検出)</label>
-          <div class="detect">
-            <span class="${has('claude-code')?'ok':'no'}">Claude Code ${has('claude-code')?'✓':'✗'}</span>
-            <span class="${has('codex')?'ok':'no'}">Codex ${has('codex')?'✓':'✗'}</span>
-            <span class="no">Gemini ✗</span>
-          </div></div>`}
-
         ${isNew
-          ? `<button class="save-btn" data-action="nav" data-to="flow:home">保存して接続</button>`
-          : `<button class="danger-btn" data-action="noop">このマシンを削除</button>`}
+          ? `<div class="cmp-sub" style="margin-top:var(--space-2);">接続テストすると、マシン名・machineId・利用可能ツールを接続先から自動取得します。</div>
+             <button class="save-btn" data-action="nav" data-to="flow:home">保存して接続</button>`
+          : `<div class="field"><label>マシン名 (hostname を自動取得)</label>
+               <div class="autoval">${m.label}</div></div>
+             <div class="field"><label>machineId (自動)</label>
+               <div class="autoval mono">${m.id}</div></div>
+             <div class="field"><label>利用可能なツール (自動検出)</label>
+               <div class="detect">
+                 <span class="${has('claude-code')?'ok':'no'}">Claude Code ${has('claude-code')?'✓':'✗'}</span>
+                 <span class="${has('codex')?'ok':'no'}">Codex ${has('codex')?'✓':'✗'}</span>
+                 <span class="no">Gemini ✗</span>
+               </div></div>
+             <div class="status-ok">✓ 接続OK</div>
+             <button class="danger-btn" data-action="noop">このマシンを削除</button>`}
       </div>`
     }
 

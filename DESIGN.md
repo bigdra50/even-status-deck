@@ -9,7 +9,7 @@ Even G2 ツールバー風サブモニタの設計。Mac のメニューバー�
 ```
 Machine (このマシン)                          ← レベル1: マシン毎
   ├ id     : hostname ベース (自動生成)
-  ├ label  : 表示名 (ユーザー編集可)
+  ├ label  : hostname を接続先から自動取得 (手動入力しない)
   └ sources: 有効化するツール (利用可能なものだけ)   ← レベル2: 内容 (ソース)
        ├ claude-code  { enabled, 並び順 }
        │    └ metrics: session / weekly / sonnet / opus / cost / msgs   ← レベル3: 表示項目 + 順序
