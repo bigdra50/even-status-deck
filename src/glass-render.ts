@@ -136,13 +136,22 @@ function detailBody(d: GlassData, groupId: string): string[] {
   return lines
 }
 
-// HUD(最上部) + 本文 + ヒント(最下端) を MAX_ROWS 内に組む。
+const HUD_ROWS = 1
+
+// HUD(最上部) + 本文 + ヒント(最下端) を MAX_ROWS 内に必ず収める。
+// 本文が予算を超えたら末尾を "+N more" に畳む (画面外に押し出さない / 行予算 hard cap)。
 export function renderGlass(view: GView, d: GlassData): string {
   const body = view === 'summary' ? summaryBody(d) : detailBody(d, view)
   const hintText = view === 'summary' ? 'swipe: detail  tap: back' : 'swipe / tap: back'
   const hint = d.config.glassHints ? hintText : null
 
-  const head = [hudLine(), ...body]
+  const bodyBudget = MAX_ROWS - HUD_ROWS - (hint ? 1 : 0)
+  const shown =
+    body.length > bodyBudget
+      ? [...body.slice(0, bodyBudget - 1), `… +${body.length - (bodyBudget - 1)} more`]
+      : body
+
+  const head = [hudLine(), ...shown]
   if (!hint) return head.join('\n')
   const blanks = MAX_ROWS - head.length - 1
   const out = blanks > 0 ? [...head, ...Array<string>(blanks).fill(''), hint] : [...head, hint]
