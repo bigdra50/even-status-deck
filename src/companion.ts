@@ -235,10 +235,14 @@ async function onChange(e: Event): Promise<void> {
 }
 
 async function refreshData(): Promise<void> {
-  const [c, x, u] = await Promise.all([fetchClaudeLimits(), fetchCodexLimits(), fetchUsage()])
+  // claude / usage は速いので先に描画する。
+  // codex は app-server 起動 (~1.5-3s) で遅いため分離し、取れ次第 再描画する
+  // (Promise.all だと codex 待ちで claude/usage の表示まで遅れる)。
+  const [c, u] = await Promise.all([fetchClaudeLimits(), fetchUsage()])
   claude = c
-  codex = x
   usage = u
+  render()
+  codex = await fetchCodexLimits()
   render()
 }
 

@@ -20,6 +20,7 @@
     "@biomejs/biome": "2.4.10",
     "@evenrealities/evenhub-cli": "^0.1.11",
     "@evenrealities/evenhub-simulator": "^0.6.2",
+    "playwright": "^1.60.0",
     "typescript": "~6.0.2",
     "vite": "^8.0.4"
   }
