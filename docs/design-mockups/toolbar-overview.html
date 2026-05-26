@@ -136,9 +136,12 @@
       /* glass screen (G2 576x288, mono green) */
       .glass-screen { background: #000; color: var(--glass); font-family: var(--font-mono);
         font-size: 15px; line-height: 1.5; padding: 14px 18px; height: 100%;
-        text-shadow: 0 0 6px rgba(60,250,68,0.55); white-space: pre; }
-      .glass-screen .gtitle { font-weight: 700; }
+        text-shadow: 0 0 6px rgba(60,250,68,0.55); white-space: pre;
+        display: flex; flex-direction: column; }
       .glass-screen .grow { display: block; }
+      .glass-screen .ghint { margin-top: auto; padding-top: 10px; }  /* 下部に固定 */
+      .gpv-screen .glass-screen { height: auto; }
+      .gpv-screen .ghint { margin-top: 10px; }
       .glass-hint { color: rgba(60,250,68,0.5); }
     }
 
@@ -303,7 +306,7 @@
     }
 
     function renderGlassPreview(config) {
-      // 有効ソース×有効metricを各1行 (summary)
+      // 見出しなし。有効ソース×有効metricを各1行 (データ上部) + ヒント下部 (設定で非表示可)
       const lines = config.sources
         .filter(s => s.enabled && BASE_SOURCES.find(b => b.id === s.id)?.available)
         .map(s => {
@@ -311,8 +314,9 @@
           const ms = s.metrics.filter(m => m.enabled).map(m => metricSummaryFor(s.id, m)).join('  ')
           return `${src.name.padEnd(12)} ${ms}`
         })
-      const body = lines.length ? lines.join('\n') : '(no metric enabled)'
-      return `<div class="glass-screen" style="height:auto;font-size:13px;">AI Usage\n${body}</div>`
+      const body = lines.length ? lines.map(l => `<span class="grow">${l}</span>`).join('') : '<span class="grow">(no metric enabled)</span>'
+      const hint = glassHints ? `<span class="grow ghint glass-hint">swipe: 詳細  tap: 戻る</span>` : ''
+      return `<div class="glass-screen" style="font-size:13px;"><div>${body}</div>${hint}</div>`
     }
 
     function renderSettings(state) {
@@ -363,9 +367,15 @@
         <div class="cmp-label">Sources &amp; Metrics</div>
         ${rows}
 
-        <div class="cmp-label">Glass Preview</div>
+        <div class="cmp-label">Glass</div>
+        <div class="src">
+          <div class="src-head">
+            <span class="src-name" style="font-size:var(--font-size-md);font-weight:500;">操作ヒントを表示</span>
+            <button class="tg sm ${glassHints ? 'on' : ''}" data-action="toggle-glass-hints" aria-label="glass hints"></button>
+          </div>
+        </div>
         <div class="gpv">
-          <div class="gpv-cap">G2 576×288 — summary</div>
+          <div class="gpv-cap">G2 576×288 — preview</div>
           <div class="gpv-screen">${renderGlassPreview(cfg)}</div>
         </div>
       </div>`
@@ -405,34 +415,42 @@
     // ============================================================
     // glass view 関数 (G2 576x288, mono green)
     // ============================================================
+    // glass 操作ヒントの表示/非表示 (設定で切替。操作を覚えたら OFF)
+    let glassHints = true
     function bar(pct) {
       const w = pct == null ? 0 : Math.max(0, Math.min(100, pct))
       const filled = Math.round(w / 10)
       return '━'.repeat(filled) + '─'.repeat(10 - filled)
     }
-    function glassSummary() {
-      return `<div class="glass-screen"><span class="gtitle grow">AI Usage</span>` +
-        `<span class="grow">Claude  S 17%  W 10%</span>` +
-        `<span class="grow">Codex   S 4%   W 1%</span>` +
-        `<span class="grow glass-hint">swipe: 詳細  tap: 戻る</span></div>`
+    // データ行を上部、ヒントを下部 (ghint=margin-top auto)。見出しは持たない。
+    function glassScreen(dataRows, hintText, showHint) {
+      const show = showHint ?? glassHints
+      const data = dataRows.map(r => `<span class="grow">${r}</span>`).join('')
+      const hint = show ? `<span class="grow ghint glass-hint">${hintText}</span>` : ''
+      return `<div class="glass-screen"><div>${data}</div>${hint}</div>`
     }
-    function glassClaude() {
+    function glassSummary(showHint) {
+      return glassScreen(['Claude  S 17%  W 10%', 'Codex   S 4%   W 1%'], 'swipe: 詳細  tap: 戻る', showHint)
+    }
+    function glassClaude(showHint) {
       const c = BASE_SOURCES.find(s => s.id === 'claude-code')
       const m = id => c.metrics.find(x => x.id === id)
-      return `<div class="glass-screen"><span class="gtitle grow">Claude Code  Max</span>` +
-        `<span class="grow">Session ${bar(17)} 17%  ${m('session').reset}</span>` +
-        `<span class="grow">Weekly  ${bar(10)} 10%  ${m('weekly').reset}</span>` +
-        `<span class="grow">Sonnet  ${bar(2)} 2%</span>` +
-        `<span class="grow">Today 1311 msg / ~$601</span>` +
-        `<span class="grow glass-hint">swipe / tap</span></div>`
+      return glassScreen([
+        `Claude Code  Max`,
+        `Session ${bar(17)} 17%  ${m('session').reset}`,
+        `Weekly  ${bar(10)} 10%  ${m('weekly').reset}`,
+        `Sonnet  ${bar(2)} 2%`,
+        `Today 1311 msg / ~$601`,
+      ], 'swipe / tap', showHint)
     }
-    function glassCodex() {
+    function glassCodex(showHint) {
       const c = BASE_SOURCES.find(s => s.id === 'codex')
       const m = id => c.metrics.find(x => x.id === id)
-      return `<div class="glass-screen"><span class="gtitle grow">Codex  Plus</span>` +
-        `<span class="grow">5h     ${bar(4)} 4%  ${m('5h').reset}</span>` +
-        `<span class="grow">Weekly ${bar(1)} 1%  ${m('weekly').reset}</span>` +
-        `<span class="grow glass-hint">swipe / tap</span></div>`
+      return glassScreen([
+        `Codex  Plus`,
+        `5h     ${bar(4)} 4%  ${m('5h').reset}`,
+        `Weekly ${bar(1)} 1%  ${m('weekly').reset}`,
+      ], 'swipe / tap', showHint)
     }
 
     // ============================================================
@@ -442,9 +460,9 @@
       switch (state.kind) {
         case 'settings':      return renderSettings(state)
         case 'dashboard':     return renderDashboard(state)
-        case 'glass-summary': return glassSummary()
-        case 'glass-claude':  return glassClaude()
-        case 'glass-codex':   return glassCodex()
+        case 'glass-summary': return glassSummary(state.showHint)
+        case 'glass-claude':  return glassClaude(state.showHint)
+        case 'glass-codex':   return glassCodex(state.showHint)
         default:              return renderSettings(state)
       }
     }
@@ -457,7 +475,7 @@
       return { kind: 'settings', theme, config: defaultConfig(preset) }
     }
     function dashboardState(theme = 'dark') { return { kind: 'dashboard', theme } }
-    function glassState(kind) { return { kind } }
+    function glassState(kind, showHint) { return { kind, showHint } }
 
     // フロー図ノード
     const flowFrames = [
@@ -480,9 +498,10 @@
         { key: 'm:dash:light', variantName: 'light', state: () => dashboardState('light') },
       ]},
       { id: 'glass', name: 'Glass (576×288)', frames: [
-        { key: 'm:g:sum', variantName: 'summary', state: () => glassState('glass-summary') },
-        { key: 'm:g:cc',  variantName: 'Claude',  state: () => glassState('glass-claude') },
-        { key: 'm:g:cx',  variantName: 'Codex',   state: () => glassState('glass-codex') },
+        { key: 'm:g:sum',   variantName: 'summary · hint',    state: () => glassState('glass-summary', true) },
+        { key: 'm:g:sumnh', variantName: 'summary · no hint', state: () => glassState('glass-summary', false) },
+        { key: 'm:g:cc',    variantName: 'Claude',  state: () => glassState('glass-claude', true) },
+        { key: 'm:g:cx',    variantName: 'Codex',   state: () => glassState('glass-codex', true) },
       ]},
     ]
 
@@ -612,6 +631,9 @@
           if (s) s.expanded = !s.expanded
           break
         }
+        case 'toggle-glass-hints':
+          glassHints = !glassHints   // グローバル: glass プレビュー + flow の glass frame に反映
+          break
         case 'nav-dashboard':
           if (inFlow) { flowActive = 'flow:dashboard'; fireEdge('flow:settings','flow:dashboard') }
           break
