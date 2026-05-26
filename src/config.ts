@@ -47,6 +47,10 @@ export async function saveConfig(c: Config): Promise<void> {
       /* bridge 不在/失敗時はメモリのみ */
     }
   }
+  // glass (glass.ts) に設定変更を通知して即再描画させる。
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('toolbar:config-changed'))
+  }
 }
 
 // 接続先の availableSources から、そのマシンの初期設定を生成する。
