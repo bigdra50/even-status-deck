@@ -1,0 +1,24 @@
+# dependencies
+node_modules/
+
+# build / packaging
+dist/
+*.ehpk
+.vite/
+
+# python (dev tools)
+.venv/
+
+# logs / tmp
+*.log
+*.tmp
+
+# OS / editor
+.DS_Store
+.idea/
+*.swp
+
+# secrets (トークン等は絶対にコミットしない)
+.env
+.env.local
+*.credentials.json
