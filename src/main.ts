@@ -1,5 +1,5 @@
 import { waitForEvenAppBridge } from '@evenrealities/even_hub_sdk'
-import { mountCompanion } from './companion'
+import { mountCompanion, onCompanionBridgeReady } from './companion'
 import { setConfigBridge } from './config'
 import { initGlass } from './glass'
 import './styles.css'
@@ -14,6 +14,7 @@ async function main() {
   try {
     const bridge = await waitForEvenAppBridge()
     setConfigBridge(bridge)
+    await onCompanionBridgeReady() // 永続 config を読み直し前回の接続先を復元
     await initGlass(bridge) // glass に summary/claude/codex を SDK 描画
   } catch {
     // simulator / Even App 以外ではメモリフォールバック (config.ts)

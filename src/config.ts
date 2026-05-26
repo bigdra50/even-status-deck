@@ -4,7 +4,8 @@ import { DEFAULT_ENABLED_METRICS, sourceById } from './sources'
 // 設定 (Machine > Source > Metric)。bridge.setLocalStorage にスマホ集約保存する。
 export type MetricCfg = { id: string; enabled: boolean }
 export type SourceCfg = { id: string; enabled: boolean; expanded: boolean; metrics: MetricCfg[] }
-export type MachineCfg = { sourceOrder: string[]; sources: Record<string, SourceCfg> }
+// url: 最後に接続成功した接続先 (起動時にデータ取得 base を復元するため永続化)
+export type MachineCfg = { url?: string; sourceOrder: string[]; sources: Record<string, SourceCfg> }
 export type Config = {
   version: number
   activeMachine: string | null

@@ -277,9 +277,9 @@ async function onClick(e: MouseEvent): Promise<void> {
   const mc = activeCfg()
   switch (t.dataset.action) {
     case 'edit-machine':
-      // 既に接続済みマシンを編集 → そのマシンの検出結果を表示
+      // 既に接続済みマシンを編集 → 検出結果と保存済み URL を表示
       testState = machine ? 'ok' : 'idle'
-      testUrl = ''
+      testUrl = activeCfg()?.url ?? ''
       view = 'machine-edit'
       render()
       break
@@ -348,8 +348,10 @@ async function runConnectionTest(): Promise<void> {
     const m = (await res.json()) as MachineInfo
     machine = m
     setDataBase(clean)
-    if (!config.activeMachine) config.activeMachine = m.machineId
-    ensureMachine(config, m.machineId, m.availableSources)
+    // 接続したマシンをアクティブにし、URL を永続化 (次回起動時に復元する)
+    config.activeMachine = m.machineId
+    const mc = ensureMachine(config, m.machineId, m.availableSources)
+    mc.url = clean
     await saveConfig(config)
     testState = 'ok'
     render()
@@ -374,8 +376,15 @@ async function onChange(e: Event): Promise<void> {
     render()
   } else {
     config.activeMachine = t.value
+    // 切り替え先マシンの保存済み URL にデータ取得先を切り替えて再取得
+    const url = config.machines[t.value]?.url
+    if (url) {
+      setDataBase(url)
+      machine = await fetchMachine()
+    }
     await saveConfig(config)
     render()
+    await refreshData()
   }
 }
 
@@ -406,4 +415,18 @@ export async function mountCompanion(el: HTMLElement): Promise<void> {
   render()
   await refreshData()
   setInterval(() => void refreshData(), 60_000)
+}
+
+// bridge 接続後に呼ぶ。mountCompanion は bridge 接続前に走るため永続 config を
+// 読めない。ここで読み直し、前回接続した URL を復元して再接続する。
+export async function onCompanionBridgeReady(): Promise<void> {
+  config = await loadConfig()
+  const url = config.activeMachine ? config.machines[config.activeMachine]?.url : undefined
+  if (url) {
+    setDataBase(url)
+    const m = await fetchMachine()
+    if (m) machine = m
+  }
+  render()
+  await refreshData()
 }
