@@ -9,6 +9,7 @@ import {
 import { emptyConfig, loadConfig } from './config'
 import { fetchClaudeLimits, fetchCodexLimits, fetchMachine, fetchUsage } from './data'
 import { buildViews, type GlassData, type GView, renderGlass } from './glass-render'
+import { activateKeepAlive, deactivateKeepAlive } from './keep-alive'
 
 // glass (G2 576×288) の描画。companion と同じ WebView 内で動くが bridge 経由で
 // glass にだけ描く。純粋ロジックは glass-render.ts、ここは状態と bridge 配線。
@@ -28,6 +29,7 @@ const data: GlassData = {
 let views: GView[] = ['summary']
 let idx = 0
 let lastClickAt = 0
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 function refresh(): void {
   void gbridge?.textContainerUpgrade(
@@ -45,15 +47,35 @@ function cycle(dir: number): void {
   refresh()
 }
 
+function cleanup(): void {
+  if (pollTimer) clearInterval(pollTimer)
+  pollTimer = null
+  deactivateKeepAlive()
+}
+
 // single click → summary、double click → 終了、swipe → ビュー巡回。
 // click は sysEvent、swipe(scroll) は textEvent で届く (handle-input 修正済み設計)。
+// ライフサイクル (foreground enter/exit, abnormal/system exit) も sysEvent で来るので、
+// click 判定より先に分岐する (さもないと click 扱いされ summary に戻ってしまう)。
 function onEvent(event: EvenHubEvent): void {
   const sys = event.sysEvent
   if (sys) {
+    const et = sys.eventType
+    if (et === OsEventTypeList.FOREGROUND_ENTER_EVENT) {
+      void poll() // 復帰時に最新データへ更新
+      return
+    }
+    if (et === OsEventTypeList.FOREGROUND_EXIT_EVENT) {
+      return // poller なので flush 不要 (keep-alive で生存)
+    }
+    if (et === OsEventTypeList.ABNORMAL_EXIT_EVENT || et === OsEventTypeList.SYSTEM_EXIT_EVENT) {
+      cleanup()
+      return
+    }
     const now = Date.now()
     if (now - lastClickAt < 200) return // 連続発火の握りつぶし
     lastClickAt = now
-    if (sys.eventType === OsEventTypeList.DOUBLE_CLICK_EVENT) {
+    if (et === OsEventTypeList.DOUBLE_CLICK_EVENT) {
       void gbridge?.shutDownPageContainer(1)
     } else {
       // single click (eventType 0 または simulator では undefined) → summary へ
@@ -97,6 +119,7 @@ async function onConfigChanged(): Promise<void> {
 
 export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   gbridge = bridge
+  activateKeepAlive() // phone ロック / バックグラウンドでも WebView を生かす
   const [m, cfg] = await Promise.all([fetchMachine(), loadConfig()])
   data.machine = m
   data.config = cfg
@@ -126,5 +149,5 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   }
 
   await poll()
-  setInterval(() => void poll(), 60_000)
+  pollTimer = setInterval(() => void poll(), 60_000)
 }
