@@ -28,6 +28,8 @@ Machine (このマシン)                          ← レベル1: マシン毎
   "machines": {
     "macbook-pro-a1b2": {
       "label": "MacBook Pro",
+      "mode": "sideload",                 // sideload | cloud
+      "url": "http://192.168.1.5:5173",   // sideload=LAN dev server / cloud=固定ドメイン
       "sourceOrder": ["claude-code", "codex"],
       "sources": {
         "claude-code": {
@@ -65,22 +67,29 @@ Machine (このマシン)                          ← レベル1: マシン毎
 - 未インストールのツールは companion でグレーアウトし、有効化できない（自動検出）。これにより「未インストールを有効化してデータ取得エラー」を防ぐ。
 - glass 表示時は接続中マシンの `machineId` で `config.machines[id]` を引き、`availableSources` ∩ `enabled` の metric を順序通り描画。
 
-## 4. companion 設定画面（design-guidelines のトークンで構築）
+## 4. companion の画面構成（マシン中心 / design-guidelines トークン）
+
+マシンを軸に 5 画面で構成する。
 
 ```
-[ マシン: MacBook Pro ▾ ]            ← 接続中マシン (複数あれば切替)、label 編集
-─────────────────────────────
-▤ Claude Code              [ON]      ← ソース行: トグル + ドラッグ並べ替え
-   ☑ Session    ☑ Weekly             ← 展開: metric トグル + 並べ替え
-   ☐ Sonnet     ☑ Cost
-▤ Codex                    [ON]
-   ☑ 5h         ☑ Weekly
-▤ Gemini               (未検出)       ← 未インストールはグレーアウト
-─────────────────────────────
-[ glass プレビュー ]                  ← 設定を反映した G2 表示の即時プレビュー
+Home ─┬─ Machines ──→ Machine Edit (label / 接続先 / 接続テスト / 削除)
+      │     ├ 行タップ = 接続切替 (active machine)
+      │     └ [+ 追加] = 新規 Machine Edit
+      ├─ Sources & Metrics (接続中マシンの表示設定)
+      └─ Preview (接続中マシンの glass 表示)
 ```
 
-- color tokens（light/dark）、FK Grotesk Neue、4/8px グリッド。`#FEF991` は accent のみ、`#3CFA44` は glass 表示のみ（phone UI で使わない）。
+| 画面 | 役割 |
+|---|---|
+| Home | トップ。接続中マシンを常時表示し「どのマシンか」を明示。glass mini プレビュー + 各画面への入口 |
+| Machines | 登録マシン一覧。`✓`=接続中、行タップで接続切替、`[編集]`、`[+ マシンを追加]` |
+| Machine Edit | 1 マシンの設定: label / 接続方式 (sideload・cloud) / 接続先 URL / 接続テスト / machineId (接続先が返す) / availableSources (自動検出) / 削除 |
+| Sources & Metrics | 接続中マシンの Source/Metric トグル + 並べ替え (§1 の階層)。未検出ツールはグレーアウト |
+| Preview | 接続中マシンの glass 表示 (summary + 詳細ゲージ)。ヘッダにマシン名 |
+
+- 「Preview」は旧「Usage」を改名。役割は「設定が glass にどう出るかの確認 + 現値の確認」に限定する。rate limit の深掘り分析は公式アプリ (Claude / ChatGPT) に委ね、本アプリは glass 表示と設定に集中する。
+- 接続方式: `sideload` = LAN の Mac dev server URL、`cloud` = 固定ドメイン (Cloudflare Worker 等)。Machine Edit で切替。複数マシン (複数 PC / cloud) を登録し、Machines で接続先を切り替える。
+- color tokens (light/dark)、FK Grotesk Neue、4/8px グリッド。`#FEF991` は accent のみ、`#3CFA44` は glass 表示のみ (phone UI で使わない)。
 
 ## 5. glass 表示（設定駆動）
 
