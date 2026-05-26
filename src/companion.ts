@@ -1,13 +1,14 @@
 import Sortable from 'sortablejs'
 import {
+  addServer,
   type Config,
   emptyConfig,
-  ensureMachine,
   loadConfig,
   type MachineCfg,
   type SourceCfg,
   saveConfig,
   syncMachineWithStatus,
+  upsertActiveServer,
 } from './config'
 import { fetchMachineFrom, type MachineInfo } from './data'
 import { esc } from './escape'
@@ -109,16 +110,15 @@ function renderAvailableSources(): string {
 }
 
 function renderHome(): string {
-  const label = machine?.label ?? '(未接続)'
-  const ids = Object.keys(config.machines)
-  const opts = ids.length
-    ? ids
+  const list = Object.values(config.machines)
+  const opts = list.length
+    ? list
         .map(
-          (id) =>
-            `<option value="${esc(id)}" ${id === config.activeMachine ? 'selected' : ''}>${esc(id === machine?.machineId ? label : id)}</option>`,
+          (mc) =>
+            `<option value="${esc(mc.id)}" ${mc.id === config.activeMachine ? 'selected' : ''}>${esc(mc.label || mc.id)}</option>`,
         )
         .join('')
-    : `<option selected>${esc(label)}</option>`
+    : `<option selected>${esc(machine?.label ?? '(未接続)')}</option>`
   return `
     <div class="cmp-label">Machine</div>
     <div class="machine-bar">
@@ -325,10 +325,8 @@ async function runConnectionTest(): Promise<void> {
     return
   }
   machine = m
-  // 接続したマシンをアクティブにし、URL を永続化 (次回起動時に復元する)
-  config.activeMachine = m.machineId
-  const mc = ensureMachine(config, m.machineId)
-  mc.url = clean
+  // active ソースの URL/label を更新 (無ければ作成)。不変 ID は保持。URL を永続化する。
+  upsertActiveServer(config, clean, m.label)
   await saveConfig(config)
   testState = 'ok'
   setSourceUrl(clean) // store が新 URL で status 取得 → onStoreUpdate で再描画
@@ -341,14 +339,16 @@ async function onChange(e: Event): Promise<void> {
   ) as HTMLSelectElement | null
   if (!t) return
   if (t.value === '__add__') {
-    // 新規マシン追加 → URL 未入力・idle 状態で開始
+    // 新規マシン追加 → 空の server ソースを作り active に。URL は接続テストで設定
+    addServer(config, '新しいマシン')
+    await saveConfig(config)
     testState = 'idle'
     testUrl = ''
     view = 'machine-edit'
     render()
   } else {
     config.activeMachine = t.value
-    // 切り替え先マシンの保存済み URL に store の接続先を切り替えて再取得
+    // 切り替え先ソースの保存済み URL に store の接続先を切り替えて再取得
     const url = config.machines[t.value]?.url
     if (url) {
       setSourceUrl(url)
@@ -369,11 +369,15 @@ function onStoreUpdate(): void {
 // store の接続先を設定する。machine が取れなければ store URL だけ設定する。
 async function connectTo(url: string): Promise<void> {
   const m = await fetchMachineFrom(url)
-  if (m) {
-    machine = m
-    if (!config.activeMachine) config.activeMachine = m.machineId
-    const mc = ensureMachine(config, m.machineId)
-    if (!mc.url) mc.url = url
+  if (m) machine = m
+  const mc = activeCfg()
+  if (!mc) {
+    // 初回: この接続先を server ソースとして登録 (不変 ID 採番)
+    addServer(config, m?.label ?? 'Local', url)
+    await saveConfig(config)
+  } else if (!mc.url) {
+    mc.url = url
+    if (m) mc.label = m.label
     await saveConfig(config)
   }
   setSourceUrl(url)
