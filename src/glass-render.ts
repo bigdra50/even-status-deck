@@ -42,6 +42,16 @@ function pad(s: string, n: number): string {
   return s.length >= n ? s : s + ' '.repeat(n - s.length)
 }
 
+// 288px / line-height 27px ≒ 10 行。ヒントを最下端に置くため本文との間を空行で埋める。
+// 本文が長くて収まらない場合はそのまま本文直後に出す (画面外に押し出さない)。
+const MAX_ROWS = 10
+function withBottomHint(lines: string[], hint: string | null): string {
+  if (!hint) return lines.join('\n')
+  const blanks = MAX_ROWS - lines.length - 1
+  const padded = blanks > 0 ? [...lines, ...Array<string>(blanks).fill(''), hint] : [...lines, hint]
+  return padded.join('\n')
+}
+
 function metricName(srcId: string, metricId: string): string {
   return sourceById(srcId)?.metrics.find((m) => m.id === metricId)?.name ?? metricId
 }
@@ -122,8 +132,7 @@ function renderSummary(d: GlassData): string {
     }
   }
   if (lines.length === 1) lines.push('(no metric)')
-  if (d.config.glassHints) lines.push('swipe: 詳細  tap: 戻る')
-  return lines.join('\n')
+  return withBottomHint(lines, d.config.glassHints ? 'swipe: 詳細  tap: 戻る' : null)
 }
 
 // 詳細: そのソースの全 metric を bar 表示 (DESIGN.md §5)。
@@ -139,8 +148,7 @@ function renderDetail(d: GlassData, srcId: string): string {
       lines.push(`${pad(m.name, 8)} ${r.value}`)
     }
   }
-  if (d.config.glassHints) lines.push('swipe / tap: 戻る')
-  return lines.join('\n')
+  return withBottomHint(lines, d.config.glassHints ? 'swipe / tap: 戻る' : null)
 }
 
 export function renderGlass(view: GView, d: GlassData): string {
