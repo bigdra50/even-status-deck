@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>eveng2-toolbar — Design Mockups</title>
+  <style>
+    :root {
+      --bg: #111; --surface: #1a1a1a; --border: #2a2a2a; --text: #fff;
+      --text-dim: #8a8a8a; --accent: #fef991;
+      --font: "FK Grotesk Neue", -apple-system, BlinkMacSystemFont, "Noto Sans JP", sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; }
+    body { background: var(--bg); color: var(--text); font-family: var(--font);
+      padding: 48px 24px; line-height: 1.6; max-width: 720px; margin: 0 auto; }
+    h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
+    .sub { color: var(--text-dim); margin: 6px 0 32px; }
+    .card { display: block; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 14px; padding: 20px 24px; text-decoration: none; color: inherit;
+      margin-bottom: 12px; transition: border-color 0.15s; }
+    .card:hover { border-color: var(--accent); }
+    .card h2 { font-size: 18px; font-weight: 600; }
+    .card p { color: var(--text-dim); font-size: 14px; margin-top: 4px; }
+    .meta { color: var(--text-dim); font-size: 13px; margin-top: 32px;
+      border-top: 1px solid var(--border); padding-top: 16px; }
+    code { font-family: "Menlo", monospace; font-size: 12px; color: var(--accent); }
+  </style>
+</head>
+<body>
+  <h1>eveng2-toolbar</h1>
+  <p class="sub">Even G2 ツールバー風サブモニタ — デザインモックアップ (Figma 代替)</p>
+
+  <a class="card" href="toolbar-overview.html">
+    <h2>Flow Overview →</h2>
+    <p>companion (設定 / Usage 詳細) と glass (summary / Claude / Codex) の画面・遷移・States Matrix。トグル・展開・画面遷移・glass swipe が操作可能。</p>
+  </a>
+
+  <div class="meta">
+    <p>設計: <code>../../DESIGN.md</code>（Machine &gt; Source &gt; Metric 階層 / スマホ集約保存 / ツール自動検出）</p>
+    <p>トークン: everything-evenhub design-guidelines（FK Grotesk Neue · color tokens · 4/8px · #FEF991=accent · #3CFA44=glass）</p>
+  </div>
+</body>
+</html>

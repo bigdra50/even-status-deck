@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="ja">
+<!--
+  eveng2-toolbar デザインモックアップ (Figma 代替)。
+  generic 基盤 (canvas/edges/frameStates/event delegation/viewport/ResizeObserver) は
+  design-mockup スキルの骨格を踏襲。specific 部分 (tokens/view/SAMPLE/flow/matrix/action) を
+  eveng2-toolbar の companion + glass 用にゼロから記述。
+  tokens は everything-evenhub design-guidelines の Phone-Side トークンを採用。
+-->
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Flow Overview · eveng2-toolbar</title>
+  <style>
+    @layer tokens, base, app, canvas;
+
+    /* === tokens: design-guidelines Phone-Side (dark default / light override) === */
+    @layer tokens {
+      :root {
+        --viewport-px: 393px;
+        --viewport-h-px: 740px;
+        /* dark */
+        --bg: #111111;
+        --surface: #1a1a1a;
+        --surface-2: #242424;
+        --border: #2a2a2a;
+        --text: #ffffff;
+        --text-dim: #8a8a8a;
+        --input-bg: rgba(255,255,255,0.08);
+        --accent: #fef991;              /* Even brand yellow — accent only */
+        --glass: #3cfa44;               /* glasses green — glass display only */
+        --ok: #6ee7b7; --warn: #fbbf24; --err: #fb7185;
+        --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+        --space-5: 20px; --space-6: 24px; --space-7: 32px;
+        --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px; --radius-pill: 999px;
+        --font-sans: "FK Grotesk Neue", -apple-system, BlinkMacSystemFont, "Hiragino Sans",
+          "Noto Sans JP", "Segoe UI", Roboto, sans-serif;
+        --font-mono: "Berkeley Mono", "Menlo", "Consolas", monospace;
+        --font-size-xs: 10px; --font-size-sm: 11px; --font-size-md: 13px;
+        --font-size-base: 16px; --font-size-lg: 18px; --font-size-xl: 24px;
+        color-scheme: dark;
+      }
+      [data-theme="light"] {
+        --bg: #ffffff;
+        --surface: #eeeeee;
+        --surface-2: #e4e4e4;
+        --border: #dddddd;
+        --text: #232323;
+        --text-dim: #7b7b7b;
+        --input-bg: rgba(35,35,35,0.08);
+      }
+    }
+
+    @layer base {
+      * { box-sizing: border-box; margin: 0; }
+      html, body {
+        background: #07080b; color: #e6e8ed; font-family: var(--font-sans);
+        font-size: 14px; line-height: 1.6; min-height: 100%;
+      }
+      body { padding: 32px 16px 64px; }
+    }
+
+    /* === app: eveng2-toolbar の companion / glass 画面用クラス === */
+    @layer app {
+      .cmp { background: var(--bg); color: var(--text); min-height: 100%;
+        font-family: var(--font-sans); padding: var(--space-4); }
+      .cmp-display { font-size: var(--font-size-xl); font-weight: 700; letter-spacing: -0.02em; }
+      .cmp-sub { color: var(--text-dim); font-size: var(--font-size-md); margin-top: 2px; }
+      .cmp-label { font-size: var(--font-size-sm); font-weight: 500; letter-spacing: 0.04em;
+        text-transform: uppercase; color: var(--text-dim); margin: var(--space-5) 0 var(--space-2); }
+
+      /* machine selector */
+      .machine {
+        display: flex; align-items: center; gap: var(--space-3);
+        background: var(--surface); border: 1px solid var(--border);
+        border-radius: var(--radius-md); padding: var(--space-3) var(--space-4);
+      }
+      .machine .mlabel { font-size: var(--font-size-lg); font-weight: 600; flex: 1; }
+      .machine .chev { color: var(--text-dim); }
+      .machine .edit { font-size: var(--font-size-sm); color: var(--accent); cursor: pointer; }
+
+      /* source row */
+      .src { background: var(--surface); border: 1px solid var(--border);
+        border-radius: var(--radius-md); margin-bottom: var(--space-2); overflow: hidden; }
+      .src.dim { opacity: 0.45; }
+      .src-head { display: flex; align-items: center; gap: var(--space-3);
+        padding: var(--space-3) var(--space-4); cursor: pointer; }
+      .src-grip { color: var(--text-dim); font-size: 14px; cursor: grab; }
+      .src-name { font-size: var(--font-size-base); font-weight: 600; flex: 1; }
+      .src-note { font-size: var(--font-size-sm); color: var(--text-dim); }
+      .src-metrics { padding: 0 var(--space-4) var(--space-3) 36px;
+        display: flex; flex-direction: column; gap: var(--space-1); }
+      .metric-row { display: flex; align-items: center; gap: var(--space-3);
+        padding: var(--space-2) 0; border-top: 1px solid var(--border); }
+      .metric-row .mgrip { color: var(--text-dim); font-size: 12px; }
+      .metric-row .mname { flex: 1; font-size: var(--font-size-md); }
+      .metric-row .mval { font-family: var(--font-mono); font-size: var(--font-size-sm);
+        color: var(--text-dim); }
+
+      /* toggle */
+      .tg { width: 38px; height: 22px; border-radius: var(--radius-pill);
+        background: var(--input-bg); position: relative; cursor: pointer; flex: 0 0 auto;
+        transition: background 0.15s; border: none; }
+      .tg::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
+        border-radius: 50%; background: #fff; transition: transform 0.15s; box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
+      .tg.on { background: var(--accent); }
+      .tg.on::after { transform: translateX(16px); }
+      .tg.sm { width: 32px; height: 18px; }
+      .tg.sm::after { width: 14px; height: 14px; }
+      .tg.sm.on::after { transform: translateX(14px); }
+
+      /* glass preview inside companion */
+      .gpv { margin-top: var(--space-3); border-radius: var(--radius-md); overflow: hidden;
+        border: 1px solid var(--border); }
+      .gpv-cap { font-size: var(--font-size-sm); color: var(--text-dim); padding: var(--space-2) var(--space-3);
+        background: var(--surface); }
+      .gpv-screen { background: #000; padding: 10px 12px; }
+
+      /* dashboard */
+      .dash-card { background: var(--surface); border: 1px solid var(--border);
+        border-radius: var(--radius-md); padding: var(--space-4); margin-bottom: var(--space-3); }
+      .dash-h { display: flex; align-items: baseline; gap: var(--space-2); margin-bottom: var(--space-3); }
+      .dash-h .nm { font-size: var(--font-size-lg); font-weight: 600; }
+      .dash-h .pl { font-size: var(--font-size-sm); color: var(--text-dim); }
+      .gauge { margin: var(--space-3) 0; }
+      .gauge .gl { display: flex; justify-content: space-between; font-size: var(--font-size-md);
+        margin-bottom: var(--space-1); }
+      .gauge .gl .gv { font-family: var(--font-mono); }
+      .gbar { height: 8px; border-radius: var(--radius-pill); background: var(--input-bg); overflow: hidden; }
+      .gbar > span { display: block; height: 100%; background: var(--accent); border-radius: var(--radius-pill); }
+      .gauge .gr { font-size: var(--font-size-sm); color: var(--text-dim); margin-top: var(--space-1); }
+      .nav-btn { background: none; border: none; color: var(--accent); font-size: var(--font-size-base);
+        cursor: pointer; padding: 0; }
+      .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-4); }
+
+      /* glass screen (G2 576x288, mono green) */
+      .glass-screen { background: #000; color: var(--glass); font-family: var(--font-mono);
+        font-size: 15px; line-height: 1.5; padding: 14px 18px; height: 100%;
+        text-shadow: 0 0 6px rgba(60,250,68,0.55); white-space: pre; }
+      .glass-screen .gtitle { font-weight: 700; }
+      .glass-screen .grow { display: block; }
+      .glass-hint { color: rgba(60,250,68,0.5); }
+    }
+
+    /* === canvas (generic 基盤: 骨格を踏襲。glass frame は固定サイズに拡張) === */
+    @layer canvas {
+      .stage { max-width: 1600px; margin: 0 auto; }
+      .stage-head { text-align: center; margin-bottom: 32px; }
+      .stage-head h1 { font-size: 22px; margin-bottom: 6px; }
+      .stage-head p { color: #9aa0ac; font-size: 13px; }
+      .play-bar { display: inline-flex; align-items: center; gap: 10px; margin-top: 12px;
+        padding: 6px 14px; background: rgba(255,255,255,0.03); border: 1px solid #2d323c;
+        border-radius: 999px; font-size: 12px; color: #9aa0ac; }
+      .play-bar .play-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok);
+        box-shadow: 0 0 8px var(--ok); animation: pulse 1.6s ease-in-out infinite; }
+      @keyframes pulse { 0%,100% {opacity:1;} 50% {opacity:0.4;} }
+      .play-bar button { background: transparent; border: 1px solid #2d323c; color: #9aa0ac;
+        padding: 2px 10px; border-radius: 999px; font-size: 11px; cursor: pointer; }
+      .viewport-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px;
+        margin-top: 16px; padding: 10px 16px; background: rgba(255,255,255,0.02);
+        border: 1px solid #2d323c; border-radius: 10px; font-size: 12px; }
+      .viewport-controls .label { color: #9aa0ac; font-size: 10px; letter-spacing: 0.18em;
+        text-transform: uppercase; align-self: center; }
+      .viewport-controls button { background: #1a1d24; border: 1px solid #2d323c; color: #9aa0ac;
+        padding: 4px 12px; border-radius: 6px; font-size: 11px; cursor: pointer; }
+      .viewport-controls button.active { background: color-mix(in srgb, var(--accent) 22%, transparent);
+        border-color: var(--accent); color: var(--accent); }
+      .section-title { font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase;
+        color: #9aa0ac; margin: 48px 0 6px; padding-bottom: 8px; border-bottom: 1px solid #2d323c; }
+      .canvas { position: relative; display: flex; flex-wrap: wrap; justify-content: center;
+        gap: 80px 100px; padding: 40px 20px 60px; }
+      .node { position: relative; z-index: 2; flex: 0 0 auto; width: var(--viewport-px);
+        background: #14161c; border: 1px solid #2d323c; border-radius: 12px; overflow: hidden;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.35); display: flex; flex-direction: column;
+        transition: border-color 0.2s, box-shadow 0.2s; }
+      .node.active { border-color: var(--accent);
+        box-shadow: 0 0 0 2px var(--accent), 0 12px 40px rgba(254,249,145,0.25); }
+      .node-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+        background: rgba(255,255,255,0.025); border-bottom: 1px solid #2d323c; }
+      .node-head .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); }
+      .node-head .dot:nth-child(2) { background: var(--warn); }
+      .node-head .dot:nth-child(3) { background: var(--ok); }
+      .node-head .name { font-size: 12px; font-weight: 600; color: #e6e8ed; }
+      .node-head .id { margin-left: auto; font-family: var(--font-mono); font-size: 10px;
+        color: #9aa0ac; letter-spacing: 0.16em; text-transform: uppercase; }
+      .node-body { background: var(--bg); height: var(--viewport-h-px); max-height: 80vh;
+        overflow-y: auto; overflow-x: hidden; }
+      .node-body .miniature { width: 100%; min-height: 100%; }
+
+      /* glass frame: 実機 576x288 固定 (viewport 切替の対象外) */
+      .node.glass, .frame.glass { width: 576px; }
+      .node.glass .node-body, .frame.glass .frame-body { height: 288px; max-height: 288px; background: #000; }
+
+      .edges { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+      .edges path { fill: none; stroke: #9aa0ac; stroke-width: 1.5; opacity: 0.5; }
+      .edges path.primary { stroke: var(--accent); opacity: 0.9; }
+      .edges path.firing { stroke: var(--accent); stroke-width: 2.5; opacity: 1; animation: dash 0.6s ease-out; }
+      @keyframes dash { from { stroke-dashoffset: 24; } to { stroke-dashoffset: 0; } }
+      .edges .arrowhead { fill: #9aa0ac; }
+      .edges .arrowhead.primary { fill: var(--accent); }
+      .edges text { fill: #e6e8ed; font-family: var(--font-mono); font-size: 11px;
+        paint-order: stroke; stroke: #07080b; stroke-width: 4; }
+      .edges text.primary { fill: var(--accent); }
+
+      .matrix { display: flex; flex-direction: column; gap: 32px; }
+      .matrix-row { display: flex; flex-wrap: wrap; gap: 16px; }
+      .frame { flex: 0 0 auto; width: var(--viewport-px); background: #14161c;
+        border: 1px solid #2d323c; border-radius: 8px; overflow: hidden; }
+      .frame-head { padding: 8px 12px; background: rgba(255,255,255,0.025);
+        border-bottom: 1px solid #2d323c; font-family: var(--font-mono); font-size: 10px; color: #9aa0ac; }
+      .frame-body { background: var(--bg); height: var(--viewport-h-px); max-height: 70vh;
+        overflow-y: auto; overflow-x: hidden; }
+      .frame-body .miniature { width: 100%; min-height: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <header class="stage-head">
+      <h1>eveng2-toolbar — Flow Overview</h1>
+      <p>companion (スマホ WebView) と glass (G2 576×288) の画面・遷移・状態。Machine &gt; Source &gt; Metric 階層設定。</p>
+      <div class="play-bar">
+        <span class="play-dot"></span>
+        LIVE — 全 frame が操作可能 (トグル / 展開 / 画面遷移 / glass swipe)
+        <button id="btn-reset-all" type="button">RESET ALL</button>
+      </div>
+      <div class="viewport-controls" id="viewport-controls">
+        <span class="label">companion viewport (CSS px)</span>
+        <button type="button" data-vw="360"  data-vh="780">360×780</button>
+        <button type="button" data-vw="393"  data-vh="740" class="active">393×740 (iPhone)</button>
+        <button type="button" data-vw="430"  data-vh="800">430×800</button>
+      </div>
+    </header>
+
+    <h2 class="section-title">▸ User Flow</h2>
+    <div class="canvas" id="canvas">
+      <svg class="edges" id="edges" aria-hidden="true">
+        <defs>
+          <marker id="arrow-primary" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" class="arrowhead primary"/>
+          </marker>
+          <marker id="arrow-secondary" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" class="arrowhead"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <h2 class="section-title">▸ States Matrix</h2>
+    <div class="matrix" id="matrix"></div>
+  </div>
+
+  <script>
+    // ============================================================
+    // SAMPLE — eveng2-toolbar ドメイン (Machine > Source > Metric)
+    // ============================================================
+    // metric: { id, name, value(表示文字), pct(0-100 or null), reset }
+    const BASE_SOURCES = [
+      { id: 'claude-code', name: 'Claude Code', available: true,
+        metrics: [
+          { id: 'session', name: 'Session', value: '17%', pct: 17, reset: '2h49m' },
+          { id: 'weekly',  name: 'Weekly',  value: '10%', pct: 10, reset: '3d10h' },
+          { id: 'sonnet',  name: 'Sonnet',  value: '2%',  pct: 2,  reset: '3d10h' },
+          { id: 'opus',    name: 'Opus',    value: '—',   pct: 0,  reset: '—' },
+          { id: 'cost',    name: 'Cost',    value: '$601',pct: null, reset: 'today' },
+          { id: 'msgs',    name: 'Msgs',    value: '1311',pct: null, reset: 'today' },
+        ] },
+      { id: 'codex', name: 'Codex', available: true,
+        metrics: [
+          { id: '5h',     name: '5h',     value: '4%', pct: 4, reset: '4h59m' },
+          { id: 'weekly', name: 'Weekly', value: '1%', pct: 1, reset: '6d22h' },
+        ] },
+      { id: 'gemini', name: 'Gemini', available: false, metrics: [] },
+    ]
+    const METRIC = (srcId, mId) => BASE_SOURCES.find(s => s.id === srcId)?.metrics.find(m => m.id === mId)
+
+    // ============================================================
+    // companion view 関数
+    // state.config = { machineLabel, sources: [{id,enabled,expanded,metrics:[{id,enabled}]}] }
+    // ============================================================
+    function defaultConfig(preset = 'default') {
+      const sources = BASE_SOURCES.map(s => ({
+        id: s.id,
+        enabled: s.available && s.id !== 'gemini',
+        expanded: s.id === 'claude-code',
+        metrics: s.metrics.map(m => ({
+          id: m.id,
+          enabled: ['session','weekly','cost','5h'].includes(m.id),
+        })),
+      }))
+      if (preset === 'partial') {
+        const cc = sources.find(s => s.id === 'claude-code')
+        cc.metrics.forEach(m => { m.enabled = (m.id === 'session') })
+        sources.find(s => s.id === 'codex').enabled = false
+      }
+      if (preset === 'light') { /* theme only */ }
+      return { machineLabel: 'MacBook Pro', sources }
+    }
+
+    function metricSummaryFor(srcId, mcfg) {
+      const m = METRIC(srcId, mcfg.id); if (!m) return ''
+      return `${m.name} ${m.value}`
+    }
+
+    function renderGlassPreview(config) {
+      // 有効ソース×有効metricを各1行 (summary)
+      const lines = config.sources
+        .filter(s => s.enabled && BASE_SOURCES.find(b => b.id === s.id)?.available)
+        .map(s => {
+          const src = BASE_SOURCES.find(b => b.id === s.id)
+          const ms = s.metrics.filter(m => m.enabled).map(m => metricSummaryFor(s.id, m)).join('  ')
+          return `${src.name.padEnd(12)} ${ms}`
+        })
+      const body = lines.length ? lines.join('\n') : '(no metric enabled)'
+      return `<div class="glass-screen" style="height:auto;font-size:13px;">AI Usage\n${body}</div>`
+    }
+
+    function renderSettings(state) {
+      const cfg = state.config
+      const theme = state.theme ?? 'dark'
+      const rows = cfg.sources.map(scfg => {
+        const src = BASE_SOURCES.find(b => b.id === scfg.id)
+        const dim = !src.available
+        const note = dim ? '未検出' : ''
+        const metrics = (scfg.expanded && src.available) ? `
+          <div class="src-metrics">
+            ${src.metrics.map(m => {
+              const mc = scfg.metrics.find(x => x.id === m.id)
+              return `<div class="metric-row">
+                <span class="mgrip">⋮⋮</span>
+                <span class="mname">${m.name}</span>
+                <span class="mval">${m.value}</span>
+                <button class="tg sm ${mc?.enabled ? 'on' : ''}" data-action="toggle-metric"
+                  data-src="${scfg.id}" data-metric="${m.id}" aria-label="${m.name}"></button>
+              </div>`
+            }).join('')}
+          </div>` : ''
+        return `<div class="src ${dim ? 'dim' : ''}">
+          <div class="src-head" data-action="${src.available ? 'expand-source' : ''}" data-src="${scfg.id}">
+            <span class="src-grip">⋮⋮</span>
+            <span class="src-name">${src.name}</span>
+            ${note ? `<span class="src-note">${note}</span>` : ''}
+            <button class="tg ${scfg.enabled ? 'on' : ''}" data-action="toggle-source" data-src="${scfg.id}"
+              ${dim ? 'disabled' : ''} aria-label="${src.name}"></button>
+          </div>
+          ${metrics}
+        </div>`
+      }).join('')
+
+      return `<div class="cmp" data-theme="${theme}">
+        <div class="topbar">
+          <div><div class="cmp-display">Toolbar</div><div class="cmp-sub">使用制限サブモニタ</div></div>
+          <button class="nav-btn" data-action="nav-dashboard">Usage →</button>
+        </div>
+
+        <div class="cmp-label">Machine</div>
+        <div class="machine">
+          <span class="mlabel">${cfg.machineLabel}</span>
+          <span class="edit" data-action="noop">編集</span>
+          <span class="chev">▾</span>
+        </div>
+
+        <div class="cmp-label">Sources &amp; Metrics</div>
+        ${rows}
+
+        <div class="cmp-label">Glass Preview</div>
+        <div class="gpv">
+          <div class="gpv-cap">G2 576×288 — summary</div>
+          <div class="gpv-screen">${renderGlassPreview(cfg)}</div>
+        </div>
+      </div>`
+    }
+
+    function gauge(name, pct, value, reset) {
+      const w = pct == null ? 0 : Math.max(0, Math.min(100, pct))
+      return `<div class="gauge">
+        <div class="gl"><span>${name}</span><span class="gv">${value}</span></div>
+        <div class="gbar"><span style="width:${w}%"></span></div>
+        <div class="gr">reset ${reset}</div>
+      </div>`
+    }
+
+    function renderDashboard(state) {
+      const theme = state.theme ?? 'dark'
+      const claude = BASE_SOURCES.find(s => s.id === 'claude-code')
+      const codex = BASE_SOURCES.find(s => s.id === 'codex')
+      const g = (src, mId) => { const m = src.metrics.find(x => x.id === mId); return gauge(m.name, m.pct, m.value, m.reset) }
+      return `<div class="cmp" data-theme="${theme}">
+        <div class="topbar">
+          <button class="nav-btn" data-action="nav-settings">← 設定</button>
+          <div class="cmp-sub">${claude && 'MacBook Pro'}</div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-h"><span class="nm">Claude Code</span><span class="pl">Max</span></div>
+          ${g(claude,'session')}${g(claude,'weekly')}${g(claude,'sonnet')}
+          <div class="gr" style="color:var(--text-dim);font-size:13px;">Today 1311 msg · ~$601</div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-h"><span class="nm">Codex</span><span class="pl">Plus</span></div>
+          ${g(codex,'5h')}${g(codex,'weekly')}
+        </div>
+      </div>`
+    }
+
+    // ============================================================
+    // glass view 関数 (G2 576x288, mono green)
+    // ============================================================
+    function bar(pct) {
+      const w = pct == null ? 0 : Math.max(0, Math.min(100, pct))
+      const filled = Math.round(w / 10)
+      return '━'.repeat(filled) + '─'.repeat(10 - filled)
+    }
+    function glassSummary() {
+      return `<div class="glass-screen"><span class="gtitle grow">AI Usage</span>` +
+        `<span class="grow">Claude  S 17%  W 10%</span>` +
+        `<span class="grow">Codex   S 4%   W 1%</span>` +
+        `<span class="grow glass-hint">swipe: 詳細  tap: 戻る</span></div>`
+    }
+    function glassClaude() {
+      const c = BASE_SOURCES.find(s => s.id === 'claude-code')
+      const m = id => c.metrics.find(x => x.id === id)
+      return `<div class="glass-screen"><span class="gtitle grow">Claude Code  Max</span>` +
+        `<span class="grow">Session ${bar(17)} 17%  ${m('session').reset}</span>` +
+        `<span class="grow">Weekly  ${bar(10)} 10%  ${m('weekly').reset}</span>` +
+        `<span class="grow">Sonnet  ${bar(2)} 2%</span>` +
+        `<span class="grow">Today 1311 msg / ~$601</span>` +
+        `<span class="grow glass-hint">swipe / tap</span></div>`
+    }
+    function glassCodex() {
+      const c = BASE_SOURCES.find(s => s.id === 'codex')
+      const m = id => c.metrics.find(x => x.id === id)
+      return `<div class="glass-screen"><span class="gtitle grow">Codex  Plus</span>` +
+        `<span class="grow">5h     ${bar(4)} 4%  ${m('5h').reset}</span>` +
+        `<span class="grow">Weekly ${bar(1)} 1%  ${m('weekly').reset}</span>` +
+        `<span class="grow glass-hint">swipe / tap</span></div>`
+    }
+
+    // ============================================================
+    // ルータ
+    // ============================================================
+    function renderState(state) {
+      switch (state.kind) {
+        case 'settings':      return renderSettings(state)
+        case 'dashboard':     return renderDashboard(state)
+        case 'glass-summary': return glassSummary()
+        case 'glass-claude':  return glassClaude()
+        case 'glass-codex':   return glassCodex()
+        default:              return renderSettings(state)
+      }
+    }
+    const isGlass = (state) => state && typeof state.kind === 'string' && state.kind.startsWith('glass')
+
+    // ============================================================
+    // state ファクトリ
+    // ============================================================
+    function settingsState(theme = 'dark', preset = 'default') {
+      return { kind: 'settings', theme, config: defaultConfig(preset) }
+    }
+    function dashboardState(theme = 'dark') { return { kind: 'dashboard', theme } }
+    function glassState(kind) { return { kind } }
+
+    // フロー図ノード
+    const flowFrames = [
+      { key: 'flow:settings',  name: 'Companion · 設定',      initial: () => settingsState('dark') },
+      { key: 'flow:dashboard', name: 'Companion · Usage詳細', initial: () => dashboardState('dark') },
+      { key: 'flow:glass-sum', name: 'Glass · Summary',       initial: () => glassState('glass-summary') },
+      { key: 'flow:glass-cc',  name: 'Glass · Claude',        initial: () => glassState('glass-claude') },
+      { key: 'flow:glass-cx',  name: 'Glass · Codex',         initial: () => glassState('glass-codex') },
+    ]
+
+    // States Matrix
+    const matrixScreens = [
+      { id: 'settings', name: 'Companion · 設定', frames: [
+        { key: 'm:set:dark',    variantName: 'dark · 全ON',    state: () => settingsState('dark','default') },
+        { key: 'm:set:light',   variantName: 'light · 全ON',   state: () => settingsState('light','default') },
+        { key: 'm:set:partial', variantName: 'dark · 一部OFF', state: () => settingsState('dark','partial') },
+      ]},
+      { id: 'dashboard', name: 'Companion · Usage詳細', frames: [
+        { key: 'm:dash:dark',  variantName: 'dark',  state: () => dashboardState('dark') },
+        { key: 'm:dash:light', variantName: 'light', state: () => dashboardState('light') },
+      ]},
+      { id: 'glass', name: 'Glass (576×288)', frames: [
+        { key: 'm:g:sum', variantName: 'summary', state: () => glassState('glass-summary') },
+        { key: 'm:g:cc',  variantName: 'Claude',  state: () => glassState('glass-claude') },
+        { key: 'm:g:cx',  variantName: 'Codex',   state: () => glassState('glass-codex') },
+      ]},
+    ]
+
+    // 画面遷移
+    const flowEdges = [
+      { from: 'flow:settings',  to: 'flow:dashboard', label: 'Usage →', kind: 'primary', side: { from: 'right', to: 'left' }, offset: -24 },
+      { from: 'flow:dashboard', to: 'flow:settings',  label: '← 設定',  kind: 'primary', side: { from: 'left', to: 'right' }, offset: 24 },
+      { from: 'flow:glass-sum', to: 'flow:glass-cc', label: 'swipe', kind: 'primary', side: { from: 'right', to: 'left' }, offset: -16 },
+      { from: 'flow:glass-cc',  to: 'flow:glass-cx', label: 'swipe', kind: 'primary', side: { from: 'right', to: 'left' }, offset: -16 },
+      { from: 'flow:glass-cx',  to: 'flow:glass-sum', label: 'tap', kind: 'secondary', side: { from: 'bottom', to: 'bottom' }, offset: 0 },
+    ]
+
+    // ============================================================
+    // generic 基盤 (骨格踏襲。glass frame の固定サイズ class 付与のみ追加)
+    // ============================================================
+    const frameStates = new Map()
+    function initFrameStates() {
+      frameStates.clear()
+      for (const f of flowFrames) frameStates.set(f.key, { ...f.initial(), frameKey: f.key })
+      for (const s of matrixScreens) for (const f of s.frames) frameStates.set(f.key, { ...f.state(), frameKey: f.key })
+    }
+    initFrameStates()
+    let flowActive = flowFrames[0].key
+
+    const canvas = document.getElementById('canvas')
+    const edgesSvg = document.getElementById('edges')
+
+    function renderNode(frame) {
+      const state = frameStates.get(frame.key)
+      const active = flowActive === frame.key
+      return `<article class="node${active ? ' active' : ''}${isGlass(state) ? ' glass' : ''}" data-frame-key="${frame.key}">
+        <div class="node-head"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="name">${frame.name}</span><span class="id">${frame.key.split(':').pop()}</span></div>
+        <div class="node-body"><div class="miniature">${renderState(state)}</div></div>
+      </article>`
+    }
+    function buildCanvas() {
+      for (const n of canvas.querySelectorAll('.node')) n.remove()
+      for (const f of flowFrames) canvas.insertAdjacentHTML('beforeend', renderNode(f))
+    }
+    function renderFrame(frame) {
+      const state = frameStates.get(frame.key)
+      return `<article class="frame${isGlass(state) ? ' glass' : ''}" data-frame-key="${frame.key}">
+        <div class="frame-head">${frame.variantName}</div>
+        <div class="frame-body"><div class="miniature">${renderState(state)}</div></div>
+      </article>`
+    }
+    function buildMatrix() {
+      const root = document.getElementById('matrix'); root.innerHTML = ''
+      for (const screen of matrixScreens) {
+        const wrap = document.createElement('section')
+        wrap.innerHTML = `<header style="margin-bottom:12px;display:flex;gap:12px;align-items:baseline;">
+            <h3 style="font-size:14px;color:#e6e8ed;">${screen.name}</h3>
+            <span style="font-family:var(--font-mono);font-size:10px;color:#9aa0ac;">${screen.frames.length} variants</span>
+          </header><div class="matrix-row">${screen.frames.map(renderFrame).join('')}</div>`
+        root.appendChild(wrap)
+      }
+    }
+
+    function anchor(rect, side, parent) {
+      const x = rect.left - parent.left, y = rect.top - parent.top
+      switch (side) {
+        case 'top':    return { x: x + rect.width/2, y }
+        case 'bottom': return { x: x + rect.width/2, y: y + rect.height }
+        case 'left':   return { x, y: y + rect.height/2 }
+        case 'right':  return { x: x + rect.width, y: y + rect.height/2 }
+      }
+    }
+    function curve(p1, p2) {
+      const dx = p2.x-p1.x, dy = p2.y-p1.y
+      const handle = Math.max(40, Math.min(140, Math.abs(dx)*0.45 + Math.abs(dy)*0.45))
+      const h = Math.abs(dx) > Math.abs(dy)
+      const c1 = h ? {x:p1.x+Math.sign(dx)*handle,y:p1.y} : {x:p1.x,y:p1.y+Math.sign(dy)*handle}
+      const c2 = h ? {x:p2.x-Math.sign(dx)*handle,y:p2.y} : {x:p2.x,y:p2.y-Math.sign(dy)*handle}
+      return `M ${p1.x} ${p1.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p2.x} ${p2.y}`
+    }
+    function drawEdges(firingIdx = -1) {
+      for (const el of edgesSvg.querySelectorAll('g.edge')) el.remove()
+      const parent = canvas.getBoundingClientRect()
+      edgesSvg.setAttribute('width', parent.width); edgesSvg.setAttribute('height', parent.height)
+      edgesSvg.setAttribute('viewBox', `0 0 ${parent.width} ${parent.height}`)
+      const nodeMap = new Map()
+      for (const n of canvas.querySelectorAll('.node')) nodeMap.set(n.dataset.frameKey, n.getBoundingClientRect())
+      flowEdges.forEach((e, idx) => {
+        const fr = nodeMap.get(e.from), tr = nodeMap.get(e.to); if (!fr || !tr) return
+        const p1 = anchor(fr, e.side.from, parent), p2 = anchor(tr, e.side.to, parent)
+        if (e.offset) { if (e.side.from==='left'||e.side.from==='right'){p1.y+=e.offset;p2.y+=e.offset} else {p1.x+=e.offset;p2.x+=e.offset} }
+        const g = document.createElementNS('http://www.w3.org/2000/svg','g'); g.classList.add('edge')
+        const path = document.createElementNS('http://www.w3.org/2000/svg','path')
+        path.setAttribute('d', curve(p1,p2))
+        if (e.kind==='primary') path.classList.add('primary')
+        if (idx===firingIdx) path.classList.add('firing')
+        path.setAttribute('marker-end', `url(#arrow-${e.kind||'secondary'})`)
+        const text = document.createElementNS('http://www.w3.org/2000/svg','text')
+        text.setAttribute('x',(p1.x+p2.x)/2); text.setAttribute('y',(p1.y+p2.y)/2-6); text.setAttribute('text-anchor','middle')
+        if (e.kind==='primary') text.classList.add('primary')
+        text.textContent = e.label
+        g.appendChild(path); g.appendChild(text); edgesSvg.appendChild(g)
+      })
+    }
+
+    function findFrameKey(t) { return t.closest('[data-frame-key]')?.dataset?.frameKey ?? null }
+    function fireEdge(from, to) { const i = flowEdges.findIndex(e=>e.from===from&&e.to===to); drawEdges(i); setTimeout(()=>drawEdges(),600) }
+    function rerender() { buildCanvas(); buildMatrix(); drawEdges() }
+
+    // ============================================================
+    // handleAction — eveng2-toolbar の操作
+    // ============================================================
+    const GLASS_CYCLE = ['flow:glass-sum','flow:glass-cc','flow:glass-cx']
+    function handleAction(action, target, frameKey) {
+      const state = frameStates.get(frameKey); if (!state) return
+      const inFlow = frameKey.startsWith('flow:')
+      switch (action) {
+        case 'toggle-source': {
+          const s = state.config?.sources.find(x => x.id === target.dataset.src)
+          if (s) s.enabled = !s.enabled
+          break
+        }
+        case 'toggle-metric': {
+          const s = state.config?.sources.find(x => x.id === target.dataset.src)
+          const m = s?.metrics.find(x => x.id === target.dataset.metric)
+          if (m) m.enabled = !m.enabled
+          break
+        }
+        case 'expand-source': {
+          const s = state.config?.sources.find(x => x.id === target.dataset.src)
+          if (s) s.expanded = !s.expanded
+          break
+        }
+        case 'nav-dashboard':
+          if (inFlow) { flowActive = 'flow:dashboard'; fireEdge('flow:settings','flow:dashboard') }
+          break
+        case 'nav-settings':
+          if (inFlow) { flowActive = 'flow:settings'; fireEdge('flow:dashboard','flow:settings') }
+          break
+      }
+      rerender()
+    }
+
+    // glass frame の click = swipe シミュレート (summary→claude→codex→summary)
+    canvas.addEventListener('click', (e) => {
+      const node = e.target.closest('.node.glass'); if (!node) return
+      if (e.target.closest('[data-action]')) return
+      const key = node.dataset.frameKey
+      const i = GLASS_CYCLE.indexOf(key); if (i === -1) return
+      const next = GLASS_CYCLE[(i + 1) % GLASS_CYCLE.length]
+      flowActive = next; fireEdge(key, next); rerender()
+    })
+
+    document.addEventListener('click', (e) => {
+      const t = e.target.closest('[data-action]')
+      if (!t || t.tagName === 'SELECT' || t.disabled || !t.dataset.action) return
+      handleAction(t.dataset.action, t, findFrameKey(t))
+    })
+
+    document.getElementById('btn-reset-all').addEventListener('click', () => {
+      initFrameStates(); flowActive = flowFrames[0].key; rerender()
+    })
+    document.getElementById('viewport-controls').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-vw]'); if (!btn) return
+      document.documentElement.style.setProperty('--viewport-px', `${btn.dataset.vw}px`)
+      document.documentElement.style.setProperty('--viewport-h-px', `${btn.dataset.vh}px`)
+      for (const b of e.currentTarget.querySelectorAll('button[data-vw]')) b.classList.toggle('active', b === btn)
+      requestAnimationFrame(() => drawEdges()); setTimeout(() => drawEdges(), 50)
+    })
+
+    rerender()
+    new ResizeObserver(() => drawEdges()).observe(canvas)
+    window.addEventListener('resize', () => drawEdges())
+  </script>
+</body>
+</html>
