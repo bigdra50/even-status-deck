@@ -47,6 +47,25 @@ provider を足すだけで表示要素が増える。companion の「+ サー�
   （`initialize` → `initialized` → ~1.5s 待ち → read）。
 - トークン/認証はサーバー内に留め、`value` には %/集計済みの値だけ載せる。
 
+## provider プラグイン（autoload, Vim 流）
+
+アプリを改修せず、`.ts` を 1 つ置くだけで表示要素を追加できる。
+
+- 読み込み先: `$XDG_CONFIG_HOME/eveng2-toolbar/providers/*.{ts,mjs,js}`（既定 `~/.config/eveng2-toolbar/providers/`）。
+- 契約: default export で provider 関数を返す。戻り値は `Group`（`{ id, label, segments }`）か `null`。
+- `bun run dev` なら `.ts` をそのまま読める。ファイルを置けば次の poll から有効（編集の反映は dev server 再起動）。
+- 例: [`examples/provider.example.ts`](./examples/provider.example.ts) をコピーする。
+
+```ts
+// ~/.config/eveng2-toolbar/providers/weather.ts
+export default async function () {
+  return { id: 'weather', label: 'Weather', segments: [{ id: 'temp', label: 'Temp', value: '18C', defaultEnabled: true }] }
+}
+```
+
+置いた group は companion が自動検出し、glass にも横断表示される（トグル・並べ替え可）。
+別言語・別プロセスで足したいときは provider プラグインではなく独立 server（`/api/status` を話す source）にする。
+
 ## プロトコル
 
 公開仕様は [`PROTOCOL.md`](./PROTOCOL.md)。
