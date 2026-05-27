@@ -1,0 +1,18 @@
+# $XDG_CONFIG_HOME/eveng2-toolbar/config.toml にコピー
+# (既定 ~/.config/eveng2-toolbar/config.toml)。config.json でも可。
+#
+# provider の有効/無効とオプションを指定する。
+# - 既定はすべて有効。ここに書いた provider だけ設定が上書きされる。
+# - 毎 poll 再読込されるのでトグルは dev server 再起動なしで反映される。
+# - enabled = false にすると、その provider は計算も送信もされない (グラスにも出ない)。
+
+[providers.codex]
+enabled = false          # codex を止める (app-server 起動の ~3s を省ける)
+
+[providers.mac]
+enabled = true
+
+# プラグイン provider にオプションを渡せる (group(ctx) で ctx.options として受け取る)
+[providers.example]
+enabled = true
+label = "My Example"     # 上の examples/provider.example.ts が ctx.options.label を読む

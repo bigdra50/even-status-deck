@@ -52,19 +52,42 @@ provider を足すだけで表示要素が増える。companion の「+ サー�
 アプリを改修せず、`.ts` を 1 つ置くだけで表示要素を追加できる。
 
 - 読み込み先: `$XDG_CONFIG_HOME/eveng2-toolbar/providers/*.{ts,mjs,js}`（既定 `~/.config/eveng2-toolbar/providers/`）。
-- 契約: default export で provider 関数を返す。戻り値は `Group`（`{ id, label, segments }`）か `null`。
-- `bun run dev` なら `.ts` をそのまま読める。ファイルを置けば次の poll から有効（編集の反映は dev server 再起動）。
-- 例: [`examples/provider.example.ts`](./examples/provider.example.ts) をコピーする。
+- 契約: default export で manifest `{ id, group }` を返す。`group(ctx)` は `Group`（`{ id, label, segments }`）か `null`。
+- `ctx.options` に `config.toml` の `[providers.<id>]` が渡る（apiKey 等）。
+- `.ts` のまま読める。ファイルを置けば次の poll から有効（編集の反映は dev server 再起動）。
+- 例: [`examples/provider.example.ts`](./examples/provider.example.ts)。
 
 ```ts
 // ~/.config/eveng2-toolbar/providers/weather.ts
-export default async function () {
-  return { id: 'weather', label: 'Weather', segments: [{ id: 'temp', label: 'Temp', value: '18C', defaultEnabled: true }] }
+export default {
+  id: 'weather',
+  group: async (ctx) => {
+    const t = await getTemp(ctx.options.apiKey)
+    return { id: 'weather', label: 'Weather', segments: [{ id: 'temp', label: 'Temp', value: `${t}C`, defaultEnabled: true }] }
+  },
 }
 ```
 
 置いた group は companion が自動検出し、glass にも横断表示される（トグル・並べ替え可）。
 別言語・別プロセスで足したいときは provider プラグインではなく独立 server（`/api/status` を話す source）にする。
+
+### サーバー側 config で provider を有効/無効・設定
+
+`$XDG_CONFIG_HOME/eveng2-toolbar/config.toml`（`config.json` でも可）で、サーバーが
+**どの provider を計算・送信するか**を制御する。companion の表示トグルとは別の層:
+
+- config で `enabled = false` → その provider は**計算も送信もしない**（重い codex を止める / privacy）。
+- companion のトグル → 送信はされるがグラス非表示。
+- 既定はすべて有効。毎 poll 再読込なので**再起動なし**で反映。例: [`examples/config.example.toml`](./examples/config.example.toml)。
+
+```toml
+[providers.codex]
+enabled = false        # codex を止める
+
+[providers.weather]    # プラグインにオプションを渡す
+enabled = true
+apiKey = "xxxx"        # group(ctx) で ctx.options.apiKey として受け取る
+```
 
 ## プロトコル
 

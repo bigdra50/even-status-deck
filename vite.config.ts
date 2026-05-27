@@ -1,10 +1,11 @@
 import { execFile, spawn } from 'node:child_process'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { cpus, hostname, homedir, loadavg, totalmem } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
+import { parse as parseToml } from 'smol-toml'
 import { defineConfig, type ViteDevServer } from 'vite'
 import type { Group, Segment, StatusDoc } from './src/status-types'
 
@@ -380,22 +381,43 @@ async function macSystemProvider(): Promise<Group | null> {
 }
 
 // 新規 provider はここに足すだけ (segment 形で返せば companion が自動検出する)。
-const PROVIDERS: Array<() => Promise<Group | null>> = [
-  claudeProvider,
-  codexProvider,
-  macSystemProvider,
+// provider は manifest ({ id, group })。id を a-priori に持つことで config の enabled を
+// 実行前に適用でき、無効 provider は計算も送信もしない。built-in / plugin 共通。
+type ProviderCtx = { options: Record<string, unknown> }
+type ProviderDef = {
+  id: string
+  group: (ctx: ProviderCtx) => Promise<Group | null> | Group | null
+}
+
+const BUILTINS: ProviderDef[] = [
+  { id: 'claude-code', group: claudeProvider },
+  { id: 'codex', group: codexProvider },
+  { id: 'mac', group: macSystemProvider },
 ]
 
-// --- (6) ユーザープラグイン provider の autoload (Vim 流) -------------------------
-// $XDG_CONFIG_HOME/eveng2-toolbar/providers/*.{ts,mjs,js} を読み込む。
-// 各ファイルは default export で provider 関数 (() => Group|null|Promise<...>) を返す。
-// 戻り値の Group は { id, label, segments } 形。bun 実行時は .ts もそのまま読める。
-type ProviderFn = () => Promise<Group | null>
-const PROVIDER_DIR = join(
-  process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'),
-  'eveng2-toolbar',
-  'providers',
-)
+// --- (6) 設定ファイル + プラグイン autoload ($XDG_CONFIG_HOME/eveng2-toolbar/) ----------
+const CONFIG_DIR = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'eveng2-toolbar')
+const PROVIDER_DIR = join(CONFIG_DIR, 'providers')
+
+// config.toml (bun の TOML parse) か config.json で provider の有効/無効・オプションを指定。
+// 毎 poll 再読込するのでトグルは再起動なしで反映される。
+type ProviderOpts = { enabled?: boolean } & Record<string, unknown>
+type ServerConfig = { providers: Record<string, ProviderOpts> }
+
+async function readConfigFile(file: string): Promise<unknown> {
+  try {
+    const text = await readFile(join(CONFIG_DIR, file), 'utf8')
+    return file.endsWith('.toml') ? parseToml(text) : JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+async function loadServerConfig(): Promise<ServerConfig> {
+  const parsed = ((await readConfigFile('config.toml')) ??
+    (await readConfigFile('config.json'))) as { providers?: unknown } | null
+  const p = parsed?.providers
+  return { providers: p && typeof p === 'object' ? (p as ServerConfig['providers']) : {} }
+}
 
 function asGroup(x: unknown): Group | null {
   if (!x || typeof x !== 'object') return null
@@ -406,10 +428,10 @@ function asGroup(x: unknown): Group | null {
   return x as Group
 }
 
-// パス単位でキャッシュ。毎回ディレクトリを走査し、新規ファイルだけ import する
-// (= ファイルを置けば再起動なしで次の poll から有効。編集の反映は再起動が必要)。
-const loaded = new Map<string, ProviderFn>()
-async function getUserProviders(): Promise<ProviderFn[]> {
+// プラグイン autoload。manifest ({id, group}) 推奨。旧 function 形は filename を id にする。
+// パス単位キャッシュ: ファイルを置けば再起動なしで次 poll から有効 (編集は再起動要)。
+const loaded = new Map<string, ProviderDef>()
+async function getUserProviders(): Promise<ProviderDef[]> {
   let files: string[]
   try {
     files = (await readdir(PROVIDER_DIR)).filter((f) => /\.(ts|mjs|js)$/.test(f))
@@ -421,25 +443,34 @@ async function getUserProviders(): Promise<ProviderFn[]> {
     if (loaded.has(path)) continue
     try {
       const mod = (await import(pathToFileURL(path).href)) as { default?: unknown }
-      const d = mod.default
-      if (typeof d === 'function') {
+      const d = mod.default as { id?: unknown; group?: unknown } | (() => unknown) | undefined
+      if (d && typeof d === 'object' && typeof d.id === 'string' && typeof d.group === 'function') {
+        const fn = d.group as (ctx: ProviderCtx) => unknown
+        loaded.set(path, { id: d.id, group: async (ctx) => asGroup(await fn(ctx)) })
+      } else if (typeof d === 'function') {
         const fn = d as () => unknown
-        loaded.set(path, async () => asGroup(await fn()))
-        console.log(`[providers] loaded ${path}`)
+        const id = basename(path).replace(/\.(ts|mjs|js)$/, '') // legacy: filename を id に
+        loaded.set(path, { id, group: async () => asGroup(await fn()) })
       } else {
-        console.warn(`[providers] ${path}: default export が provider 関数ではありません`)
+        console.warn(`[providers] ${path}: default export が provider ({id,group}) ではありません`)
+        continue
       }
+      console.log(`[providers] loaded ${path}`)
     } catch (e) {
       console.warn(`[providers] ${path} の読み込みに失敗:`, e)
     }
   }
-  for (const path of [...loaded.keys()]) if (!paths.has(path)) loaded.delete(path) // 消えた分を除外
+  for (const path of [...loaded.keys()]) if (!paths.has(path)) loaded.delete(path)
   return [...loaded.values()]
 }
 
 async function statusDoc(): Promise<StatusDoc> {
-  const all = [...PROVIDERS, ...(await getUserProviders())]
-  const results = await Promise.allSettled(all.map((p) => p()))
+  const cfg = await loadServerConfig()
+  const all = [...BUILTINS, ...(await getUserProviders())]
+  const active = all.filter((p) => cfg.providers[p.id]?.enabled !== false) // 既定 ON
+  const results = await Promise.allSettled(
+    active.map((p) => p.group({ options: cfg.providers[p.id] ?? {} })),
+  )
   const groups: Group[] = []
   for (const r of results) if (r.status === 'fulfilled' && r.value) groups.push(r.value)
   return { version: 1, ts: Date.now(), groups }
