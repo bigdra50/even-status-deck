@@ -12,7 +12,7 @@ import {
 } from './config'
 import { fetchMachineFrom, type MachineInfo } from './data'
 import { esc } from './escape'
-import { type GlassData, summaryBody } from './glass-render'
+import { type GlassData, summarySections } from './glass-render'
 import type { Group } from './status-types'
 import {
   getAllStatuses,
@@ -54,11 +54,13 @@ function syncAll(): boolean {
 }
 
 // ── プレビュー ──
+// glass と同じく top/bottom セクションに分け、bottom は画面下端へ寄せる (.gsec-bot)。
 function glassPreviewHtml(): string {
-  const lines = summaryBody(glassData())
-  const body = lines.map((l) => `<span class="grow">${esc(l)}</span>`).join('')
+  const { top, bottom } = summarySections(glassData())
+  if (top.length + bottom.length === 0) top.push('(no metric)')
+  const row = (l: string) => `<span class="grow">${esc(l)}</span>`
   const hint = config.glassHints ? '<span class="grow ghint">swipe: detail  tap: back</span>' : ''
-  return `<div class="glass-screen"><div>${body}</div>${hint}</div>`
+  return `<div class="glass-screen"><div class="gsec gsec-top">${top.map(row).join('')}</div><div class="gsec gsec-bot">${bottom.map(row).join('')}${hint}</div></div>`
 }
 
 // ── 表示項目 (groupOrder 横断) ──
@@ -102,10 +104,13 @@ function groupRow(ref: GroupRef): string {
       : src
         ? `<span class="src-note">${esc(src.label)}</span>`
         : ''
+  const bottom = gcfg.align === 'bottom'
+  const alignBtn = `<button class="align-btn ${bottom ? 'bottom' : ''}" data-action="toggle-align" data-key="${key}" title="${bottom ? '下寄せ (タップで上寄せ)' : '上寄せ (タップで下寄せ)'}">${bottom ? '⤓' : '⤒'}</button>`
   return `<div class="src" data-key="${key}"><div class="src-head"><span class="src-grip">⋮⋮</span>
     <span class="src-caret" data-action="expand" data-key="${key}">${caret}</span>
     <span class="src-name" data-action="expand" data-key="${key}">${esc(title)}</span>
     ${srcTag}
+    ${alignBtn}
     <button class="tg ${gcfg.enabled ? 'on' : ''}" data-action="toggle-group" data-key="${key}"></button></div>${metrics}</div>`
 }
 
@@ -306,6 +311,16 @@ async function onClick(e: MouseEvent): Promise<void> {
       const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
       if (gcfg) {
         gcfg.enabled = !gcfg.enabled
+        await saveConfig(config)
+        render()
+      }
+      break
+    }
+    case 'toggle-align': {
+      const ref = parseKey(t.dataset.key ?? '')
+      const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
+      if (gcfg) {
+        gcfg.align = gcfg.align === 'bottom' ? 'top' : 'bottom'
         await saveConfig(config)
         render()
       }

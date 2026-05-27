@@ -9,7 +9,9 @@ export const BUILTIN_SOURCE_ID = 'builtin.local'
 export type SourceKind = 'builtin' | 'server'
 export type SourceDef = { id: string; kind: SourceKind; label: string; url?: string }
 export type SegCfg = { id: string; enabled: boolean }
-export type GroupCfg = { enabled: boolean; expanded: boolean; segments: SegCfg[] }
+export type GAlign = 'top' | 'bottom'
+// align: glass summary での縦寄せ。未指定は 'top' (上から詰める従来挙動)。
+export type GroupCfg = { enabled: boolean; expanded: boolean; align?: GAlign; segments: SegCfg[] }
 export type GroupRef = { sourceId: string; groupId: string }
 export type Config = {
   version: number

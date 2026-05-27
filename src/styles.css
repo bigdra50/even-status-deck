@@ -242,6 +242,24 @@ body {
   transform: translateX(14px);
 }
 
+/* 上寄せ/下寄せ切替 (表示項目の行) */
+.align-btn {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.align-btn.bottom {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 /* machine edit form */
 .field {
   margin-bottom: var(--space-4);
@@ -381,6 +399,9 @@ body {
   margin-bottom: 4px;
 }
 .glass-screen .ghint {
-  margin-top: auto;
   color: rgba(60, 250, 68, 0.5);
+}
+/* 下寄せセクション (bottom-align 項目 + hint) を画面下端に寄せる。実機 glass の描画と対応。 */
+.glass-screen .gsec-bot {
+  margin-top: auto;
 }
