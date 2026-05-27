@@ -68,6 +68,8 @@ body {
   margin: 0 auto;
   min-height: 100vh;
   padding: var(--space-4);
+  /* viewport-fit=cover のため、最下部がホームインジケータに隠れてスクロールしきれないのを防ぐ。 */
+  padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
 }
 
 /* icons (lucide SVG, stroke=currentColor で親の色を継承) */
