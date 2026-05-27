@@ -137,7 +137,7 @@ function fetchCodexLimits(): Promise<unknown> {
     send({
       id: 0,
       method: 'initialize',
-      params: { clientInfo: { name: 'eveng2-toolbar', title: 'Toolbar', version: '0.1.0' } },
+      params: { clientInfo: { name: 'eveng2-toolbar', title: 'Statusline', version: '0.1.0' } },
     })
   })
 }
