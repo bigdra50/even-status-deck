@@ -7,7 +7,7 @@ import {
   TextContainerUpgrade,
 } from '@evenrealities/even_hub_sdk'
 import { emptyConfig, loadConfig, syncSourceWithStatus } from './config'
-import { setGlassBattery } from './device-state'
+import { getGlassBattery, setGlassBattery } from './device-state'
 import { buildViews, type GlassData, type GView, renderGlass } from './glass-render'
 import { activateKeepAlive, deactivateKeepAlive } from './keep-alive'
 import { getAllStatuses, refreshBuiltins, refreshAll as storeRefresh, subscribe } from './store'
@@ -30,15 +30,38 @@ let lastClickAt = 0
 let deviceUnsub: (() => void) | null = null
 let storeUnsub: (() => void) | null = null
 let glassesSn = '' // getDeviceInfo の sn。status 更新が他デバイス(ring 等)か判別する
+let refreshBusy = false // bridge 書き込みを直列化 (BLE 飽和でグラス切断するのを防ぐ)
+let refreshPending = false
 
+// textContainerUpgrade を 1 件ずつ直列化する。書き込み中の追加要求は 1 つに畳む。
+// (連続発火: 時刻/電池/poll/swipe 等が重なっても BLE をあふれさせない。例外も握る)
 function refresh(): void {
-  void gbridge?.textContainerUpgrade(
-    new TextContainerUpgrade({
-      containerID: CONTAINER_ID,
-      containerName: CONTAINER_NAME,
-      content: renderGlass(views[idx] ?? 'summary', data),
-    }),
-  )
+  if (!gbridge) return
+  if (refreshBusy) {
+    refreshPending = true
+    return
+  }
+  refreshBusy = true
+  refreshPending = false
+  const content = renderGlass(views[idx] ?? 'summary', data)
+  gbridge
+    .textContainerUpgrade(
+      new TextContainerUpgrade({
+        containerID: CONTAINER_ID,
+        containerName: CONTAINER_NAME,
+        content,
+      }),
+    )
+    .catch(() => {
+      /* bridge 不通/コンテナ無効 — 無視 (次の更新で復帰) */
+    })
+    .finally(() => {
+      refreshBusy = false
+      if (refreshPending) {
+        refreshPending = false
+        refresh()
+      }
+    })
 }
 
 function cycle(dir: number): void {
@@ -71,7 +94,11 @@ async function initDeviceBattery(bridge: EvenAppBridge): Promise<void> {
   }
   deviceUnsub = bridge.onDeviceStatusChanged((status) => {
     if (glassesSn && status.sn !== glassesSn) return // 他デバイス(ring 等)は無視
-    setGlassBattery(status.batteryLevel ?? null, status.isCharging ?? false)
+    const lvl = status.batteryLevel ?? null
+    const chg = status.isCharging ?? false
+    const cur = getGlassBattery()
+    if (cur.level === lvl && cur.charging === chg) return // 変化なしは無視 (notify storm 防止)
+    setGlassBattery(lvl, chg)
     refreshBuiltins() // HUD の電池を更新 → store notify → 再描画
   })
 }
