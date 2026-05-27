@@ -40,7 +40,7 @@ export function genSourceId(): string {
 // builtin local ソース (時刻/電池) を必ず先頭に持たせる。
 function ensureBuiltin(cfg: Config): void {
   if (!cfg.sources.some((s) => s.id === BUILTIN_SOURCE_ID)) {
-    cfg.sources.unshift({ id: BUILTIN_SOURCE_ID, kind: 'builtin', label: '本体 (時刻/電池)' })
+    cfg.sources.unshift({ id: BUILTIN_SOURCE_ID, kind: 'builtin', label: 'Device' })
   }
   if (!cfg.groups[BUILTIN_SOURCE_ID]) cfg.groups[BUILTIN_SOURCE_ID] = {}
 }

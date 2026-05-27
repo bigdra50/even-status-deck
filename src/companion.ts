@@ -271,7 +271,7 @@ async function onClick(e: MouseEvent): Promise<void> {
       render()
       break
     case 'add-source': {
-      const def = addServer(config, '新しいサーバー')
+      const def = addServer(config, 'New server')
       await saveConfig(config)
       editingSourceId = def.id
       testState = 'idle'
@@ -370,7 +370,7 @@ async function runConnectionTest(): Promise<void> {
   const m = await fetchMachineFrom(clean)
   if (!m) {
     testState = 'error'
-    testError = '接続に失敗しました'
+    testError = 'Connection failed'
     render()
     return
   }

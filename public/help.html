@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="ja">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ローカルサーバーの設定方法 — eveng2-toolbar</title>
+    <title>Set up a local server — Statusline</title>
     <style>
-      /* design-guidelines Phone-Side トークン (companion と統一)。テーマは prefers-color-scheme。 */
+      /* design-guidelines Phone-Side tokens (matches companion). Theme follows prefers-color-scheme. */
       :root {
         --bg: #111111;
         --surface: #1a1a1a;
@@ -125,49 +125,49 @@
     </style>
   </head>
   <body>
-    <h1>ローカルサーバーの設定方法</h1>
+    <h1>Set up a local server</h1>
     <p class="lead">
-      このアプリは Mac 上で動くローカルサーバーから Claude Code / Codex の使用状況を読み取ります。
-      認証トークンは Mac の中だけで使われ、グラスには使用率（%）と reset 時刻しか送られません。
+      This app reads Claude Code / Codex usage from a local server on your Mac.
+      Auth tokens stay on the Mac — only usage (%) and reset times are sent to the glasses.
     </p>
 
-    <h2>手順</h2>
+    <h2>Steps</h2>
     <ol>
       <li>
-        Mac にリポジトリを用意する
+        Clone the repo on your Mac
         <span class="cmd">ghq get bigdra50/eveng2-toolbar</span>
       </li>
       <li>
-        依存をインストールする
+        Install dependencies
         <span class="cmd">bun install</span>
       </li>
       <li>
-        dev server を起動する（このサーバーが API も同一オリジンで配信します）
+        Start the dev server (it serves the API on the same origin)
         <span class="cmd">bun run dev</span>
       </li>
       <li>
-        Mac の LAN IP を確認する
+        Find your Mac's LAN IP
         <span class="cmd">ipconfig getifaddr en0</span>
       </li>
       <li>
-        Machine 設定の「接続先」に
-        <code>http://&lt;LAN-IP&gt;:5173</code> を入力し、「接続テスト」を押す
+        Enter <code>http://&lt;LAN-IP&gt;:5173</code> as the URL in the server
+        settings, then tap Test
       </li>
     </ol>
 
-    <h2>QR ショートカット</h2>
+    <h2>QR shortcut</h2>
     <p>
-      手入力の代わりに、Mac で次を実行すると接続先 URL の QR コードが表示され、スマホから読み取れます。
+      Instead of typing it, run this on your Mac to show a QR code of the URL and scan it from your phone.
     </p>
     <span class="cmd">bun run qr</span>
 
     <div class="note">
       <p>
-        <strong>同じ Wi-Fi に接続してください。</strong>
-        Mac とスマホ（グラス）が別ネットワークだと接続できません。
+        <strong>Connect to the same Wi-Fi.</strong>
+        It won't connect if your Mac and phone (glasses) are on different networks.
       </p>
       <p style="margin-bottom: 0">
-        dev server を起動している間だけ表示が更新されます。Mac をスリープすると停止します。
+        Updates only while the dev server is running. It stops when your Mac sleeps.
       </p>
     </div>
   </body>
