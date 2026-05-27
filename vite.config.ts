@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { readdir, readFile, stat } from 'node:fs/promises'
-import { hostname, homedir } from 'node:os'
+import { cpus, hostname, homedir, loadavg, totalmem } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { promisify } from 'node:util'
@@ -308,8 +308,82 @@ async function codexProvider(): Promise<Group | null> {
   }
 }
 
-// 新規 provider はここに足すだけ (例: Mac battery=pmset, git branch, now-playing 等)。
-const PROVIDERS: Array<() => Promise<Group | null>> = [claudeProvider, codexProvider]
+// --- (5) Mac システム状態 provider (CPU / メモリ / バッテリー / ディスク) ----------
+async function shell(cmd: string, args: string[]): Promise<string | null> {
+  try {
+    return (await pexec(cmd, args)).stdout
+  } catch {
+    return null
+  }
+}
+
+// CPU: 1 分 load average をコア数で割った概算使用率 (0-100)。
+function cpuLoadPct(): number {
+  const cores = cpus().length || 1
+  return Math.min(100, Math.round((loadavg()[0] / cores) * 100))
+}
+
+// メモリ: vm_stat の active+wired+compressed を使用量とする (macOS のキャッシュを除いた実使用)。
+async function macMemUsedPct(): Promise<number | null> {
+  const out = await shell('vm_stat', [])
+  if (!out) return null
+  const pageSize = Number(out.match(/page size of (\d+) bytes/)?.[1] ?? 4096)
+  const pages = (re: RegExp) => Number(out.match(re)?.[1] ?? 0)
+  const used =
+    (pages(/Pages active:\s+(\d+)/) +
+      pages(/Pages wired down:\s+(\d+)/) +
+      pages(/Pages occupied by compressor:\s+(\d+)/)) *
+    pageSize
+  const total = totalmem()
+  return total > 0 ? Math.round((used / total) * 100) : null
+}
+
+// バッテリー: pmset。バッテリー非搭載 (デスクトップ Mac) なら null。
+async function macBattery(): Promise<{ pct: number; charging: boolean } | null> {
+  const out = await shell('pmset', ['-g', 'batt'])
+  const m = out?.match(/(\d+)%/)
+  if (!m) return null
+  const charging = /AC Power/.test(out ?? '') && !/discharging/i.test(out ?? '')
+  return { pct: Number(m[1]), charging }
+}
+
+// ディスク: ルートの空き容量 (GB)。df -k の 4 列目 (available KB)。
+async function diskFreeGb(): Promise<number | null> {
+  const out = await shell('df', ['-k', '/'])
+  const avail = Number(out?.trim().split('\n')[1]?.split(/\s+/)[3])
+  return Number.isFinite(avail) ? Math.round((avail / 1024 / 1024) * 10) / 10 : null
+}
+
+async function macSystemProvider(): Promise<Group | null> {
+  const [mem, bat, disk] = await Promise.all([macMemUsedPct(), macBattery(), diskFreeGb()])
+  const cpu = cpuLoadPct()
+  const segments: Segment[] = [
+    { id: 'cpu', label: 'CPU', value: `${cpu}%`, percent: cpu, defaultEnabled: true },
+  ]
+  if (mem != null) {
+    segments.push({ id: 'mem', label: 'Mem', value: `${mem}%`, percent: mem, defaultEnabled: true })
+  }
+  if (bat) {
+    segments.push({
+      id: 'battery',
+      label: 'Bat',
+      value: `${bat.pct}%${bat.charging ? '+' : ''}`,
+      percent: bat.pct,
+      defaultEnabled: false,
+    })
+  }
+  if (disk != null) {
+    segments.push({ id: 'disk', label: 'Disk', value: `${disk}G`, defaultEnabled: false })
+  }
+  return { id: 'mac', label: 'Mac', segments }
+}
+
+// 新規 provider はここに足すだけ (segment 形で返せば companion が自動検出する)。
+const PROVIDERS: Array<() => Promise<Group | null>> = [
+  claudeProvider,
+  codexProvider,
+  macSystemProvider,
+]
 
 async function statusDoc(): Promise<StatusDoc> {
   const results = await Promise.allSettled(PROVIDERS.map((p) => p()))
