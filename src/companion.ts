@@ -67,6 +67,14 @@ function visibleRefs(): GroupRef[] {
   return config.groupOrder.filter((r) => statusGroup(r.sourceId, r.groupId))
 }
 
+// 表示項目リストの構成シグネチャ (順序込み)。変化したら項目リストを再描画する。
+let lastVisibleSig = ''
+function visibleSig(): string {
+  return visibleRefs()
+    .map((r) => `${r.sourceId}:${r.groupId}`)
+    .join('|')
+}
+
 function groupRow(ref: GroupRef): string {
   const g = statusGroup(ref.sourceId, ref.groupId)
   const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
@@ -178,7 +186,10 @@ function renderSourceEdit(): string {
 function render(): void {
   if (!root) return
   root.innerHTML = view === 'source-edit' ? renderSourceEdit() : renderHome()
-  if (view === 'home') attachSortables()
+  if (view === 'home') {
+    lastVisibleSig = visibleSig()
+    attachSortables()
+  }
 }
 
 function updatePreview(): void {
@@ -358,10 +369,12 @@ async function runConnectionTest(): Promise<void> {
 }
 
 function onStoreUpdate(): void {
-  const changed = syncAll()
+  syncAll() // 新 group を config に取り込み (永続)
   if (view !== 'home') return
-  // 新 group が増えたら項目リストごと再描画、値だけの更新はプレビューのみ (drag を壊さない)
-  if (changed) render()
+  // 表示項目の構成 (status の有無で変わる) が変化したら項目リストごと再描画。
+  // 値だけの更新はプレビューのみ (drag を壊さない)。
+  // ※ config に group が永続済みでも status 到着で visible 集合が変わるため changed だけでは不十分。
+  if (visibleSig() !== lastVisibleSig) render()
   else updatePreview()
 }
 
