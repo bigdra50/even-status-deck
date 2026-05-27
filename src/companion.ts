@@ -13,6 +13,7 @@ import {
 import { fetchMachineFrom, type MachineInfo } from './data'
 import { esc } from './escape'
 import { type GlassData, summarySections } from './glass-render'
+import { icon } from './icons'
 import type { Group } from './status-types'
 import {
   getAllStatuses,
@@ -84,14 +85,14 @@ function groupRow(ref: GroupRef): string {
   const src = sourceById(config, ref.sourceId)
   const key = `${esc(ref.sourceId)}|${esc(ref.groupId)}`
   const title = g.label || src?.label || ref.groupId
-  const caret = gcfg.expanded ? '▾' : '▸'
+  const caret = icon(gcfg.expanded ? 'chevron-down' : 'chevron-right', { size: 16 })
   const segById = new Map(g.segments.map((s) => [s.id, s]))
   const metrics = gcfg.expanded
     ? `<div class="src-metrics" data-key="${key}">${gcfg.segments
         .map((sc) => {
           const seg = segById.get(sc.id)
           if (!seg) return ''
-          return `<div class="metric-row"><span class="mgrip">⋮⋮</span>
+          return `<div class="metric-row"><span class="mgrip">${icon('grip', { size: 16 })}</span>
               <span class="mname">${esc(seg.label || seg.id)}</span>
               <span class="mval">${esc(seg.value)}</span>
               <button class="tg sm ${sc.enabled ? 'on' : ''}" data-action="toggle-seg" data-key="${key}" data-seg="${esc(sc.id)}"></button></div>`
@@ -105,8 +106,8 @@ function groupRow(ref: GroupRef): string {
         ? `<span class="src-note">${esc(src.label)}</span>`
         : ''
   const bottom = gcfg.align === 'bottom'
-  const alignBtn = `<button class="align-btn ${bottom ? 'bottom' : ''}" data-action="toggle-align" data-key="${key}" title="${bottom ? '下寄せ (タップで上寄せ)' : '上寄せ (タップで下寄せ)'}">${bottom ? '⤓' : '⤒'}</button>`
-  return `<div class="src" data-key="${key}"><div class="src-head"><span class="src-grip">⋮⋮</span>
+  const alignBtn = `<button class="align-btn ${bottom ? 'bottom' : ''}" data-action="toggle-align" data-key="${key}" title="${bottom ? 'Bottom-aligned' : 'Top-aligned'}">${icon(bottom ? 'align-bottom' : 'align-top', { size: 16 })}</button>`
+  return `<div class="src" data-key="${key}"><div class="src-head"><span class="src-grip">${icon('grip', { size: 16 })}</span>
     <span class="src-caret" data-action="expand" data-key="${key}">${caret}</span>
     <span class="src-name" data-action="expand" data-key="${key}">${esc(title)}</span>
     ${srcTag}
@@ -124,29 +125,29 @@ function renderItems(): string {
 function sourceRow(s: { id: string; kind: string; label: string; url?: string }): string {
   if (s.kind === 'builtin') {
     return `<div class="src"><div class="src-head"><span class="conn-dot"></span>
-      <span class="src-name">${esc(s.label)}</span><span class="src-note">組み込み</span></div></div>`
+      <span class="src-name">${esc(s.label)}</span><span class="src-note">Built-in</span></div></div>`
   }
   const online = getSourceStatus(s.id) != null
   return `<div class="src"><div class="src-head"><span class="conn-dot ${online ? '' : 'off'}"></span>
     <span class="src-name">${esc(s.label)}</span>
-    <span class="src-note">${esc(s.url ?? '未設定')}</span>
-    <button class="gear-btn" data-action="edit-source" data-src="${esc(s.id)}" title="編集">⚙</button></div></div>`
+    <span class="src-note">${esc(s.url ?? 'Not set')}</span>
+    <button class="gear-btn" data-action="edit-source" data-src="${esc(s.id)}" title="Edit" aria-label="Edit">${icon('settings', { size: 18 })}</button></div></div>`
 }
 
 function renderHome(): string {
   const sources = config.sources.map((s) => sourceRow(s)).join('')
   return `
-    <div class="cmp-label">ソース</div>
+    <div class="cmp-label">Sources</div>
     ${sources}
-    <button class="save-btn" data-action="add-source">+ サーバーを追加</button>
+    <button class="save-btn" data-action="add-source">${icon('plus', { size: 16 })}Add server</button>
 
-    <div class="cmp-label">表示項目 (グリップ ⋮⋮ をドラッグで並べ替え)</div>
+    <div class="cmp-label">Items (drag ${icon('grip', { size: 12 })} to reorder)</div>
     <div id="source-list">${renderItems()}</div>
     <div class="src"><div class="src-head">
-      <span class="src-name" style="font-size:var(--fs-md);font-weight:500;">glass の操作ヒントを表示</span>
+      <span class="src-name" style="font-size:var(--fs-md);font-weight:500;">Show glass hints</span>
       <button class="tg sm ${config.glassHints ? 'on' : ''}" data-action="toggle-hints"></button></div></div>
 
-    <div class="cmp-label">Glass プレビュー</div>
+    <div class="cmp-label">Glass preview</div>
     <div class="gpv"><div class="gpv-cap">G2 576×288</div>
       <div class="gpv-screen">${glassPreviewHtml()}</div></div>
   `
@@ -156,17 +157,19 @@ function renderHome(): string {
 function renderDetected(): string {
   const m = editMachine
   if (!m) return ''
-  return `<div class="field"><label>マシン名 (自動取得)</label><div class="autoval">${esc(m.label)}</div></div>
-     <div class="field"><label>machineId (自動)</label><div class="autoval mono">${esc(m.machineId)}</div></div>`
+  return `<div class="field"><label>Machine name</label><div class="autoval">${esc(m.label)}</div></div>
+     <div class="field"><label>machineId</label><div class="autoval mono">${esc(m.machineId)}</div></div>`
 }
 
 function renderTestStatus(): string {
-  if (testState === 'testing') return '<div class="status-testing">⋯ 接続中…</div>'
-  if (testState === 'ok') return `<div class="status-ok">✓ 接続OK</div>${renderDetected()}`
+  if (testState === 'testing')
+    return `<div class="status-testing">${icon('loader', { size: 14, cls: 'ic-spin' })} Connecting…</div>`
+  if (testState === 'ok')
+    return `<div class="status-ok">${icon('check', { size: 14 })} Connected</div>${renderDetected()}`
   if (testState === 'error')
-    return `<div class="status-err">✗ 接続失敗: ${esc(testError)}</div>
-      <div class="cmp-sub">URL とサーバーの起動を確認してください。</div>`
-  return '<div class="cmp-sub">接続テストすると、サーバーから項目を取得します。</div>'
+    return `<div class="status-err">${icon('x', { size: 14 })} Failed: ${esc(testError)}</div>
+      <div class="cmp-sub">Check the URL and that the server is running.</div>`
+  return '<div class="cmp-sub">Test the connection to load items.</div>'
 }
 
 function renderSourceEdit(): string {
@@ -174,17 +177,17 @@ function renderSourceEdit(): string {
   const url = testUrl || s?.url || 'http://127.0.0.1:8723'
   const testing = testState === 'testing'
   return `
-    <div class="topbar"><button class="nav-btn" data-action="home">← Home</button>
-      <span class="h-title">サーバー設定</span><span></span></div>
-    <div class="field"><label>接続先 URL</label>
+    <div class="topbar"><button class="nav-btn" data-action="home">${icon('arrow-left', { size: 16 })} Home</button>
+      <span class="h-title">Server</span><span></span></div>
+    <div class="field"><label>URL</label>
       <div class="field-row">
         <input type="text" value="${esc(url)}" placeholder="http://127.0.0.1:8723" />
-        <button class="test-btn" data-action="test" ${testing ? 'disabled' : ''}>${testing ? '…' : '接続テスト'}</button>
+        <button class="test-btn" data-action="test" ${testing ? 'disabled' : ''}>${testing ? '…' : 'Test'}</button>
       </div>
-      <span class="help-link" data-action="help">ローカルサーバーの設定方法 →</span>
+      <span class="help-link" data-action="help">Set up a local server ${icon('external-link', { size: 13 })}</span>
     </div>
     ${renderTestStatus()}
-    <button class="danger-btn" data-action="remove-source">このソースを削除</button>
+    <button class="danger-btn" data-action="remove-source">Remove source</button>
   `
 }
 

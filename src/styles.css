@@ -70,6 +70,21 @@ body {
   padding: var(--space-4);
 }
 
+/* icons (lucide SVG, stroke=currentColor で親の色を継承) */
+.ic {
+  display: inline-block;
+  vertical-align: -0.15em;
+  flex: 0 0 auto;
+}
+.ic-spin {
+  animation: ic-spin 0.8s linear infinite;
+}
+@keyframes ic-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .cmp-label {
   font-size: var(--fs-sm);
   font-weight: 500;
@@ -95,6 +110,9 @@ body {
   font-size: var(--fs-base);
   cursor: pointer;
   padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 .h-title {
   font-size: var(--fs-lg);
@@ -137,10 +155,12 @@ body {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 0 var(--space-4);
-  color: var(--text);
+  padding: var(--space-2);
+  color: var(--text-dim);
   cursor: pointer;
-  font-size: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* source list (Home に展開, ジャンル折りたたみ) */
@@ -162,11 +182,14 @@ body {
 }
 .src-grip {
   color: var(--text-dim);
+  display: inline-flex;
+  align-items: center;
   cursor: grab;
 }
 .src-caret {
   color: var(--text-dim);
-  width: 12px;
+  display: inline-flex;
+  align-items: center;
   cursor: pointer;
 }
 .src-name {
@@ -194,6 +217,8 @@ body {
 }
 .metric-row .mgrip {
   color: var(--text-dim);
+  display: inline-flex;
+  align-items: center;
   cursor: grab;
 }
 .metric-row .mname {
@@ -257,8 +282,9 @@ body {
   border: 1px solid var(--border);
   background: var(--input-bg);
   color: var(--text-dim);
-  font-size: 14px;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
 }
 .align-btn.bottom {
@@ -367,6 +393,10 @@ body {
   padding: var(--space-3);
   cursor: pointer;
   margin-top: var(--space-4);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
 }
 
 /* glass preview (companion 内, 実機比率) */
