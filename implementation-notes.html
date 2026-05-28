@@ -474,15 +474,17 @@
       <li>実機の旧 builtin segment トグル (time/date/g2 等の ON/OFF) はリセットされ既定 ON に戻る (id 変更のため)。</li>
     </ul>
 
-    <h2 class="open">#2 glass layout 分離（設計済・未実装）</h2>
-    <p>現状 glass-render は <strong>論理 group = 物理 1 行</strong>固定で、「1 行目に時計と電池を混ぜる」等ができない。group (素材) と行 (表示レシピ) を分離する。</p>
+    <h2 class="done">#2 glass layout 分離（実装済・ブラウザ検証済 / 実機未）</h2>
+    <p>論理 group (素材) と glass の行 (表示レシピ) を分離。companion で行を編集し、複数 group の segment を 1 行に混在できる（例: 時計 + 電池）。設計は gpt-5.5 合意 + 1 点改良（後述）。</p>
     <table>
-      <tr><th>項目</th><th>設計 (gpt-5.5 合意)</th></tr>
-      <tr><td>内部モデル</td><td><code>config.glassLayout.rows: [{ anchor:'top'|'bottom', items: segKey[] }]</code>。segment 側に行番号/改行 hint を持たせるのは悪手 (表示都合が意味モデルに漏れる)。</td></tr>
-      <tr><td>UI</td><td>自由キャンバスにせず、Top/Bottom の各行に segment を追加・削除・並べ替えする程度に制限。</td></tr>
-      <tr><td>横溢れ</td><td>折返し禁止・末尾 <code>…</code> 省略 + companion プレビューで「長すぎ警告」。glass は 10 行固定。</td></tr>
-      <tr><td>後方互換</td><td>既存の group=1行 (+align) を rows へ機械変換。既存ユーザーは見た目不変で開始。</td></tr>
-      <tr><td>MVP</td><td>(1) config に <code>glassLayout.rows</code> 追加 (2) 未設定なら既存 group 設定から rows 生成 (3) renderer を group毎→row毎に変更 (4) companion は row に segment 追加/削除/並べ替え (5) anchor は row が持つ。</td></tr>
+      <tr><th>項目</th><th>実装</th></tr>
+      <tr><td>内部モデル</td><td><code>config.glassLayout?: { rows: { id; anchor:'top'|'bottom'; items: segKey[] }[] }</code>。segment 側に行 hint は持たせない。row.id 必須 (sortablejs の移動/削除で index 管理は破綻するため)。</td></tr>
+      <tr><td>deferred finalize (gpt案からの改良)</td><td>gpt 案は「loadConfig で rows 生成」だが、それだと<strong>新規ユーザーが空 rows = glass 空</strong>になる穴がある。→ <code>glassLayout</code> が <strong>未設定の間は従来の group=1行 自動描画</strong>、companion の「Customize layout」押下時に現状の groupOrder から rows を生成して固定する。既存/新規とも見た目不変で開始でき、「rows は status で自動変更しない」も守れる。</td></tr>
+      <tr><td>renderer</td><td><code>summarySections</code> が <code>glassLayout</code> 有無で <code>layoutSections</code>(rows) / <code>groupSections</code>(従来) を切替。<code>rowLine</code> は items を解決し group.enabled / segment.enabled / 表示条件 / status 欠落 を<strong>描画時フィルタ</strong>。<strong>行内が単一 group のみなら group ラベルを接頭辞</strong>（単一行は従来の見た目維持、混在行はラベル無し）。builtin の group ラベルは '' なので時計/電池は値のみ。<code>buildViews</code>/detail は素材 group 単位のまま。</td></tr>
+      <tr><td>companion UI</td><td>「Glass layout」セクション: Customize で rows 生成、行の anchor 切替 / 行削除 / 行追加、segment を行間でドラッグ (sortablejs 共有 group)、× で unplaced へ、未配置リスト、1 行長すぎ警告 (概算 40 字)、Reset to auto。</td></tr>
+      <tr><td>同期 (gpt 警告厳守)</td><td><code>syncSourceWithStatus</code> で rows を補正しない。新規 group/segment は未配置リストに出すのみ。status から消えた segment は rows から消さず描画時 skip。<code>sanitizeGlassLayout</code> で壊れた永続値は undefined (=自動描画) に落とす。</td></tr>
+      <tr><td>後方互換 / version</td><td>CONFIG_VERSION は bump しない (glassLayout は optional・additive)。既存ユーザーは undefined のまま従来描画で開始。</td></tr>
     </table>
+    <p class="open">ブラウザ検証済: Customize / ラベル整合 (preview パリティ) / item-remove / anchor / reset。<strong>ドラッグ merge は MCP(desktop) では HTML5 DnD を模擬できず未自動検証</strong>だが、recompute は検証済みの save+render と同経路 + DOM 属性確認済みで、実機タッチでは動く想定。実機確認推奨。</p>
   </body>
 </html>

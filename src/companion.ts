@@ -6,7 +6,10 @@ import {
   BUILTIN_SOURCE_ID,
   type Config,
   emptyConfig,
+  type GlassRow,
   type GroupRef,
+  generateGlassLayout,
+  genSourceId,
   loadConfig,
   removeSource,
   type SegCfg,
@@ -20,7 +23,7 @@ import { type GlassData, summarySections } from './glass-render'
 import { icon } from './icons'
 import type { Group, Segment } from './status-types'
 import { getAllStatuses, getSourceStatus, setSources, startPolling, subscribe } from './store'
-import { computeVisible, type VisibilityLeaf } from './visibility'
+import { computeVisible, segKey, type VisibilityLeaf } from './visibility'
 
 // 1 segment が持てる条件 leaf の上限 (UI が破綻しない緩い上限)。
 const MAX_CONDS = 4
@@ -190,6 +193,93 @@ function sourceRow(s: { id: string; kind: string; label: string; url?: string })
     <button class="gear-btn" data-action="edit-source" data-src="${esc(s.id)}" title="Edit" aria-label="Edit">${icon('settings', { size: 18 })}</button></div></div>`
 }
 
+// ── Glass layout (表示レシピ。group=素材 とは独立した行配置) ──
+// segKey → companion chip 用の {group, seg} ラベル (builtin は code-owned)。
+function segLabelParts(key: string): { group: string; seg: string } {
+  const [sourceId, groupId, segId] = key.split('|')
+  if (sourceId === BUILTIN_SOURCE_ID) {
+    return {
+      group: BUILTIN_GROUP_LABELS[groupId] ?? groupId,
+      seg: BUILTIN_SEG_LABELS[segId] ?? segId,
+    }
+  }
+  const g = statusGroup(sourceId, groupId)
+  const seg = g?.segments.find((s) => s.id === segId)
+  return {
+    group: g?.label || sourceById(config, sourceId)?.label || groupId,
+    seg: seg?.label || segId,
+  }
+}
+
+// enabled な全 segment の segKey (groupOrder 順)。未配置リストの母集合。
+function allEnabledSegKeys(): string[] {
+  const keys: string[] = []
+  for (const ref of config.groupOrder) {
+    const gc = config.groups[ref.sourceId]?.[ref.groupId]
+    if (!gc) continue
+    for (const sc of gc.segments) {
+      if (sc.enabled) keys.push(segKey(ref.sourceId, ref.groupId, sc.id))
+    }
+  }
+  return keys
+}
+
+// row が glass 1 行に収まらなさそうか (proportional のため概算文字数 40 を目安)。
+function rowOverflow(row: GlassRow): boolean {
+  let len = 0
+  let n = 0
+  for (const key of row.items) {
+    const [sourceId, groupId, segId] = key.split('|')
+    const seg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
+    if (!seg) continue
+    len += (seg.label ? seg.label.length + 1 : 0) + seg.value.length
+    n++
+  }
+  return len + Math.max(0, n - 1) * 2 > 40
+}
+
+function layoutChip(key: string, placed: boolean): string {
+  const { group, seg } = segLabelParts(key)
+  const x = placed
+    ? `<button class="lay-x" data-action="layout-item-remove" data-segkey="${esc(key)}" title="Unplace" aria-label="Unplace">${icon('x', { size: 12 })}</button>`
+    : ''
+  return `<span class="lay-chip" data-segkey="${esc(key)}"><span class="lay-grip">${icon('grip', { size: 13 })}</span><span class="lay-txt">${esc(group)} ${esc(seg)}</span>${x}</span>`
+}
+
+function renderLayoutSection(): string {
+  const lay = config.glassLayout
+  if (!lay) {
+    return `<div class="cmp-label">Glass layout</div>
+      <div class="cmp-sub">各 group を 1 行ずつ表示中。カスタマイズすると時計と電池を 1 行にまとめる等、自由に配置できます。</div>
+      <button class="save-btn" data-action="layout-customize">${icon('plus', { size: 16 })}Customize layout</button>`
+  }
+  const placed = new Set(lay.rows.flatMap((r) => r.items))
+  const unplaced = allEnabledSegKeys().filter((k) => !placed.has(k))
+  const rows = lay.rows
+    .map((row) => {
+      const bottom = row.anchor === 'bottom'
+      const anchor = `<button class="align-btn ${bottom ? 'bottom' : ''}" data-action="layout-row-anchor" data-row-id="${esc(row.id)}" title="${bottom ? 'Bottom-aligned' : 'Top-aligned'}">${icon(bottom ? 'align-bottom' : 'align-top', { size: 16 })}</button>`
+      const warn = rowOverflow(row)
+        ? `<span class="lay-warn" title="1 行に長すぎる可能性">${icon('alert', { size: 14 })}</span>`
+        : ''
+      const del = `<button class="lay-row-x" data-action="layout-row-remove" data-row-id="${esc(row.id)}" title="Remove row" aria-label="Remove row">${icon('x', { size: 14 })}</button>`
+      const chips = row.items.map((k) => layoutChip(k, true)).join('')
+      return `<div class="lay-row"><div class="lay-row-head">${anchor}${warn}${del}</div>
+        <div class="lay-items" data-row-id="${esc(row.id)}">${chips}</div></div>`
+    })
+    .join('')
+  const unplacedHtml = unplaced.length
+    ? unplaced.map((k) => layoutChip(k, false)).join('')
+    : '<span class="cmp-sub">未配置なし</span>'
+  return `<div class="cmp-label">Glass layout</div>
+    <div class="cmp-sub">segment を行間でドラッグ。Top は上寄せ / Bottom は下寄せ。</div>
+    <div id="lay-rows">${rows}</div>
+    <button class="save-btn" data-action="layout-row-add">${icon('plus', { size: 16 })}Add row</button>
+    <div class="cmp-label">Unplaced</div>
+    <div class="lay-items lay-unplaced" data-unplaced="1">${unplacedHtml}</div>
+    <button class="danger-btn" data-action="layout-reset">Reset to auto</button>`
+}
+
 function renderHome(): string {
   // builtin (Clock/G2 Battery) は SOURCES に出さない。設定するサーバ専用のリストにする。
   const sources = config.sources
@@ -206,6 +296,8 @@ function renderHome(): string {
     <div class="src"><div class="src-head">
       <span class="src-name" style="font-size:var(--fs-md);font-weight:500;">Show glass hints</span>
       <button class="tg sm ${config.glassHints ? 'on' : ''}" data-action="toggle-hints"></button></div></div>
+
+    ${renderLayoutSection()}
 
     <div class="cmp-label">Glass preview</div>
     <div class="gpv"><div class="gpv-cap">G2 576×288</div>
@@ -290,6 +382,35 @@ function attachSortables(): void {
       }),
     )
   }
+  // glass layout: 行間 + 未配置を跨いで segment chip をドラッグ (共有 group)。
+  for (const el of document.querySelectorAll<HTMLElement>('.lay-items')) {
+    sortables.push(
+      Sortable.create(el, {
+        group: 'glayout',
+        handle: '.lay-grip',
+        animation: 150,
+        onEnd: () => recomputeLayoutFromDom(),
+      }),
+    )
+  }
+}
+
+// ドラッグ後、DOM の各 row の chip 並びから glassLayout.rows を再構築する。
+// 未配置コンテナ (#lay-rows 外) の chip は items から外れる。anchor は id で引き継ぐ。
+function recomputeLayoutFromDom(): void {
+  if (!config.glassLayout) return
+  const byId = new Map(config.glassLayout.rows.map((r) => [r.id, r]))
+  const rows: GlassRow[] = []
+  for (const el of document.querySelectorAll<HTMLElement>('#lay-rows .lay-items')) {
+    const id = el.dataset.rowId ?? ''
+    const items = [...el.querySelectorAll<HTMLElement>('.lay-chip')]
+      .map((c) => c.dataset.segkey ?? '')
+      .filter(Boolean)
+    rows.push({ id, anchor: byId.get(id)?.anchor ?? 'top', items })
+  }
+  config.glassLayout = { rows }
+  void saveConfig(config)
+  render()
 }
 
 function parseKey(key: string): GroupRef {
@@ -439,6 +560,50 @@ async function onClick(e: MouseEvent): Promise<void> {
       if (sc?.visibility && Number.isInteger(idx)) {
         sc.visibility.conditions.splice(idx, 1)
         if (sc.visibility.conditions.length === 0) sc.visibility = undefined
+        await saveConfig(config)
+        render()
+      }
+      break
+    }
+    case 'layout-customize':
+      config.glassLayout = generateGlassLayout(config)
+      await saveConfig(config)
+      render()
+      break
+    case 'layout-reset':
+      config.glassLayout = undefined
+      await saveConfig(config)
+      render()
+      break
+    case 'layout-row-add':
+      if (config.glassLayout) {
+        config.glassLayout.rows.push({ id: genSourceId(), anchor: 'top', items: [] })
+        await saveConfig(config)
+        render()
+      }
+      break
+    case 'layout-row-remove': {
+      const id = t.dataset.rowId
+      if (config.glassLayout && id) {
+        config.glassLayout.rows = config.glassLayout.rows.filter((r) => r.id !== id)
+        await saveConfig(config)
+        render()
+      }
+      break
+    }
+    case 'layout-row-anchor': {
+      const row = config.glassLayout?.rows.find((r) => r.id === t.dataset.rowId)
+      if (row) {
+        row.anchor = row.anchor === 'bottom' ? 'top' : 'bottom'
+        await saveConfig(config)
+        render()
+      }
+      break
+    }
+    case 'layout-item-remove': {
+      const key = t.dataset.segkey
+      if (config.glassLayout && key) {
+        for (const r of config.glassLayout.rows) r.items = r.items.filter((k) => k !== key)
         await saveConfig(config)
         render()
       }

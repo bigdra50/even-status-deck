@@ -1,7 +1,7 @@
 import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
 import { defaultImuConfig, type ImuConfig } from './imu'
 import type { StatusDoc } from './status-types'
-import type { VisibilityCond, VisibilityLeaf } from './visibility'
+import { segKey, type VisibilityCond, type VisibilityLeaf } from './visibility'
 
 // 設定 (v3): 複数データソースを横断して描画する。source は builtin(client算出) か server(URL)。
 // group/segment トグルと並び順を source 名前空間付きで保持する (codex 指摘: 不変ID + structured key)。
@@ -30,6 +30,12 @@ export type GAlign = 'top' | 'bottom'
 // align: glass summary での縦寄せ。未指定は 'top' (上から詰める従来挙動)。
 export type GroupCfg = { enabled: boolean; expanded: boolean; align?: GAlign; segments: SegCfg[] }
 export type GroupRef = { sourceId: string; groupId: string }
+
+// glass の行レイアウト (表示レシピ)。group (素材) とは独立。各 row は segKey の並び。
+// 未設定 (undefined) の間は従来の group=1行 自動描画。companion で「Customize layout」すると
+// 現状の groupOrder から rows を生成して固定する (以降 status 増減で自動変更しない)。
+export type GlassRow = { id: string; anchor: GAlign; items: string[] } // items: segKey ('src|grp|seg')
+export type GlassLayout = { rows: GlassRow[] }
 // IMU 方向検出は src/imu ライブラリが所有。Config は enable + キャリブの永続先として imu? を持つ。
 export type Config = {
   version: number
@@ -38,6 +44,7 @@ export type Config = {
   groupOrder: GroupRef[] // 全ソース横断の表示順
   glassHints: boolean
   imu?: ImuConfig
+  glassLayout?: GlassLayout // 未設定なら group=1行 自動描画 (deferred finalize)
 }
 
 const KEY = 'toolbar.config'
@@ -150,6 +157,8 @@ function migrate(parsed: Record<string, unknown>): Config {
     c.imu ??= defaultImuConfig() // 旧 v3 config には imu が無いため default 補完
     delete (c as Record<string, unknown>).batteryRate // 旧 batteryRate 設定は廃止 (drain/est は segment 化)
     normalizeVisibilityAll(c) // 旧 single-cond 形式の visibility を複合形式へ正規化 (additive、bump 不要)
+    // glassLayout は壊れていれば undefined に落とす (= 従来の group=1行 自動描画へフォールバック)
+    c.glassLayout = sanitizeGlassLayout((c as Record<string, unknown>).glassLayout)
     return c
   }
   const old = parsed as {
@@ -218,6 +227,41 @@ function normalizeVisibilityAll(c: Config): void {
 
 export function sourceById(cfg: Config, id: string): SourceDef | undefined {
   return cfg.sources.find((s) => s.id === id)
+}
+
+// glass layout を現在の groupOrder + align + enabled segment から生成する (カスタマイズ開始時の初期値)。
+// 1 group = 1 row (anchor は group.align)。enabled segment が無い group は row を作らない。
+export function generateGlassLayout(cfg: Config): GlassLayout {
+  const rows: GlassRow[] = []
+  for (const ref of cfg.groupOrder) {
+    const gc = cfg.groups[ref.sourceId]?.[ref.groupId]
+    if (!gc?.enabled) continue
+    const items = gc.segments
+      .filter((s) => s.enabled)
+      .map((s) => segKey(ref.sourceId, ref.groupId, s.id))
+    if (items.length) rows.push({ id: genSourceId(), anchor: gc.align ?? 'top', items })
+  }
+  return { rows }
+}
+
+// 永続化された glassLayout を検証する。壊れていれば undefined (= 自動描画にフォールバック)。
+function sanitizeGlassLayout(x: unknown): GlassLayout | undefined {
+  if (!x || typeof x !== 'object') return undefined
+  const rows = (x as { rows?: unknown }).rows
+  if (!Array.isArray(rows)) return undefined
+  const out: GlassRow[] = []
+  for (const r of rows) {
+    if (!r || typeof r !== 'object') continue
+    const rr = r as { id?: unknown; anchor?: unknown; items?: unknown }
+    if (!Array.isArray(rr.items)) continue
+    const items = rr.items.filter((s): s is string => typeof s === 'string')
+    out.push({
+      id: typeof rr.id === 'string' ? rr.id : genSourceId(),
+      anchor: rr.anchor === 'bottom' ? 'bottom' : 'top',
+      items,
+    })
+  }
+  return { rows: out }
 }
 
 // 新規 server ソースを不変 ID で追加する。

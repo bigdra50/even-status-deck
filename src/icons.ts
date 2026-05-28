@@ -10,6 +10,7 @@ import {
   LoaderCircle,
   Plus,
   Settings,
+  TriangleAlert,
   X,
 } from 'lucide-static'
 
@@ -28,6 +29,7 @@ export type IconName =
   | 'arrow-left'
   | 'plus'
   | 'external-link'
+  | 'alert'
 
 const SVGS: Record<IconName, string> = {
   settings: Settings,
@@ -42,6 +44,7 @@ const SVGS: Record<IconName, string> = {
   'arrow-left': ArrowLeft,
   plus: Plus,
   'external-link': ExternalLink,
+  alert: TriangleAlert,
 }
 
 type IconOpts = { size?: number; stroke?: number; cls?: string }
