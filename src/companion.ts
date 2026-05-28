@@ -16,14 +16,7 @@ import { esc } from './escape'
 import { type GlassData, summarySections } from './glass-render'
 import { icon } from './icons'
 import type { Group, Segment } from './status-types'
-import {
-  getAllStatuses,
-  getSourceStatus,
-  setSources,
-  startClock,
-  startPolling,
-  subscribe,
-} from './store'
+import { getAllStatuses, getSourceStatus, setSources, startPolling, subscribe } from './store'
 import { computeVisible, type VisibilityLeaf } from './visibility'
 
 // 1 segment が持てる条件 leaf の上限 (UI が破綻しない緩い上限)。
@@ -525,9 +518,10 @@ async function runConnectionTest(): Promise<void> {
 function onStoreUpdate(): void {
   syncAll() // 新 group を config に取り込み (永続)
   if (view !== 'home') return
-  // 表示項目の構成 (status の有無で変わる) が変化したら項目リストごと再描画。値だけの更新はプレビューのみ。
+  // 表示項目の構成 (status の有無で変わる) が変化したときだけ項目リストを再描画。
+  // 値だけの更新では再描画しない (毎 poll の innerHTML churn が iOS WebContent jettison を招くため。
+  // プレビューはモックなので値追従はユーザー編集/構成変化/並べ替えで十分。issue #4)。
   if (visibleSig() !== lastVisibleSig) render()
-  else updatePreview()
 }
 
 export async function mountCompanion(el: HTMLElement): Promise<void> {
@@ -544,8 +538,7 @@ export async function mountCompanion(el: HTMLElement): Promise<void> {
   }
   setSources(config.sources)
   startPolling()
-  startClock()
-  render()
+  render() // 時刻 (clock) は glass-local タイマーが所有。companion は周期再描画しない
 }
 
 // bridge 接続後: 永続 config を読み直して store に反映する。

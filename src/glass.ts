@@ -7,7 +7,8 @@ import {
   TextContainerUpgrade,
 } from '@evenrealities/even_hub_sdk'
 import { loadBatteryLog, recordBatteryLevel, setBatteryBridge } from './battery'
-import { emptyConfig, loadConfig, syncSourceWithStatus } from './config'
+import { localStatus } from './builtins'
+import { BUILTIN_SOURCE_ID, emptyConfig, loadConfig, syncSourceWithStatus } from './config'
 import { getGlassBattery, setGlassBattery } from './device-state'
 import { buildViews, type GlassData, type GView, renderGlass } from './glass-render'
 import { feedImuSample, isImuStarted, setImuConfig, startImu, stopImu } from './imu'
@@ -36,6 +37,8 @@ let storeUnsub: (() => void) | null = null
 let glassesSn = '' // getDeviceInfo の sn。status 更新が他デバイス(ring 等)か判別する
 let refreshBusy = false // bridge 書き込みを直列化 (BLE 飽和でグラス切断するのを防ぐ)
 let refreshPending = false
+let lastContent: string | null = null // 直近送信した content。無変化なら textContainerUpgrade を抑制
+let glassClock: ReturnType<typeof setTimeout> | null = null // 分境界の時刻更新 (store.notify を介さない)
 
 // textContainerUpgrade を 1 件ずつ直列化する。書き込み中の追加要求は 1 つに畳む。
 // (連続発火: 時刻/電池/poll/swipe 等が重なっても BLE をあふれさせない。例外も握る)
@@ -48,6 +51,16 @@ function refresh(): void {
   refreshBusy = true
   refreshPending = false
   const content = renderGlass(views[idx] ?? 'summary', data, visible)
+  if (content === lastContent) {
+    // 内容無変化: BLE/native churn を避けるため送らない (毎分 clock tick で時刻が同分なら起こりうる)
+    refreshBusy = false
+    if (refreshPending) {
+      refreshPending = false
+      refresh()
+    }
+    return
+  }
+  lastContent = content
   gbridge
     .textContainerUpgrade(
       new TextContainerUpgrade({
@@ -74,11 +87,32 @@ function cycle(dir: number): void {
   refresh()
 }
 
+// 時刻 HUD を毎分更新する glass-local タイマー。er-clock 式: builtin status を直接再計算して
+// refresh するだけ (store.notify を介さない = getAllStatuses/syncAll/computeVisible/buildViews を
+// 毎分走らせない)。時刻変化では構成・可視は変わらないので views/visible はキャッシュのまま。
+// refresh は content-diff 済みなので同分の再 arm では BLE 送信は起きない。
+function glassTick(): void {
+  data.statuses[BUILTIN_SOURCE_ID] = localStatus()
+  refresh()
+  scheduleGlassClock()
+}
+
+function scheduleGlassClock(): void {
+  if (glassClock) clearTimeout(glassClock)
+  const now = new Date()
+  const ms = (60 - now.getSeconds()) * 1000 - now.getMilliseconds()
+  glassClock = setTimeout(glassTick, ms)
+}
+
 function cleanup(): void {
   deviceUnsub?.()
   deviceUnsub = null
   storeUnsub?.()
   storeUnsub = null
+  if (glassClock) {
+    clearTimeout(glassClock)
+    glassClock = null
+  }
   if (gbridge) void stopImu(gbridge)
   resetVisibility() // transient 状態 + wake タイマーを破棄
   deactivateKeepAlive()
@@ -176,6 +210,7 @@ function syncAll(): void {
 
 function onStoreUpdate(): void {
   data.statuses = getAllStatuses()
+  data.statuses[BUILTIN_SOURCE_ID] = localStatus() // poll/電池 notify 時も時刻を最新に保つ
   syncAll()
   visible = computeVisible(data.config, data.statuses)
   views = buildViews(data, visible)
@@ -199,6 +234,7 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   setBatteryBridge(bridge)
   await loadBatteryLog() // 消耗レートの永続ログを復元
   data.statuses = getAllStatuses() // store が既に取得済みなら反映 (companion が setSources 済み)
+  data.statuses[BUILTIN_SOURCE_ID] = localStatus() // 時刻 HUD を初期表示
   syncAll()
   visible = computeVisible(data.config, data.statuses)
   views = buildViews(data, visible)
@@ -230,4 +266,5 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
 
   await initDeviceBattery(bridge) // HUD のグラスバッテリー (builtin に反映)
   await applyImuConfig() // config.imu.enabled なら IMU 起動 (onEvent 登録後・前提コンテナ作成後)
+  scheduleGlassClock() // 時刻 HUD を毎分更新 (store.notify を介さない glass-local タイマー)
 }

@@ -14,7 +14,7 @@ const revisions = new Map<string, number>()
 const inflight = new Map<string, AbortController>()
 const listeners = new Set<Listener>()
 let pollTimer: ReturnType<typeof setInterval> | null = null
-let clockTimer: ReturnType<typeof setTimeout> | null = null
+const sigs = new Map<string, string>() // sourceId -> 直近 status の内容シグネチャ (無変化 poll の notify 抑制)
 
 function notify(): void {
   for (const l of listeners) l()
@@ -56,6 +56,16 @@ export function setSources(next: SourceDef[]): void {
   }
 }
 
+// status の内容シグネチャ (ts 除く)。同一なら notify せず無駄な集約/再描画を起こさない。
+function statusSig(d: StatusDoc): string {
+  return d.groups
+    .map(
+      (g) =>
+        `${g.id}:${g.segments.map((s) => `${s.id}=${s.value}|${s.percent ?? ''}|${s.reset ?? ''}`).join(',')}`,
+    )
+    .join(';')
+}
+
 async function refreshSource(def: SourceDef): Promise<void> {
   if (def.kind === 'builtin') {
     statuses.set(def.id, localStatus())
@@ -72,6 +82,9 @@ async function refreshSource(def: SourceDef): Promise<void> {
   if (rev !== revisions.get(def.id)) return // 遅延応答は破棄
   if (next) {
     statuses.set(def.id, next) // 失敗 (null) 時は直近成功を stale 保持
+    const sig = statusSig(next)
+    if (sigs.get(def.id) === sig) return // 内容同一: 値は更新したが notify しない (毎 poll の集約 churn 抑制)
+    sigs.set(def.id, sig)
     notify()
   }
 }
@@ -98,21 +111,11 @@ export function startPolling(intervalMs = 60_000): void {
   pollTimer = setInterval(() => void refreshAll(), intervalMs)
 }
 
-// builtin の時刻を分境界で更新する。
-function tickClock(): void {
-  refreshBuiltins()
-  const now = new Date()
-  const ms = (60 - now.getSeconds()) * 1000 - now.getMilliseconds()
-  clockTimer = setTimeout(tickClock, ms)
-}
-export function startClock(): void {
-  if (clockTimer) return
-  tickClock()
-}
+// 時刻 (毎分 tick) は glass が glass-local タイマーで所有する (store.notify を介した
+// 毎分の重い集約が iOS WKWebView の WebContent jettison を招くため。issue #4)。
+// refreshBuiltins は電池変化 (onDeviceStatusChanged, 低頻度) からのみ呼ばれる。
 
 export function stop(): void {
   if (pollTimer) clearInterval(pollTimer)
-  if (clockTimer) clearTimeout(clockTimer)
   pollTimer = null
-  clockTimer = null
 }
