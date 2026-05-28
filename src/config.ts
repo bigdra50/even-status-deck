@@ -8,6 +8,21 @@ import type { VisibilityCond, VisibilityLeaf } from './visibility'
 export const CONFIG_VERSION = 3
 export const BUILTIN_SOURCE_ID = 'builtin.local'
 
+// builtin の表示ラベルはコード所有 (localStorage に保存しない)。companion はこれで
+// group/segment の行名を出し、永続化された source label (旧: '本体(時刻/電池)') へ
+// フォールバックしない。glass は builtins.ts の短縮ラベルを使う。
+export const BUILTIN_GROUP_LABELS: Record<string, string> = {
+  clock: 'Clock',
+  g2: 'G2 Battery',
+}
+export const BUILTIN_SEG_LABELS: Record<string, string> = {
+  time: 'Time',
+  date: 'Date',
+  level: 'Battery level',
+  rate: 'Rate',
+  eta: 'Estimated time left',
+}
+
 export type SourceKind = 'builtin' | 'server'
 export type SourceDef = { id: string; kind: SourceKind; label: string; url?: string }
 export type SegCfg = { id: string; enabled: boolean; visibility?: VisibilityCond }
@@ -41,12 +56,37 @@ export function genSourceId(): string {
   return `src-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-// builtin local ソース (時刻/電池) を必ず先頭に持たせる。
+// builtin local ソース (時刻/電池) を必ず先頭に持たせる。label はコード所有なので
+// 既存エントリにも毎回上書きし、永続化された旧ラベル ('本体(時刻/電池)' 等) を消す。
 function ensureBuiltin(cfg: Config): void {
-  if (!cfg.sources.some((s) => s.id === BUILTIN_SOURCE_ID)) {
+  const existing = cfg.sources.find((s) => s.id === BUILTIN_SOURCE_ID)
+  if (existing) {
+    existing.kind = 'builtin'
+    existing.label = 'Device' // SOURCES には出さない (companion 側で builtin を除外)。内部表示用
+  } else {
     cfg.sources.unshift({ id: BUILTIN_SOURCE_ID, kind: 'builtin', label: 'Device' })
   }
   if (!cfg.groups[BUILTIN_SOURCE_ID]) cfg.groups[BUILTIN_SOURCE_ID] = {}
+  migrateBuiltinGroups(cfg)
+}
+
+// 旧 builtin group 'hud' (時刻/電池を 1 group に詰めていた) を clock/g2 へ再構成する。
+// segment は id が変わる (g2→level, drain→rate, est→eta) ため旧トグルは引き継がず、
+// sync が status から既定 ON で補充する。builtin の表示順 (先頭) は維持する。
+function migrateBuiltinGroups(cfg: Config): void {
+  const bg = cfg.groups[BUILTIN_SOURCE_ID]
+  if (!bg?.hud) return
+  delete bg.hud
+  if (!bg.clock) bg.clock = { enabled: true, expanded: false, segments: [] }
+  if (!bg.g2) bg.g2 = { enabled: true, expanded: false, segments: [] }
+  const idx = cfg.groupOrder.findIndex((r) => r.sourceId === BUILTIN_SOURCE_ID)
+  cfg.groupOrder = cfg.groupOrder.filter((r) => r.sourceId !== BUILTIN_SOURCE_ID)
+  const refs: GroupRef[] = [
+    { sourceId: BUILTIN_SOURCE_ID, groupId: 'clock' },
+    { sourceId: BUILTIN_SOURCE_ID, groupId: 'g2' },
+  ]
+  if (idx >= 0) cfg.groupOrder.splice(idx, 0, ...refs)
+  else cfg.groupOrder.unshift(...refs)
 }
 
 export function emptyConfig(): Config {

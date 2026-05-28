@@ -1,6 +1,9 @@
 import Sortable from 'sortablejs'
 import {
   addServer,
+  BUILTIN_GROUP_LABELS,
+  BUILTIN_SEG_LABELS,
+  BUILTIN_SOURCE_ID,
   type Config,
   emptyConfig,
   type GroupRef,
@@ -130,8 +133,12 @@ function groupRow(ref: GroupRef): string {
   const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
   if (!g || !gcfg) return ''
   const src = sourceById(config, ref.sourceId)
+  const isBuiltin = ref.sourceId === BUILTIN_SOURCE_ID
   const key = `${esc(ref.sourceId)}|${esc(ref.groupId)}`
-  const title = g.label || src?.label || ref.groupId
+  // builtin の行名はコード所有ラベル (BUILTIN_GROUP_LABELS) を使い、永続 source label に依存しない。
+  const title = isBuiltin
+    ? (BUILTIN_GROUP_LABELS[ref.groupId] ?? ref.groupId)
+    : g.label || src?.label || ref.groupId
   const caret = icon(gcfg.expanded ? 'chevron-down' : 'chevron-right', { size: 16 })
   const segById = new Map(g.segments.map((s) => [s.id, s]))
   const metrics = gcfg.expanded
@@ -140,15 +147,16 @@ function groupRow(ref: GroupRef): string {
           const seg = segById.get(sc.id)
           if (!seg) return ''
           return `<div class="metric"><div class="metric-row"><span class="mgrip">${icon('grip', { size: 16 })}</span>
-              <span class="mname">${esc(seg.label || seg.id)}</span>
+              <span class="mname">${esc(isBuiltin ? (BUILTIN_SEG_LABELS[seg.id] ?? seg.id) : seg.label || seg.id)}</span>
               <span class="mval">${esc(seg.value)}</span>
               <button class="tg sm ${sc.enabled ? 'on' : ''}" data-action="toggle-seg" data-key="${key}" data-seg="${esc(sc.id)}"></button></div>
             ${segVisEditor(key, sc, seg)}</div>`
         })
         .join('')}</div>`
     : ''
-  const srcTag =
-    src && src.id !== ref.sourceId
+  const srcTag = isBuiltin
+    ? ''
+    : src && src.id !== ref.sourceId
       ? ''
       : src
         ? `<span class="src-note">${esc(src.label)}</span>`
@@ -183,7 +191,11 @@ function sourceRow(s: { id: string; kind: string; label: string; url?: string })
 }
 
 function renderHome(): string {
-  const sources = config.sources.map((s) => sourceRow(s)).join('')
+  // builtin (Clock/G2 Battery) は SOURCES に出さない。設定するサーバ専用のリストにする。
+  const sources = config.sources
+    .filter((s) => s.kind !== 'builtin')
+    .map((s) => sourceRow(s))
+    .join('')
   return `
     <div class="cmp-label">Sources</div>
     ${sources}

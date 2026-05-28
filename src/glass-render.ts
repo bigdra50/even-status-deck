@@ -4,7 +4,7 @@ import { isVisible, segKey, type VisibleMap } from './visibility'
 
 // glass 描画の純粋ロジック (bridge 非依存)。複数ソース (builtin + server) を groupOrder で
 // 横断描画する。GlassData の statuses は sourceId -> 直近 StatusDoc。
-// HUD (時刻/電池) は builtin local の group "hud" として groupOrder に含まれる。
+// HUD (時刻/電池) は builtin local の group (clock / g2) として groupOrder に含まれる。
 export type GView = 'summary' | GroupRef
 export type GlassData = {
   config: Config
@@ -106,7 +106,7 @@ function frame(body: string[], hint: string | null): string {
   return rows.join('\n')
 }
 
-// HUD は builtin group として本文に含まれるため、本文 + ヒント を MAX_ROWS に収める。
+// HUD は builtin group (clock / g2) として本文に含まれるため、本文 + ヒント を MAX_ROWS に収める。
 // summary は align で top/bottom セクションに分け、間を空行で埋めて上下に寄せる。
 // detail は単一 group なので従来通り上詰め。超過時は "+N more" に畳む (行予算 hard cap)。
 export function renderGlass(view: GView, d: GlassData, visible?: VisibleMap): string {
