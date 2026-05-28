@@ -19,7 +19,7 @@
     "sortablejs": "^1.15.7"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.4.10",
+    "@biomejs/biome": "2.4.16",
     "@evenrealities/evenhub-cli": "^0.1.11",
     "@evenrealities/evenhub-simulator": "^0.7.3",
     "@types/sortablejs": "^1.15.9",
