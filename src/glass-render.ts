@@ -1,4 +1,4 @@
-import type { Config, GlassRow, GroupCfg, GroupRef } from './config'
+import type { Config, GroupCfg, GroupRef } from './config'
 import type { Group, StatusDoc } from './status-types'
 import { isVisible, segKey, type VisibleMap } from './visibility'
 
@@ -44,12 +44,12 @@ function groupLine(g: Group, gcfg: GroupCfg, ref: GroupRef, visible?: VisibleMap
   return g.label ? `${g.label}  ${parts.join('  ')}` : parts.join('  ')
 }
 
-// 1 row (glassLayout) の行文字列。items(segKey) を解決し、group.enabled / segment.enabled /
-// 表示条件 / status 有無 をフィルタして "label value" を連結する。全部消えたら null。
-function rowLine(row: GlassRow, d: GlassData, visible?: VisibleMap): string | null {
+// items(segKey) を解決し、group.enabled / segment.enabled / 表示条件 / status 有無 を
+// フィルタして "label value" を連結した行文字列を返す。何も残らなければ '' (空行)。
+function rowText(items: string[], d: GlassData, visible?: VisibleMap): string {
   const parts: string[] = []
   let sole: GroupRef | null | undefined // undefined=未設定 / null=複数 group 混在
-  for (const key of row.items) {
+  for (const key of items) {
     const [sourceId, groupId, segId] = key.split('|')
     if (!sourceId || !groupId || !segId) continue
     const gcfg = d.config.groups[sourceId]?.[groupId]
@@ -63,30 +63,32 @@ function rowLine(row: GlassRow, d: GlassData, visible?: VisibleMap): string | nu
     else if (sole && (sole.sourceId !== sourceId || sole.groupId !== groupId)) sole = null
     parts.push(seg.label ? `${seg.label} ${seg.value}` : seg.value)
   }
-  if (!parts.length) return null
+  if (!parts.length) return ''
   const body = parts.join('  ')
-  // 行内が単一 group のみなら group ラベルを接頭辞に (単一 group 行は従来の見た目を維持。
-  // 複数 group を混ぜた行はラベル無し)。builtin の group ラベルは '' なので時計/電池は値のみ。
+  // 行内が単一 group のみなら group ラベルを接頭辞に (混在行はラベル無し)。builtin は ''。
   const label = sole ? findGroup(d, sole)?.label : ''
   return label ? `${label}  ${body}` : body
 }
 
-// glassLayout.rows を anchor で top/bottom に振り分ける。
-function layoutSections(d: GlassData, visible?: VisibleMap): { top: string[]; bottom: string[] } {
-  const top: string[] = []
-  const bottom: string[] = []
-  for (const row of d.config.glassLayout?.rows ?? []) {
-    const line = rowLine(row, d, visible)
-    if (!line) continue
-    if (row.anchor === 'bottom') bottom.push(line)
-    else top.push(line)
-  }
-  return { top, bottom }
+// custom layout (固定行) の絶対行レンダー。budget 行ぶん (空行は '' で保持) を返す。
+// 行番号 = 絶対位置なので空行も保持する (上の空行が下へ押し下げる)。
+export function layoutLines(
+  d: GlassData,
+  visible: VisibleMap | undefined,
+  budget: number,
+): string[] {
+  const rows = d.config.glassLayout?.rows ?? []
+  const out: string[] = []
+  for (let i = 0; i < budget; i++) out.push(rowText(rows[i] ?? [], d, visible))
+  return out
 }
 
-// 従来の group=1行 描画 (glassLayout 未設定時のフォールバック)。groupOrder を横断し、
-// 各 group の行を align ('top' 既定 / 'bottom') に応じて top / bottom セクションへ振り分ける。
-function groupSections(d: GlassData, visible?: VisibleMap): { top: string[]; bottom: string[] } {
+// 従来の group=1行 描画 (glassLayout 未設定時)。align で top/bottom に振り分ける。
+// companion プレビュー (auto) でも再利用する。
+export function summarySections(
+  d: GlassData,
+  visible?: VisibleMap,
+): { top: string[]; bottom: string[] } {
   const top: string[] = []
   const bottom: string[] = []
   for (const ref of d.config.groupOrder) {
@@ -100,15 +102,6 @@ function groupSections(d: GlassData, visible?: VisibleMap): { top: string[]; bot
     else top.push(line)
   }
   return { top, bottom }
-}
-
-// summary 本文を top/bottom セクションに分割する。glassLayout があれば rows ベース、
-// 無ければ従来の group=1行。companion プレビューでも再利用する。
-export function summarySections(
-  d: GlassData,
-  visible?: VisibleMap,
-): { top: string[]; bottom: string[] } {
-  return d.config.glassLayout ? layoutSections(d, visible) : groupSections(d, visible)
 }
 
 // summary 本文 (align を畳んだ平坦リスト)。detail フォールバック等で使う。
@@ -163,6 +156,12 @@ export function renderGlass(view: GView, d: GlassData, visible?: VisibleMap): st
   const budget = MAX_ROWS - (hint ? 1 : 0)
 
   if (view !== 'summary') return frame(clampRows(detailBody(d, view, visible), budget), hint)
+
+  // custom layout: 固定行を絶対位置で描画 (空行も保持)。hint は最下段 (予約行) に置く。
+  if (d.config.glassLayout) {
+    const lines = layoutLines(d, visible, budget)
+    return (hint ? [...lines, hint] : lines).join('\n')
+  }
 
   const { top, bottom } = summarySections(d, visible)
   if (top.length + bottom.length === 0) return frame(['(no metric)'], hint)

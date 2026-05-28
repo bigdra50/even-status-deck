@@ -1,4 +1,5 @@
 import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
+import { MAX_ROWS } from './glass-render'
 import { defaultImuConfig, type ImuConfig } from './imu'
 import type { StatusDoc } from './status-types'
 import { segKey, type VisibilityCond, type VisibilityLeaf } from './visibility'
@@ -31,11 +32,12 @@ export type GAlign = 'top' | 'bottom'
 export type GroupCfg = { enabled: boolean; expanded: boolean; align?: GAlign; segments: SegCfg[] }
 export type GroupRef = { sourceId: string; groupId: string }
 
-// glass の行レイアウト (表示レシピ)。group (素材) とは独立。各 row は segKey の並び。
-// 未設定 (undefined) の間は従来の group=1行 自動描画。companion で「Customize layout」すると
-// 現状の groupOrder から rows を生成して固定する (以降 status 増減で自動変更しない)。
-export type GlassRow = { id: string; anchor: GAlign; items: string[] } // items: segKey ('src|grp|seg')
-export type GlassLayout = { rows: GlassRow[] }
+// glass の行レイアウト (表示レシピ)。group (素材) とは独立した固定 MAX_ROWS 行スロット。
+// rows[i] = i 行目の segKey 並び (空行可)。anchor は廃止 (行番号 = 絶対行位置)。
+// どの行にも無い enabled segment は companion の Unplaced 棚に自動表示 (導出。新規 segment も
+// 自動で棚に出る)。未設定 (undefined) の間は従来の group=1行 自動描画。companion の Customize
+// で生成・固定する (以降 status 増減で自動変更しない)。
+export type GlassLayout = { rows: string[][] } // rows.length === MAX_ROWS
 // IMU 方向検出は src/imu ライブラリが所有。Config は enable + キャリブの永続先として imu? を持つ。
 export type Config = {
   version: number
@@ -157,8 +159,8 @@ function migrate(parsed: Record<string, unknown>): Config {
     c.imu ??= defaultImuConfig() // 旧 v3 config には imu が無いため default 補完
     delete (c as Record<string, unknown>).batteryRate // 旧 batteryRate 設定は廃止 (drain/est は segment 化)
     normalizeVisibilityAll(c) // 旧 single-cond 形式の visibility を複合形式へ正規化 (additive、bump 不要)
-    // glassLayout は壊れていれば undefined に落とす (= 従来の group=1行 自動描画へフォールバック)
-    c.glassLayout = sanitizeGlassLayout((c as Record<string, unknown>).glassLayout)
+    // glassLayout を新形式に正規化 (旧 anchor 形式は移行、壊れていれば undefined=自動描画)
+    c.glassLayout = normalizeGlassLayout((c as Record<string, unknown>).glassLayout)
     return c
   }
   const old = parsed as {
@@ -229,39 +231,57 @@ export function sourceById(cfg: Config, id: string): SourceDef | undefined {
   return cfg.sources.find((s) => s.id === id)
 }
 
-// glass layout を現在の groupOrder + align + enabled segment から生成する (カスタマイズ開始時の初期値)。
-// 1 group = 1 row (anchor は group.align)。enabled segment が無い group は row を作らない。
+function emptyRows(): string[][] {
+  return Array.from({ length: MAX_ROWS }, () => [])
+}
+
+// glass layout を現在の groupOrder + enabled segment から生成する (Customize 時の初期値)。
+// 1 group = 1 行を上から詰める。MAX_ROWS を超えた分は配置せず Unplaced 棚 (導出) に出る。
 export function generateGlassLayout(cfg: Config): GlassLayout {
-  const rows: GlassRow[] = []
+  const rows = emptyRows()
+  let i = 0
   for (const ref of cfg.groupOrder) {
     const gc = cfg.groups[ref.sourceId]?.[ref.groupId]
     if (!gc?.enabled) continue
     const items = gc.segments
       .filter((s) => s.enabled)
       .map((s) => segKey(ref.sourceId, ref.groupId, s.id))
-    if (items.length) rows.push({ id: genSourceId(), anchor: gc.align ?? 'top', items })
+    if (items.length && i < MAX_ROWS) rows[i++] = items
   }
   return { rows }
 }
 
-// 永続化された glassLayout を検証する。壊れていれば undefined (= 自動描画にフォールバック)。
-function sanitizeGlassLayout(x: unknown): GlassLayout | undefined {
+// 永続化された glassLayout を新形式 (固定 MAX_ROWS 行) に正規化する。
+// 旧 anchor 形式 ({rows:[{anchor,items}]}) は絶対行へ移行 (top は上から / bottom は下から)。
+// 壊れていれば undefined (= 自動描画にフォールバック)。
+function normalizeGlassLayout(x: unknown): GlassLayout | undefined {
   if (!x || typeof x !== 'object') return undefined
-  const rows = (x as { rows?: unknown }).rows
-  if (!Array.isArray(rows)) return undefined
-  const out: GlassRow[] = []
-  for (const r of rows) {
-    if (!r || typeof r !== 'object') continue
-    const rr = r as { id?: unknown; anchor?: unknown; items?: unknown }
-    if (!Array.isArray(rr.items)) continue
-    const items = rr.items.filter((s): s is string => typeof s === 'string')
-    out.push({
-      id: typeof rr.id === 'string' ? rr.id : genSourceId(),
-      anchor: rr.anchor === 'bottom' ? 'bottom' : 'top',
-      items,
-    })
+  const rowsRaw = (x as { rows?: unknown }).rows
+  if (!Array.isArray(rowsRaw)) return undefined
+  const strList = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : []
+  // 新形式: rows が string[][]
+  if (rowsRaw.every((r) => Array.isArray(r))) {
+    const rows = emptyRows()
+    for (let i = 0; i < MAX_ROWS; i++) rows[i] = strList(rowsRaw[i])
+    return { rows }
   }
-  return { rows: out }
+  // 旧 anchor 形式 → 絶対行 (top は上から / bottom は下から詰める)
+  const top: string[][] = []
+  const bottom: string[][] = []
+  for (const r of rowsRaw) {
+    if (!r || typeof r !== 'object') continue
+    const rr = r as { anchor?: unknown; items?: unknown }
+    const items = strList(rr.items)
+    if (!items.length) continue
+    ;(rr.anchor === 'bottom' ? bottom : top).push(items)
+  }
+  const rows = emptyRows()
+  let i = 0
+  for (const r of top) if (i < MAX_ROWS) rows[i++] = r
+  let j = MAX_ROWS - 1
+  for (let k = bottom.length - 1; k >= 0 && j >= i; k--) rows[j--] = bottom[k]
+  return { rows }
 }
 
 // 新規 server ソースを不変 ID で追加する。

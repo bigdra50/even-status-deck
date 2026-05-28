@@ -492,7 +492,7 @@ body {
   gap: var(--space-2);
 }
 
-/* glass layout WYSIWYG エディタ (GLASS PREVIEW 上で segment を配置) */
+/* glass layout WYSIWYG エディタ (GLASS PREVIEW 上で固定行に segment を配置) */
 .cmp-label-row {
   display: flex;
   align-items: center;
@@ -509,57 +509,51 @@ body {
 .wys-screen {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  min-height: 180px;
-  gap: var(--space-2);
+  gap: 2px;
 }
-.wys-zone {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.wys-bot {
-  justify-content: flex-end;
-}
-.wys-empty {
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-  border: 1px dashed #333;
-  border-radius: 6px;
-  padding: 6px;
-  text-align: center;
-}
-.wys-row {
+/* テキストエディタ風: 行番号ガター + ドロップセル */
+.wys-line {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-height: 24px;
 }
-.wys-items {
+.wys-ln {
+  flex: 0 0 1.4em;
+  text-align: right;
+  font-size: 11px;
+  color: #4a5a4a;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.wys-line.reserved {
+  opacity: 0.5;
+}
+.wys-reserved-tag {
+  font-size: 10px;
+  color: #4a5a4a;
+  border: 1px solid #2a3a2a;
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.wys-cell {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
   flex: 1;
-  min-height: 26px;
-  padding: 2px;
+  min-height: 22px;
+  padding: 2px 4px;
   border-radius: 6px;
+  border: 1px solid transparent;
 }
-.wys-row-ctl {
-  display: inline-flex;
-  gap: 2px;
-  flex: 0 0 auto;
-}
-.wys-row-btn,
-.wys-x {
-  background: none;
-  border: none;
-  color: var(--text-dim);
-  cursor: pointer;
-  padding: 0;
-  display: inline-flex;
+.wys-cell.drop-hot {
+  border-color: var(--accent, #4bb956);
+  background: rgba(75, 185, 86, 0.12);
 }
 .wys-over {
   color: #e0a458;
   display: inline-flex;
+  flex: 0 0 auto;
 }
 .wys-chip {
   display: inline-flex;
@@ -578,27 +572,13 @@ body {
   opacity: 0.6;
   display: inline-flex;
 }
-.wys-bar {
-  display: flex;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
-}
-.save-btn.sm {
-  margin-top: 0;
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--fs-sm);
-}
-.save-btn.sm:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-.wys-rowcount {
-  align-self: center;
-  font-size: var(--fs-sm);
+.wys-x {
+  background: none;
+  border: none;
   color: var(--text-dim);
-}
-.wys-rowcount.over {
-  color: #e0a458;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
 }
 .wys-shelf {
   background: var(--surface);

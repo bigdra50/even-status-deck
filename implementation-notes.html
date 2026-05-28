@@ -487,17 +487,16 @@
     </table>
     <p class="open">ブラウザ検証済: Customize / ラベル整合 (preview パリティ) / item-remove / anchor / reset。<strong>ドラッグ merge は MCP(desktop) では HTML5 DnD を模擬できず未自動検証</strong>だが、recompute は検証済みの save+render と同経路 + DOM 属性確認済みで、実機タッチでは動く想定。実機確認推奨。</p>
 
-    <h2 class="done">#2b WYSIWYG プレビュー編集（実装済・ブラウザ検証済 / 実機未）</h2>
-    <p>ユーザー選択により、抽象的な行リストエディタを廃し、<strong>GLASS PREVIEW を edit/view 切替の編集面</strong>にした（WYSIWYG）。gpt-5.5 と設計合意。「現状の行エディタも hit target は同程度に小さい」ため、実機表示そのままで編集する直感性を取る判断。</p>
+    <h2 class="done">#2b WYSIWYG プレビュー編集 — 固定行グリッド（実装済・ブラウザ検証済 / 実機未）</h2>
+    <p>ユーザー選択により、抽象的な行リストエディタを廃し <strong>GLASS PREVIEW を edit/view 切替の編集面</strong>に。さらに「フォント固定＝glass は固定行」というユーザー指摘を受け、<strong>可変 rows + Add row を廃止し固定 MAX_ROWS 行スロットに segment を配置する</strong>テキストエディタ／ゲーム UI 風グリッドへ再設計（gpt-5.5 と 2 度合意）。anchor(top/bottom) は廃止＝行番号 = 絶対行位置。</p>
     <table>
       <tr><th>項目</th><th>実装</th></tr>
-      <tr><td>一本化</td><td>companion の <code>renderGlassSection</code> で Glass を 1 セクションに統合。<strong>view</strong> = 実機同等の連結テキスト (現行プレビュー)、<strong>edit</strong> = 576:288 キャンバスに top/bottom ゾーン。Edit/Done トグル。</td></tr>
-      <tr><td>編集操作</td><td>Customize で生成→即編集、segment chip を行間・棚へドラッグ、× で未配置へ、行の上下反転 (ゾーン移動=anchor)、+Top/+Bottom row、Reset to auto。</td></tr>
-      <tr><td>anchor</td><td>行が属するゾーン (top/bottom) が anchor。<code>recomputeWysFromDom</code> がゾーンから anchor を決定。flip は view プレビューの上下寄せに反映される (検証済)。</td></tr>
-      <tr><td>SortableJS</td><td>各行 (<code>.wys-items</code>) + 棚を共有 group、<code>forceFallback:true</code> (iOS WKWebView の touch 用)、handle <code>.wys-grip</code>。</td></tr>
-      <tr><td>溢れ警告</td><td>当面は概算文字数 (<code>rowOverflow</code>)。<strong>実測 scrollWidth は次段階 (step 5 未実装)</strong>。</td></tr>
-      <tr><td>抽象エディタ</td><td>WYSIWYG に一本化し撤去 (gpt は当面併存を推奨したが、二重 UI の混乱を避け廃止。コードは git 履歴に残す)。</td></tr>
+      <tr><td>データモデル</td><td><code>GlassLayout = { rows: string[][] }</code>（長さ MAX_ROWS=10）。<code>rows[i]</code> = i 行目の segKey 並び（空行可）。anchor / unplaced フィールド廃止。未配置は「enabled かつ どの行にも無い」を導出（新規 segment も自動で棚に出る）。</td></tr>
+      <tr><td>編集 UI</td><td>固定 10 行グリッド。左に<strong>行番号ガター(ghost 1..10)</strong>、各行=ドロップセル。segment chip をセル/棚へ D&D。<strong>ドラッグ中はドロップ先セルをハイライト</strong>(<code>onMove</code>→<code>.drop-hot</code>)。× で未配置へ、Reset to auto、Edit/Done。<strong>Add/削除/anchor は廃止</strong>。</td></tr>
+      <tr><td>hint 予約</td><td>glass hints ON のとき最下行(10)を <strong>reserved 表示＋drop 不可</strong>(SortableJS <code>put:false</code>)。budget = MAX_ROWS - (hints?1:0) = 9/10。reserved 行に内容が残る場合は「hint に隠れる」警告（サイレント破棄せず、hints OFF で復活）。</td></tr>
+      <tr><td>renderer</td><td>glass-render <code>layoutLines</code> が <code>rows.slice(0,budget)</code> を絶対行描画（空行も保持＝上の空行が下へ押し下げる）。hint は最下段。単一 group のみの行は group ラベル接頭辞。<code>summarySections</code> は auto(未カスタマイズ)専用。</td></tr>
+      <tr><td>migrate</td><td><code>normalizeGlassLayout</code> が旧 anchor 形式 ({rows:[{anchor,items}]}) を絶対行へ移行（top は上から / bottom は下から）。新形式はそのまま正規化。壊れていれば undefined=自動描画。CONFIG_VERSION bump なし。</td></tr>
     </table>
-    <p class="open">既知の挙動: <strong>server データ読込前に Customize すると Clock だけで生成</strong>され、後から来る server group は未配置 (rows は status で自動変更しない設計)。通常はプレビューにデータが揃ってから Customize する想定。ドラッグは実機タッチ前提 (MCP desktop 未検証)。</p>
+    <p class="open">ブラウザ検証済: 固定10行グリッド / 行番号 / Row10 reserved(hints ON↔OFF で切替) / Customize 全配置 / view プレビュー = 絶対行 / item-remove。<strong>chip ドラッグ＋ハイライトは MCP(desktop) では HTML5 DnD を模擬できず未自動検証</strong>（recompute は検証済み save+render と同経路、実機タッチ前提）。既知: server データ読込前に Customize すると Clock だけで生成され、後続 group は棚に出る（通常はデータが揃ってから Customize）。溢れ実測 scrollWidth は次段階(step 5)。</p>
   </body>
 </html>
