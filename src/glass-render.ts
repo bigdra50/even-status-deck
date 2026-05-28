@@ -11,8 +11,8 @@ export type GlassData = {
   statuses: Record<string, StatusDoc | null>
 }
 
-// 288px / line-height 27px ≒ 10 行。
-const MAX_ROWS = 10
+// 288px / line-height 27px ≒ 10 行。glass の表示可能行数 (companion の行数上限にも使う)。
+export const MAX_ROWS = 10
 
 // progress bar: ━(filled) / ─(empty)。DESIGN.md §5 準拠。
 export function bar(percent: number, width = 12): string {

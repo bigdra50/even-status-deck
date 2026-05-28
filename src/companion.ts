@@ -20,7 +20,7 @@ import {
 } from './config'
 import { fetchMachineFrom, type MachineInfo } from './data'
 import { esc } from './escape'
-import { type GlassData, summarySections } from './glass-render'
+import { type GlassData, MAX_ROWS, summarySections } from './glass-render'
 import { icon } from './icons'
 import type { Group, Segment } from './status-types'
 import { getAllStatuses, getSourceStatus, setSources, startPolling, subscribe } from './store'
@@ -242,6 +242,12 @@ function rowOverflow(row: GlassRow): boolean {
   return len + Math.max(0, n - 1) * 2 > 40
 }
 
+// glass に表示できる行数の上限。MAX_ROWS から hint 行 (glassHints ON 時) を引く。
+// 1 行 = glass の 1 行を消費するので、row 総数はこれを超えられない (超過分は glass で … 省略)。
+function glassRowBudget(): number {
+  return MAX_ROWS - (config.glassHints ? 1 : 0)
+}
+
 // WYSIWYG の segment chip。グラス上に置く編集要素 (grip + ラベル + 除去×)。
 function wysChip(key: string): string {
   const { group, seg } = segLabelParts(key)
@@ -271,14 +277,21 @@ function renderGlassEdit(lay: NonNullable<Config['glassLayout']>): string {
   const shelf = unplaced.length
     ? unplaced.map(wysChip).join('')
     : '<span class="cmp-sub">未配置なし</span>'
+  const budget = glassRowBudget()
+  const full = lay.rows.length >= budget // glass の表示行数上限に到達 (これ以上は描画されない)
+  const dis = full ? 'disabled' : ''
+  const count = full
+    ? `<span class="wys-rowcount over">${lay.rows.length}/${budget} rows (max — glass は ${budget} 行まで)</span>`
+    : `<span class="wys-rowcount">${lay.rows.length}/${budget} rows</span>`
   return `<div class="gpv"><div class="gpv-cap">G2 576×288 — editing</div>
       <div class="gpv-screen wys-screen">
         ${zone(top, 'wys-top', 'top rows (上寄せ)')}
         ${zone(bot, 'wys-bot', 'bottom rows (下寄せ)')}
       </div></div>
     <div class="wys-bar">
-      <button class="save-btn sm" data-action="layout-row-add" data-anchor="top">${icon('plus', { size: 14 })}Top row</button>
-      <button class="save-btn sm" data-action="layout-row-add" data-anchor="bottom">${icon('plus', { size: 14 })}Bottom row</button>
+      <button class="save-btn sm" data-action="layout-row-add" data-anchor="top" ${dis}>${icon('plus', { size: 14 })}Top row</button>
+      <button class="save-btn sm" data-action="layout-row-add" data-anchor="bottom" ${dis}>${icon('plus', { size: 14 })}Bottom row</button>
+      ${count}
     </div>
     <div class="cmp-label">Unplaced</div>
     <div class="wys-items wys-shelf" data-shelf="1">${shelf}</div>
@@ -609,7 +622,8 @@ async function onClick(e: MouseEvent): Promise<void> {
       render()
       break
     case 'layout-row-add':
-      if (config.glassLayout) {
+      // glass の表示行数 (budget) を超える行は追加させない (超過分は glass に出ない)。
+      if (config.glassLayout && config.glassLayout.rows.length < glassRowBudget()) {
         const anchor: GAlign = t.dataset.anchor === 'bottom' ? 'bottom' : 'top'
         config.glassLayout.rows.push({ id: genSourceId(), anchor, items: [] })
         await saveConfig(config)

@@ -588,6 +588,18 @@ body {
   padding: var(--space-2) var(--space-3);
   font-size: var(--fs-sm);
 }
+.save-btn.sm:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.wys-rowcount {
+  align-self: center;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+.wys-rowcount.over {
+  color: #e0a458;
+}
 .wys-shelf {
   background: var(--surface);
   border: 1px dashed var(--border);
