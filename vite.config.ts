@@ -275,7 +275,7 @@ async function claudeProvider(): Promise<Group | null> {
   }
   const U = usage as { estCostUsd?: number; messages?: number }
   const segments: Segment[] = [
-    pctSegment('session', 'Session', L.five_hour?.utilization, L.five_hour?.resets_at, true),
+    pctSegment('session', '5h', L.five_hour?.utilization, L.five_hour?.resets_at, true),
     pctSegment('weekly', 'Weekly', L.seven_day?.utilization, L.seven_day?.resets_at, true),
     pctSegment('sonnet', 'Sonnet', L.seven_day_sonnet?.utilization, L.seven_day_sonnet?.resets_at, false),
     pctSegment('opus', 'Opus', L.seven_day_opus?.utilization, L.seven_day_opus?.resets_at, false),
