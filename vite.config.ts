@@ -292,7 +292,7 @@ async function claudeProvider(): Promise<Group | null> {
       defaultEnabled: false,
     },
   ]
-  return { id: 'claude-code', label: 'Claude Code', segments }
+  return { id: 'claude-code', label: 'Claude', segments }
 }
 
 async function codexProvider(): Promise<Group | null> {
