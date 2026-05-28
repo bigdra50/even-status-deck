@@ -498,5 +498,6 @@
       <tr><td>migrate</td><td><code>normalizeGlassLayout</code> が旧 anchor 形式 ({rows:[{anchor,items}]}) を絶対行へ移行（top は上から / bottom は下から）。新形式はそのまま正規化。壊れていれば undefined=自動描画。CONFIG_VERSION bump なし。</td></tr>
     </table>
     <p class="open">ブラウザ検証済: 固定10行グリッド / 行番号 / Row10 reserved(hints ON↔OFF で切替) / Customize 全配置 / view プレビュー = 絶対行 / item-remove。<strong>chip ドラッグ＋ハイライトは MCP(desktop) では HTML5 DnD を模擬できず未自動検証</strong>（recompute は検証済み save+render と同経路、実機タッチ前提）。既知: server データ読込前に Customize すると Clock だけで生成され、後続 group は棚に出る（通常はデータが揃ってから Customize）。溢れ実測 scrollWidth は次段階(step 5)。</p>
+    <p class="done">追修正: custom モードの view プレビューが旧 <code>summarySections</code>(group/上詰め) を使い固定行 rows を無視していた（下の行に置いても Done 後に上詰めになる）バグを <code>layoutLines</code> の絶対行描画 (空行保持) に統一して修正。位置は固定行グリッドで決まるため、group 行の上詰め/下詰め(<code>align</code>)トグルも廃止。</p>
   </body>
 </html>

@@ -17,7 +17,7 @@ import {
 } from './config'
 import { fetchMachineFrom, type MachineInfo } from './data'
 import { esc } from './escape'
-import { type GlassData, MAX_ROWS, summarySections } from './glass-render'
+import { type GlassData, layoutLines, MAX_ROWS, summarySections } from './glass-render'
 import { icon } from './icons'
 import type { Group, Segment } from './status-types'
 import { getAllStatuses, getSourceStatus, setSources, startPolling, subscribe } from './store'
@@ -60,14 +60,21 @@ function syncAll(): boolean {
 }
 
 // ── プレビュー ──
-// glass と同じく top/bottom セクションに分け、bottom は画面下端へ寄せる (.gsec-bot)。
+// custom (glassLayout あり): 固定行を絶対位置で描画 (空行も保持。上詰め/下詰めは無い)。
+// auto (未カスタマイズ): 従来の group=1行 + top/bottom 詰め。
 function glassPreviewHtml(): string {
   const visible = computeVisible(config, getAllStatuses())
-  const { top, bottom } = summarySections(glassData(), visible)
+  const d = glassData()
+  const grow = (l: string) => `<span class="grow">${l ? esc(l) : '&nbsp;'}</span>`
+  if (config.glassLayout) {
+    const body = layoutLines(d, visible, glassRowBudget()).map(grow).join('')
+    const hint = config.glassHints ? '<span class="grow ghint">swipe: detail  tap: back</span>' : ''
+    return `<div class="glass-screen">${body}${hint}</div>`
+  }
+  const { top, bottom } = summarySections(d, visible)
   if (top.length + bottom.length === 0) top.push('(no metric)')
-  const row = (l: string) => `<span class="grow">${esc(l)}</span>`
   const hint = config.glassHints ? '<span class="grow ghint">swipe: detail  tap: back</span>' : ''
-  return `<div class="glass-screen"><div class="gsec gsec-top">${top.map(row).join('')}</div><div class="gsec gsec-bot">${bottom.map(row).join('')}${hint}</div></div>`
+  return `<div class="glass-screen"><div class="gsec gsec-top">${top.map(grow).join('')}</div><div class="gsec gsec-bot">${bottom.map(grow).join('')}${hint}</div></div>`
 }
 
 // ── 表示項目 (groupOrder 横断) ──
@@ -165,13 +172,11 @@ function groupRow(ref: GroupRef): string {
       : src
         ? `<span class="src-note">${esc(src.label)}</span>`
         : ''
-  const bottom = gcfg.align === 'bottom'
-  const alignBtn = `<button class="align-btn ${bottom ? 'bottom' : ''}" data-action="toggle-align" data-key="${key}" title="${bottom ? 'Bottom-aligned' : 'Top-aligned'}">${icon(bottom ? 'align-bottom' : 'align-top', { size: 16 })}</button>`
+  // 上詰め/下詰め (align) トグルは廃止。位置は Glass layout エディタの固定行で決める。
   return `<div class="src" data-key="${key}"><div class="src-head"><span class="src-grip">${icon('grip', { size: 16 })}</span>
     <span class="src-caret" data-action="expand" data-key="${key}">${caret}</span>
     <span class="src-name" data-action="expand" data-key="${key}">${esc(title)}</span>
     ${srcTag}
-    ${alignBtn}
     <button class="tg ${gcfg.enabled ? 'on' : ''}" data-action="toggle-group" data-key="${key}"></button></div>${metrics}</div>`
 }
 
@@ -531,16 +536,6 @@ async function onClick(e: MouseEvent): Promise<void> {
       const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
       if (gcfg) {
         gcfg.enabled = !gcfg.enabled
-        await saveConfig(config)
-        render()
-      }
-      break
-    }
-    case 'toggle-align': {
-      const ref = parseKey(t.dataset.key ?? '')
-      const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
-      if (gcfg) {
-        gcfg.align = gcfg.align === 'bottom' ? 'top' : 'bottom'
         await saveConfig(config)
         render()
       }
