@@ -61,20 +61,17 @@ function syncAll(): boolean {
 
 // ── プレビュー ──
 // custom (glassLayout あり): 固定行を絶対位置で描画 (空行も保持。上詰め/下詰めは無い)。
-// auto (未カスタマイズ): 従来の group=1行 + top/bottom 詰め。
+// auto (未カスタマイズ): 従来の group=1行 + top/bottom 詰め。glass には操作ヒントを出さない。
 function glassPreviewHtml(): string {
   const visible = computeVisible(config, getAllStatuses())
   const d = glassData()
   const grow = (l: string) => `<span class="grow">${l ? esc(l) : '&nbsp;'}</span>`
   if (config.glassLayout) {
-    const body = layoutLines(d, visible, glassRowBudget()).map(grow).join('')
-    const hint = config.glassHints ? '<span class="grow ghint">swipe: detail  tap: back</span>' : ''
-    return `<div class="glass-screen">${body}${hint}</div>`
+    return `<div class="glass-screen">${layoutLines(d, visible, MAX_ROWS).map(grow).join('')}</div>`
   }
   const { top, bottom } = summarySections(d, visible)
   if (top.length + bottom.length === 0) top.push('(no metric)')
-  const hint = config.glassHints ? '<span class="grow ghint">swipe: detail  tap: back</span>' : ''
-  return `<div class="glass-screen"><div class="gsec gsec-top">${top.map(grow).join('')}</div><div class="gsec gsec-bot">${bottom.map(grow).join('')}${hint}</div></div>`
+  return `<div class="glass-screen"><div class="gsec gsec-top">${top.map(grow).join('')}</div><div class="gsec gsec-bot">${bottom.map(grow).join('')}</div></div>`
 }
 
 // ── 表示項目 (groupOrder 横断) ──
@@ -244,40 +241,32 @@ function rowOverflow(items: string[]): boolean {
   return len + Math.max(0, n - 1) * 2 > 40
 }
 
-// glass に表示できる行数 (hint ON なら最下行 1 つを予約)。budget..MAX_ROWS-1 は reserved。
-function glassRowBudget(): number {
-  return MAX_ROWS - (config.glassHints ? 1 : 0)
-}
-
-// WYSIWYG の segment chip。グラス上 / 棚に置く編集要素 (grip + ラベル + 除去×)。
+// WYSIWYG の segment chip。グラス上 / 棚に置く編集要素 (grip + 実値 + 除去×)。
+// chip は実機に出る表示文字列 (label value / value) を出す (本来の WYSIWYG)。
+// status 未取得時は segment ラベルで代用。group 名は title (hover) で識別。
 function wysChip(key: string): string {
+  const [sourceId, groupId, segId] = key.split('|')
   const { group, seg } = segLabelParts(key)
-  const label = group ? `${group} ${seg}` : seg
-  return `<span class="wys-chip" data-segkey="${esc(key)}" title="${esc(label)}"><span class="wys-grip">${icon('grip', { size: 11 })}</span><span class="wys-txt">${esc(seg)}</span><button class="wys-x" data-action="layout-item-remove" data-segkey="${esc(key)}" aria-label="Unplace">${icon('x', { size: 10 })}</button></span>`
+  const sg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
+  const text = sg ? (sg.label ? `${sg.label} ${sg.value}` : sg.value) : seg
+  const title = group ? `${group} ${seg}` : seg
+  return `<span class="wys-chip" data-segkey="${esc(key)}" title="${esc(title)}"><span class="wys-grip">${icon('grip', { size: 11 })}</span><span class="wys-txt">${esc(text)}</span><button class="wys-x" data-action="layout-item-remove" data-segkey="${esc(key)}" aria-label="Unplace">${icon('x', { size: 10 })}</button></span>`
 }
 
 // 編集モードのキャンバス: 固定 MAX_ROWS 行 (行番号ガター + ドロップセル) + 未配置棚 + Reset。
-// 行番号 = glass の上からの絶対位置。hint ON なら最下行を reserved (drop 不可) 表示。
+// 行番号 = glass の上からの絶対位置。glass にヒント行は出さないので予約行も無い (全行配置可)。
 function renderGlassEdit(lay: NonNullable<Config['glassLayout']>): string {
-  const budget = glassRowBudget()
   const placed = new Set(lay.rows.flat())
   const unplaced = allEnabledSegKeys().filter((k) => !placed.has(k))
   const lines: string[] = []
   for (let i = 0; i < MAX_ROWS; i++) {
     const items = lay.rows[i] ?? []
-    const reserved = i >= budget // hint 用に予約 (drop 不可)
     const chips = items.map(wysChip).join('')
-    const warn =
-      !reserved && rowOverflow(items)
-        ? `<span class="wys-over" title="1 行に長すぎる可能性">${icon('alert', { size: 12 })}</span>`
-        : ''
-    const hidden =
-      reserved && items.length
-        ? `<span class="wys-over" title="glass hints に隠れています (上の行か Unplaced へ)">${icon('alert', { size: 12 })}</span>`
-        : ''
-    const tag = reserved ? '<span class="wys-reserved-tag">hint</span>' : ''
+    const warn = rowOverflow(items)
+      ? `<span class="wys-over" title="1 行に長すぎる可能性">${icon('alert', { size: 12 })}</span>`
+      : ''
     lines.push(
-      `<div class="wys-line${reserved ? ' reserved' : ''}"><span class="wys-ln">${i + 1}</span><div class="wys-cell" data-row="${i}"${reserved ? ' data-reserved="1"' : ''}>${chips}</div>${warn}${hidden}${tag}</div>`,
+      `<div class="wys-line"><span class="wys-ln">${i + 1}</span><div class="wys-cell" data-row="${i}">${chips}</div>${warn}</div>`,
     )
   }
   const shelf = unplaced.length
@@ -296,16 +285,18 @@ function renderGlassSection(): string {
   if (!lay) {
     return `<div class="cmp-label">Glass</div>
       <div class="gpv"><div class="gpv-cap">G2 576×288</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
+      <div class="cmp-sub">glass 操作: tap = サマリへ / swipe = ビュー切替 / double-tap = 終了</div>
       <div class="cmp-sub">各 group を 1 行ずつ表示中。Customize するとプレビュー上で自由に配置できます。</div>
       <button class="save-btn" data-action="layout-customize">${icon('plus', { size: 16 })}Customize layout</button>`
   }
   if (layoutEditing) {
     return `<div class="cmp-label cmp-label-row">Glass layout<button class="link-btn" data-action="layout-edit-toggle">Done</button></div>
-      <div class="cmp-sub">segment を行 (1〜${glassRowBudget()}) や Unplaced 棚へドラッグ。行番号 = glass の上からの位置。</div>
+      <div class="cmp-sub">segment を行 (1〜${MAX_ROWS}) や Unplaced 棚へドラッグ。行番号 = glass の上からの位置。</div>
       ${renderGlassEdit(lay)}`
   }
   return `<div class="cmp-label cmp-label-row">Glass<button class="link-btn" data-action="layout-edit-toggle">Edit layout</button></div>
-    <div class="gpv"><div class="gpv-cap">G2 576×288</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>`
+    <div class="gpv"><div class="gpv-cap">G2 576×288</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
+    <div class="cmp-sub">glass 操作: tap = サマリへ / swipe = ビュー切替 / double-tap = 終了</div>`
 }
 
 function renderHome(): string {
@@ -321,9 +312,6 @@ function renderHome(): string {
 
     <div class="cmp-label">Items (drag ${icon('grip', { size: 12 })} to reorder)</div>
     <div id="source-list">${renderItems()}</div>
-    <div class="src"><div class="src-head">
-      <span class="src-name" style="font-size:var(--fs-md);font-weight:500;">Show glass hints</span>
-      <button class="tg sm ${config.glassHints ? 'on' : ''}" data-action="toggle-hints"></button></div></div>
 
     ${renderGlassSection()}
   `
@@ -553,11 +541,6 @@ async function onClick(e: MouseEvent): Promise<void> {
       }
       break
     }
-    case 'toggle-hints':
-      config.glassHints = !config.glassHints
-      await saveConfig(config)
-      render()
-      break
     case 'seg-vis-add': {
       const ref = parseKey(t.dataset.key ?? '')
       const sc = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find(

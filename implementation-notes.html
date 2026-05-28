@@ -4,14 +4,18 @@
     <meta charset="UTF-8" />
     <title>eveng2-toolbar — 実装ノート（電池レート / 表示条件 / IMU）</title>
     <style>
-      body { font-family: -apple-system, "Hiragino Sans", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #222; }
-      h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #ddd; padding-bottom: .2rem; }
+      :root { color-scheme: dark; }
+      body { font-family: -apple-system, "Hiragino Sans", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #d4d4d4; background: #1a1a1a; }
+      h1 { font-size: 1.4rem; color: #f0f0f0; } h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #3a3a3a; padding-bottom: .2rem; color: #f0f0f0; }
+      h3 { color: #e8e8e8; }
+      a { color: #6cb6ff; }
       table { border-collapse: collapse; width: 100%; margin: .5rem 0; }
-      th, td { border: 1px solid #ddd; padding: .4rem .6rem; text-align: left; vertical-align: top; font-size: .9rem; }
-      th { background: #f5f5f5; }
-      code { background: #f0f0f0; padding: .1rem .3rem; border-radius: 4px; font-family: "Menlo", monospace; font-size: .85rem; }
-      .open { color: #b25000; font-weight: 600; } .done { color: #2a7d2a; } .warn { color: #b00; }
+      th, td { border: 1px solid #3a3a3a; padding: .4rem .6rem; text-align: left; vertical-align: top; font-size: .9rem; }
+      th { background: #262626; }
+      code { background: #2d2d2d; padding: .1rem .3rem; border-radius: 4px; font-family: "Menlo", monospace; font-size: .85rem; color: #e6c07b; }
+      .open { color: #ff9e64; font-weight: 600; } .done { color: #7ec77e; } .warn { color: #ff7b72; }
       details { margin: .4rem 0; } summary { cursor: pointer; font-weight: 600; }
+      hr { border-color: #3a3a3a !important; }
     </style>
   </head>
   <body>
@@ -499,5 +503,6 @@
     </table>
     <p class="open">ブラウザ検証済: 固定10行グリッド / 行番号 / Row10 reserved(hints ON↔OFF で切替) / Customize 全配置 / view プレビュー = 絶対行 / item-remove。<strong>chip ドラッグ＋ハイライトは MCP(desktop) では HTML5 DnD を模擬できず未自動検証</strong>（recompute は検証済み save+render と同経路、実機タッチ前提）。既知: server データ読込前に Customize すると Clock だけで生成され、後続 group は棚に出る（通常はデータが揃ってから Customize）。溢れ実測 scrollWidth は次段階(step 5)。</p>
     <p class="done">追修正: custom モードの view プレビューが旧 <code>summarySections</code>(group/上詰め) を使い固定行 rows を無視していた（下の行に置いても Done 後に上詰めになる）バグを <code>layoutLines</code> の絶対行描画 (空行保持) に統一して修正。位置は固定行グリッドで決まるため、group 行の上詰め/下詰め(<code>align</code>)トグルも廃止。</p>
+    <p class="done">追修正2: <strong>glass hints を glass から撤去</strong>（10 行は貴重なので操作ヒントで 1 行消費しない）。<code>config.glassHints</code> / Show glass hints トグル / reserved 行を廃止し budget = MAX_ROWS=10 常時に。操作説明 (tap=サマリ / swipe=ビュー切替 / double-tap=終了) は companion の Glass セクションに常設。あわせて <strong>edit の chip を実機の表示文字列 (label value / value) で表示</strong>し WYSIWYG を忠実に（例 "Session 12%" / "12:34" / "Bat 82%"。group 名は hover title）。</p>
   </body>
 </html>

@@ -44,7 +44,6 @@ export type Config = {
   sources: SourceDef[]
   groups: Record<string, Record<string, GroupCfg>> // sourceId -> groupId -> cfg (nested = delimiter 衝突なし)
   groupOrder: GroupRef[] // 全ソース横断の表示順
-  glassHints: boolean
   imu?: ImuConfig
   glassLayout?: GlassLayout // 未設定なら group=1行 自動描画 (deferred finalize)
 }
@@ -104,7 +103,6 @@ export function emptyConfig(): Config {
     sources: [],
     groups: {},
     groupOrder: [],
-    glassHints: true,
     imu: defaultImuConfig(),
   }
   ensureBuiltin(c)
@@ -158,6 +156,7 @@ function migrate(parsed: Record<string, unknown>): Config {
     ensureBuiltin(c)
     c.imu ??= defaultImuConfig() // 旧 v3 config には imu が無いため default 補完
     delete (c as Record<string, unknown>).batteryRate // 旧 batteryRate 設定は廃止 (drain/est は segment 化)
+    delete (c as Record<string, unknown>).glassHints // glassHints 廃止 (操作説明は companion 常設へ)
     normalizeVisibilityAll(c) // 旧 single-cond 形式の visibility を複合形式へ正規化 (additive、bump 不要)
     // glassLayout を新形式に正規化 (旧 anchor 形式は移行、壊れていれば undefined=自動描画)
     c.glassLayout = normalizeGlassLayout((c as Record<string, unknown>).glassLayout)
@@ -165,10 +164,8 @@ function migrate(parsed: Record<string, unknown>): Config {
   }
   const old = parsed as {
     machines?: Record<string, OldMachine>
-    glassHints?: boolean
   }
   const cfg = emptyConfig()
-  cfg.glassHints = old.glassHints ?? true
   for (const [mid, mc] of Object.entries(old.machines ?? {})) {
     const id = mc.id ?? genSourceId() // v2 の不変 ID は保持、v1 は新規採番
     cfg.sources.push({ id, kind: 'server', label: mc.label ?? mid, url: mc.url })

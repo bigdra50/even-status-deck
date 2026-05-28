@@ -144,39 +144,26 @@ function frame(body: string[], hint: string | null): string {
   return rows.join('\n')
 }
 
-// HUD は builtin group (clock / g2) として本文に含まれるため、本文 + ヒント を MAX_ROWS に収める。
-// summary は align で top/bottom セクションに分け、間を空行で埋めて上下に寄せる。
-// detail は単一 group なので従来通り上詰め。超過時は "+N more" に畳む (行予算 hard cap)。
+// HUD は builtin group (clock / g2) として本文に含まれる。glass には操作ヒントを出さない
+// (10 行は貴重なので操作説明は companion 側に常設)。本文を MAX_ROWS に収める。
+// custom は固定行を絶対描画。auto (未カスタマイズ) は align で top/bottom に寄せる。
 export function renderGlass(view: GView, d: GlassData, visible?: VisibleMap): string {
-  const hint = d.config.glassHints
-    ? view === 'summary'
-      ? 'swipe: detail  tap: back'
-      : 'swipe / tap: back'
-    : null
-  const budget = MAX_ROWS - (hint ? 1 : 0)
+  const budget = MAX_ROWS
 
-  if (view !== 'summary') return frame(clampRows(detailBody(d, view, visible), budget), hint)
+  if (view !== 'summary') return frame(clampRows(detailBody(d, view, visible), budget), null)
 
-  // custom layout: 固定行を絶対位置で描画 (空行も保持)。hint は最下段 (予約行) に置く。
-  if (d.config.glassLayout) {
-    const lines = layoutLines(d, visible, budget)
-    return (hint ? [...lines, hint] : lines).join('\n')
-  }
+  // custom layout: 固定行を絶対位置で描画 (空行も保持)。
+  if (d.config.glassLayout) return layoutLines(d, visible, budget).join('\n')
 
   const { top, bottom } = summarySections(d, visible)
-  if (top.length + bottom.length === 0) return frame(['(no metric)'], hint)
-
-  // 下寄せ無し → 従来の上詰め (frame が hint を下段へ押す)。
-  if (bottom.length === 0) return frame(clampRows(top, budget), hint)
-
-  // 上下合計が予算超過 → anchoring を諦め上詰め + "+N more"。
+  if (top.length + bottom.length === 0) return frame(['(no metric)'], null)
+  if (bottom.length === 0) return frame(clampRows(top, budget), null)
   if (top.length + bottom.length > budget) {
-    return frame(clampRows([...top, ...bottom], budget), hint)
+    return frame(clampRows([...top, ...bottom], budget), null)
   }
-
-  // 予算いっぱいに展開: top を上、bottom を下、間を空行で埋める (body.length === budget)。
+  // 予算いっぱいに展開: top を上、bottom を下、間を空行で埋める。
   const gap = budget - top.length - bottom.length
-  return frame([...top, ...Array<string>(gap).fill(''), ...bottom], hint)
+  return frame([...top, ...Array<string>(gap).fill(''), ...bottom], null)
 }
 
 // 表示するビュー: summary + 表示可能な segment が 1 つ以上ある有効 group (groupOrder 順)。
