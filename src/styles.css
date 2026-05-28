@@ -52,6 +52,10 @@
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  /* overscroll (iOS rubber-band) を抑制。上端/下端で引っ張っても背景が露出しない。 */
+  overscroll-behavior: none;
+  /* バウンスが万一漏れても白でなくアプリ背景が見えるよう root に背景を伝播。 */
+  background: var(--bg);
 }
 body {
   background: var(--bg);
@@ -60,6 +64,7 @@ body {
   font-size: var(--fs-base);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
   /* ピンチズーム / ダブルタップズームを無効化 (縦スクロールのみ許可)。companion はズーム不要。 */
   touch-action: pan-x pan-y;
 }
