@@ -491,8 +491,10 @@ function devApiPlugin() {
           try {
             res.end(JSON.stringify(await handler()))
           } catch (e) {
+            // 詳細 (ローカルパス等) は LAN クライアントに返さずサーバーログへ。
+            console.error(`[api] ${path} failed:`, e)
             res.statusCode = 500
-            res.end(JSON.stringify({ error: String(e) }))
+            res.end(JSON.stringify({ error: 'internal error' }))
           }
         })
       }
