@@ -1,5 +1,7 @@
 import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
+import { defaultImuConfig, type ImuConfig } from './imu'
 import type { StatusDoc } from './status-types'
+import type { VisibilityCond, VisibilityLeaf } from './visibility'
 
 // 設定 (v3): 複数データソースを横断して描画する。source は builtin(client算出) か server(URL)。
 // group/segment トグルと並び順を source 名前空間付きで保持する (codex 指摘: 不変ID + structured key)。
@@ -8,17 +10,19 @@ export const BUILTIN_SOURCE_ID = 'builtin.local'
 
 export type SourceKind = 'builtin' | 'server'
 export type SourceDef = { id: string; kind: SourceKind; label: string; url?: string }
-export type SegCfg = { id: string; enabled: boolean }
+export type SegCfg = { id: string; enabled: boolean; visibility?: VisibilityCond }
 export type GAlign = 'top' | 'bottom'
 // align: glass summary での縦寄せ。未指定は 'top' (上から詰める従来挙動)。
 export type GroupCfg = { enabled: boolean; expanded: boolean; align?: GAlign; segments: SegCfg[] }
 export type GroupRef = { sourceId: string; groupId: string }
+// IMU 方向検出は src/imu ライブラリが所有。Config は enable + キャリブの永続先として imu? を持つ。
 export type Config = {
   version: number
   sources: SourceDef[]
   groups: Record<string, Record<string, GroupCfg>> // sourceId -> groupId -> cfg (nested = delimiter 衝突なし)
   groupOrder: GroupRef[] // 全ソース横断の表示順
   glassHints: boolean
+  imu?: ImuConfig
 }
 
 const KEY = 'toolbar.config'
@@ -52,6 +56,7 @@ export function emptyConfig(): Config {
     groups: {},
     groupOrder: [],
     glassHints: true,
+    imu: defaultImuConfig(),
   }
   ensureBuiltin(c)
   return c
@@ -102,6 +107,9 @@ function migrate(parsed: Record<string, unknown>): Config {
   if (parsed.version === CONFIG_VERSION) {
     const c = parsed as unknown as Config
     ensureBuiltin(c)
+    c.imu ??= defaultImuConfig() // 旧 v3 config には imu が無いため default 補完
+    delete (c as Record<string, unknown>).batteryRate // 旧 batteryRate 設定は廃止 (drain/est は segment 化)
+    normalizeVisibilityAll(c) // 旧 single-cond 形式の visibility を複合形式へ正規化 (additive、bump 不要)
     return c
   }
   const old = parsed as {
@@ -125,6 +133,47 @@ function migrate(parsed: Record<string, unknown>): Config {
     for (const gid of mc.sourceOrder ?? []) cfg.groupOrder.push({ sourceId: id, groupId: gid })
   }
   return cfg
+}
+
+// 1 leaf を sanitize する。不正なら null。threshold は op/value、onChange は holdMs を検証。
+function sanitizeLeaf(x: unknown): VisibilityLeaf | null {
+  if (!x || typeof x !== 'object') return null
+  const o = x as Record<string, unknown>
+  if (o.kind === 'threshold' && (o.op === 'lte' || o.op === 'gte') && typeof o.value === 'number') {
+    return { kind: 'threshold', op: o.op, value: o.value }
+  }
+  if (o.kind === 'onChange' && typeof o.holdMs === 'number') {
+    return { kind: 'onChange', holdMs: o.holdMs }
+  }
+  return null
+}
+
+// segment の visibility を複合形式へ正規化する。新形式は leaf を sanitize、空なら undefined。
+// 旧 single-cond ({kind:'always'|'threshold'|'onChange'}) は複合形式へ移行 (always=undefined)。
+function normalizeVisibility(v: unknown): VisibilityCond | undefined {
+  if (!v || typeof v !== 'object') return undefined
+  const o = v as Record<string, unknown>
+  if (Array.isArray(o.conditions)) {
+    const conditions = o.conditions.map(sanitizeLeaf).filter((l): l is VisibilityLeaf => l !== null)
+    if (conditions.length === 0) return undefined
+    return { combinator: o.combinator === 'or' ? 'or' : 'and', conditions }
+  }
+  if (o.kind === 'always') return undefined
+  const leaf = sanitizeLeaf(o)
+  return leaf ? { combinator: 'and', conditions: [leaf] } : undefined
+}
+
+// 全 group/segment の visibility を正規化する (同バージョン migrate から呼ぶ)。
+function normalizeVisibilityAll(c: Config): void {
+  for (const groups of Object.values(c.groups ?? {})) {
+    for (const gcfg of Object.values(groups)) {
+      for (const sc of gcfg.segments) {
+        const next = normalizeVisibility(sc.visibility)
+        if (next) sc.visibility = next
+        else delete sc.visibility
+      }
+    }
+  }
 }
 
 export function sourceById(cfg: Config, id: string): SourceDef | undefined {

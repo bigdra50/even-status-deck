@@ -2,10 +2,13 @@
   "package_id": "com.bigdra50.eveng2toolbar",
   "edition": "202601",
   "name": "Statusline",
-  "version": "0.1.6",
+  "version": "0.1.25",
   "min_app_version": "2.0.0",
   "min_sdk_version": "0.0.10",
   "entrypoint": "index.html",
-  "supported_languages": ["en", "ja"],
+  "supported_languages": [
+    "en",
+    "ja"
+  ],
   "permissions": []
 }

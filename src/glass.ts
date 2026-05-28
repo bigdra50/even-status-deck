@@ -6,11 +6,14 @@ import {
   TextContainerProperty,
   TextContainerUpgrade,
 } from '@evenrealities/even_hub_sdk'
+import { loadBatteryLog, recordBatteryLevel, setBatteryBridge } from './battery'
 import { emptyConfig, loadConfig, syncSourceWithStatus } from './config'
 import { getGlassBattery, setGlassBattery } from './device-state'
 import { buildViews, type GlassData, type GView, renderGlass } from './glass-render'
+import { feedImuSample, isImuStarted, setImuConfig, startImu, stopImu } from './imu'
 import { activateKeepAlive, deactivateKeepAlive } from './keep-alive'
 import { getAllStatuses, refreshBuiltins, refreshAll as storeRefresh, subscribe } from './store'
+import { computeVisible, resetVisibility, type VisibleMap } from './visibility'
 
 // glass (G2 576×288) の描画。複数ソースの status は共有 store が保持し、glass は購読して
 // 横断描画する。HUD (時刻/電池) は builtin local の group として groupOrder に含まれる。
@@ -25,6 +28,7 @@ const data: GlassData = {
   statuses: {},
 }
 let views: GView[] = ['summary']
+let visible: VisibleMap = new Map() // 表示タイミング条件の可視マップ (store/config 更新で再計算)
 let idx = 0
 let lastClickAt = 0
 let deviceUnsub: (() => void) | null = null
@@ -43,7 +47,7 @@ function refresh(): void {
   }
   refreshBusy = true
   refreshPending = false
-  const content = renderGlass(views[idx] ?? 'summary', data)
+  const content = renderGlass(views[idx] ?? 'summary', data, visible)
   gbridge
     .textContainerUpgrade(
       new TextContainerUpgrade({
@@ -75,7 +79,22 @@ function cleanup(): void {
   deviceUnsub = null
   storeUnsub?.()
   storeUnsub = null
+  if (gbridge) void stopImu(gbridge)
+  resetVisibility() // transient 状態 + wake タイマーを破棄
   deactivateKeepAlive()
+}
+
+// config.imu に従い IMU を起動/停止する (enable アダプタ)。初期化時と config 変更時の両方から呼ぶ。
+// IMU 方向は src/imu ライブラリが検出し onDirectionChange で配る。現状 consumer は未配線 (休眠)。
+async function applyImuConfig(): Promise<void> {
+  if (!gbridge) return
+  const imu = data.config.imu
+  if (imu?.enabled) {
+    setImuConfig(imu) // axis/thresholds はランタイム反映
+    if (!isImuStarted()) await startImu(gbridge, imu.pace)
+  } else if (isImuStarted()) {
+    await stopImu(gbridge)
+  }
 }
 
 // グラス(G2) のバッテリーを取得・購読する。status は sn でグラスのものだけ採用する
@@ -86,7 +105,10 @@ async function initDeviceBattery(bridge: EvenAppBridge): Promise<void> {
     const info = await bridge.getDeviceInfo()
     if (info) {
       glassesSn = info.sn
-      setGlassBattery(info.status?.batteryLevel ?? null, info.status?.isCharging ?? false)
+      const lvl = info.status?.batteryLevel ?? null
+      const chg = info.status?.isCharging ?? false
+      setGlassBattery(lvl, chg)
+      if (lvl != null) recordBatteryLevel(lvl, chg, Date.now())
       refreshBuiltins()
     }
   } catch {
@@ -99,6 +121,7 @@ async function initDeviceBattery(bridge: EvenAppBridge): Promise<void> {
     const cur = getGlassBattery()
     if (cur.level === lvl && cur.charging === chg) return // 変化なしは無視 (notify storm 防止)
     setGlassBattery(lvl, chg)
+    if (lvl != null) recordBatteryLevel(lvl, chg, Date.now()) // 消耗レート用ログ
     refreshBuiltins() // HUD の電池を更新 → store notify → 再描画
   })
 }
@@ -117,6 +140,13 @@ function onEvent(event: EvenHubEvent): void {
     if (et === OsEventTypeList.FOREGROUND_EXIT_EVENT) return
     if (et === OsEventTypeList.ABNORMAL_EXIT_EVENT || et === OsEventTypeList.SYSTEM_EXIT_EVENT) {
       cleanup()
+      return
+    }
+    // IMU サンプルは click fallback より前に捌く (未知 sysEvent を click 扱いする下の分岐に
+    // 落とすとビューリセット + BLE 洪水を起こすため)。
+    if (et === OsEventTypeList.IMU_DATA_REPORT) {
+      const d = sys.imuData
+      if (d) feedImuSample({ x: d.x ?? 0, y: d.y ?? 0, z: d.z ?? 0 }, Date.now())
       return
     }
     const now = Date.now()
@@ -147,15 +177,18 @@ function syncAll(): void {
 function onStoreUpdate(): void {
   data.statuses = getAllStatuses()
   syncAll()
-  views = buildViews(data)
+  visible = computeVisible(data.config, data.statuses)
+  views = buildViews(data, visible)
   if (idx >= views.length) idx = 0
   refresh()
 }
 
 async function onConfigChanged(): Promise<void> {
   data.config = await loadConfig()
-  views = buildViews(data)
+  visible = computeVisible(data.config, data.statuses)
+  views = buildViews(data, visible)
   if (idx >= views.length) idx = 0
+  await applyImuConfig() // IMU トグル/設定変更を反映
   refresh()
 }
 
@@ -163,9 +196,12 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   gbridge = bridge
   activateKeepAlive() // phone ロック / バックグラウンドでも WebView を生かす
   data.config = await loadConfig()
+  setBatteryBridge(bridge)
+  await loadBatteryLog() // 消耗レートの永続ログを復元
   data.statuses = getAllStatuses() // store が既に取得済みなら反映 (companion が setSources 済み)
   syncAll()
-  views = buildViews(data)
+  visible = computeVisible(data.config, data.statuses)
+  views = buildViews(data, visible)
   idx = 0
 
   const text = new TextContainerProperty({
@@ -178,7 +214,7 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
     paddingLength: 8,
     containerID: CONTAINER_ID,
     containerName: CONTAINER_NAME,
-    content: renderGlass(views[idx] ?? 'summary', data),
+    content: renderGlass(views[idx] ?? 'summary', data, visible),
     isEventCapture: 1,
   })
   await bridge.createStartUpPageContainer(
@@ -193,4 +229,5 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   }
 
   await initDeviceBattery(bridge) // HUD のグラスバッテリー (builtin に反映)
+  await applyImuConfig() // config.imu.enabled なら IMU 起動 (onEvent 登録後・前提コンテナ作成後)
 }

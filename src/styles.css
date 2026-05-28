@@ -293,6 +293,92 @@ body {
   color: var(--accent);
   border-color: var(--accent);
 }
+/* 表示タイミング条件エディタ (各 metric 行のサブ行) */
+.metric {
+  display: flex;
+  flex-direction: column;
+}
+.vis-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-1) 0 0 24px; /* grip 分だけ字下げして metric にぶら下げる */
+}
+.vis-label {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+.vis-always {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  font-style: italic;
+}
+/* leaf 行の縦積みコンテナ (combinator/Show の下にぶら下がる) */
+.vis-conds {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-1) 0 var(--space-2) 24px;
+}
+.vis-cond-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.vis-select {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  padding: var(--space-1) var(--space-2);
+}
+.vis-num {
+  width: 52px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+  padding: var(--space-1) var(--space-2);
+}
+.vis-del {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.vis-del:hover {
+  color: var(--text);
+  background: var(--input-bg);
+}
+.vis-add {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.vis-add:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
 
 /* machine edit form */
 .field {

@@ -1,3 +1,4 @@
+import './client-diag' // [DIAG] 一時: 白画面の切り分け。特定後に client-diag.ts ごと削除。
 import { waitForEvenAppBridge } from '@evenrealities/even_hub_sdk'
 import { mountCompanion, onCompanionBridgeReady } from './companion'
 import { setConfigBridge } from './config'

@@ -1,6 +1,8 @@
 // バックグラウンド (phone ロック / Even App 退避) でも WebView を suspend させない。
 // 極小音量の AudioContext オシレータ + Web Locks で生存させる。eveng2-reader /
-// even-toolkit で実証済みのパターン。SDK 0.0.10 に keep-alive API が無いため自前実装。
+// even-toolkit で実証済みのパターンに揃える (AudioContext は autoplay で suspended のまま=無音)。
+// 注意: gesture で resume して「実際に鳴らす」と iOS WKWebView の WebContent プロセスを早く
+// jettison させる兆候があったため、意図的に resume しない (動作実績のある兄弟アプリと同じ inert 運用)。
 let audioCtx: AudioContext | null = null
 let oscillator: OscillatorNode | null = null
 let releaseLock: (() => void) | null = null

@@ -1,3 +1,4 @@
+import { devDiagPlugin } from './dev-diag' // [DIAG] 一時: 停止/白画面の計測。特定後に dev-diag.ts ごと削除。
 import { execFile, spawn } from 'node:child_process'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { cpus, hostname, homedir, loadavg, totalmem } from 'node:os'
@@ -349,15 +350,19 @@ async function macBattery(): Promise<{ pct: number; charging: boolean } | null> 
   return { pct: Number(m[1]), charging }
 }
 
-// ディスク: ルートの空き容量 (GB)。df -k の 4 列目 (available KB)。
-async function diskFreeGb(): Promise<number | null> {
+// ディスク: ルートの空き容量 (GB) と使用率 (%)。df -k の 4 列目 (Available KB) / 5 列目 (Capacity)。
+async function diskInfo(): Promise<{ freeGb: number; usedPct: number | null } | null> {
   const out = await shell('df', ['-k', '/'])
-  const avail = Number(out?.trim().split('\n')[1]?.split(/\s+/)[3])
-  return Number.isFinite(avail) ? Math.round((avail / 1024 / 1024) * 10) / 10 : null
+  const cols = out?.trim().split('\n')[1]?.split(/\s+/)
+  const avail = Number(cols?.[3])
+  if (!Number.isFinite(avail)) return null
+  const freeGb = Math.round((avail / 1024 / 1024) * 10) / 10
+  const cap = Number(cols?.[4]?.replace('%', ''))
+  return { freeGb, usedPct: Number.isFinite(cap) ? cap : null }
 }
 
 async function macSystemProvider(): Promise<Group | null> {
-  const [mem, bat, disk] = await Promise.all([macMemUsedPct(), macBattery(), diskFreeGb()])
+  const [mem, bat, disk] = await Promise.all([macMemUsedPct(), macBattery(), diskInfo()])
   const cpu = cpuLoadPct()
   const segments: Segment[] = [
     { id: 'cpu', label: 'CPU', value: `${cpu}%`, percent: cpu, defaultEnabled: true },
@@ -375,7 +380,9 @@ async function macSystemProvider(): Promise<Group | null> {
     })
   }
   if (disk != null) {
-    segments.push({ id: 'disk', label: 'Disk', value: `${disk}G`, defaultEnabled: false })
+    const seg: Segment = { id: 'disk', label: 'Disk', value: `${disk.freeGb}G`, defaultEnabled: false }
+    if (disk.usedPct != null) seg.percent = disk.usedPct // 使用率% (表示タイミング条件の metric 用)
+    segments.push(seg)
   }
   return { id: 'mac', label: 'Mac', segments }
 }
@@ -504,5 +511,5 @@ function devApiPlugin() {
 
 export default defineConfig({
   server: { host: true },
-  plugins: [devApiPlugin()],
+  plugins: [devApiPlugin(), devDiagPlugin()],
 })

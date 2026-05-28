@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <title>eveng2-toolbar — 実装ノート（電池レート / 表示条件 / IMU）</title>
+    <style>
+      body { font-family: -apple-system, "Hiragino Sans", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #222; }
+      h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #ddd; padding-bottom: .2rem; }
+      table { border-collapse: collapse; width: 100%; margin: .5rem 0; }
+      th, td { border: 1px solid #ddd; padding: .4rem .6rem; text-align: left; vertical-align: top; font-size: .9rem; }
+      th { background: #f5f5f5; }
+      code { background: #f0f0f0; padding: .1rem .3rem; border-radius: 4px; font-family: "Menlo", monospace; font-size: .85rem; }
+      .open { color: #b25000; font-weight: 600; } .done { color: #2a7d2a; } .warn { color: #b00; }
+      details { margin: .4rem 0; } summary { cursor: pointer; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <h1>eveng2-toolbar — 実装ノート</h1>
+    <p>
+      ロードマップ 2 機能の設計・実装ノート。
+      <strong>機能1</strong>: バッテリー消耗レート表示（G2 電池の 1% 消費にかかる時間をローカルログから算出し HUD 併記）。
+      <strong>機能2</strong>: 表示タイミング条件（<strong>segment 単位</strong>・閾値 / 更新時 n 秒。将来「上下を向いたら n 秒表示」= IMU consumer もこの上に乗る）。
+      設計は gpt-5.5 レビュー + ユーザー承認済み。フェーズ分割で実装する。
+    </p>
+    <table>
+      <tr><th>Phase</th><th>内容</th><th>状況</th></tr>
+      <tr><td>A</td><td>機能1 バッテリー消耗レート（<code>src/battery/</code> + HUD 併記 + companion トグル/表記）</td><td class="done">実装済み</td></tr>
+      <tr><td>B</td><td><code>src/visibility/</code> evaluator + <code>threshold</code> + <code>visibleMap</code> 注入 + mac disk <code>percent</code> 追加</td><td class="done">実装済み</td></tr>
+      <tr><td>C</td><td><code>onChange</code>（transient: prevValue 比較 + activeUntil + wakeAt 再描画）</td><td class="done">実装済み</td></tr>
+      <tr><td>D</td><td>companion 条件エディタ UI（self 参照）</td><td class="done">実装済み</td></tr>
+      <tr><td>E</td><td>条件の粒度を group → <strong>segment 単位</strong>に変更（最新仕様）</td><td class="done">実装済み</td></tr>
+    </table>
+
+    <h2 class="done">最新仕様 (2026-05-28 追加): 条件の AND/OR 複合化 + Battery を segment 化</h2>
+    <p>ユーザー要望「segment ごとの条件を AND/OR で複合できるようにしたい」「Battery drain rate を builtin segment の 1 つにし、
+      G2 Battery % に加え EST(残り時間) も segment として加えたい」を実装。設計は gpt-5.5 と議論済み、drain 表記固定はユーザー確認済み。
+      未リリース機能の刷新のため後方互換は最小限（既存実機 localStorage の単一条件データだけ migrate で正規化）。</p>
+    <h3>Design decisions</h3>
+    <table>
+      <tr><th>項目</th><th>決定</th></tr>
+      <tr><td>条件モデル</td><td>leaf + 単一 combinator のフラットリスト。<code>VisibilityLeaf = threshold{op,value} | onChange{holdMs}</code>、<code>VisibilityCond = {combinator:'and'|'or'; conditions: VisibilityLeaf[]}</code>。<code>conditions</code> 空 / <code>visibility</code> 未設定 = 常時表示。<strong>ネスト木は YAGNI で却下</strong>、UI 上限 4 件。</td></tr>
+      <tr><td>tri-state 評価</td><td>各 leaf を <code>true|false|'na'</code> に。threshold で <code>percent</code> 不在 = <code>'na'</code>。<code>'na'</code> 除外後 0 個なら fail-open(<code>true</code>)、それ以外 and=全 true / or=いずれか true。<strong>これで <code>OR(threshold欠落, onChange)</code> が常時表示にならず onChange が死なない</strong>（gpt-5.5 指摘の修正）。</td></tr>
+      <tr><td>onChange 状態</td><td>leaf 単位キー <code>`${segKey}#${i}`</code> で transient 状態を保持。並べ替え/編集で index がずれても transient なので自己回復（stable id は YAGNI）。<code>wakeAt</code> = 活性中 onChange leaf の <code>activeUntil</code> 最小値。</td></tr>
+      <tr><td>Battery segment 化</td><td><code>builtins.localStatus()</code> の hud group を <code>time / date / g2('45%', percent) / drain('↓12%/h') / est('6h')</code> に分割。drain/est は独立に toggle/並び替え/条件を持つ。</td></tr>
+      <tr><td>emit-only-when-available</td><td>drain/est は算出可能時（level あり・非充電・rate&gt;0 / eta あり）のみ emit。充電/データ不足では segment 不在 → 非描画。既存「server が segment を一時 drop」と同じ経路で、config entry は sync 済みなら温存（toggle/順/条件を保持）。</td></tr>
+      <tr><td>drain 表記固定</td><td>ユーザー確認で <code>config.batteryRate</code>（enabled/format 循環）を<strong>全廃</strong>。drain=<code>↓N%/h</code>、est=<code>Xh</code> 固定。Home の "Battery drain rate" 行・<code>.fmt-btn</code> も撤去。表記制御は各 segment の toggle/条件に一本化。</td></tr>
+      <tr><td>UI</td><td>各 metric 行サブ行に複合エディタ。0 件=<code>Show always</code> + "+ Add condition"。1 件=<code>Show when [leaf] [×]</code>。2 件以上で <code>All of</code>/<code>Any of</code>(=and/or) select。threshold は <code>percent</code> を持つ segment のみ候補（drain/est は onChange のみ）。</td></tr>
+    </table>
+    <h3 class="warn">Deviations / Tradeoffs</h3>
+    <table>
+      <tr><th>箇所</th><th>内容と理由</th></tr>
+      <tr><td><code>CONFIG_VERSION</code> 据え置き（3 のまま）</td><td>bump すると <code>migrate()</code> が既存 v3 を破壊的に再 migrate するため。同バージョン分岐に <code>normalizeVisibilityAll()</code> を足し、旧 <code>{kind:'always'}</code>→undefined / <code>{kind:'threshold'|'onChange'}</code>→<code>{combinator:'and', conditions:[leaf]}</code> へ正規化、旧 <code>batteryRate</code> フィールドは delete。</td></tr>
+      <tr><td>cross-metric 条件は非対応</td><td>条件 metric は self のみ。drain/est は <code>percent</code> を持たないため「G2 電池 % を条件に EST を出す」はできず onChange のみ。self-only を維持する既存方針（[[eveng2-toolbar-roadmap]]）と YAGNI による。将来 <code>metric:'selfPercent'|'g2Battery'</code> 拡張余地あり（gpt-5.5 提案）。</td></tr>
+      <tr><td>drain/est の表示ラベル</td><td>暫定 <code>Drain</code>/<code>EST</code>（companion items 表示名）+ 値 <code>↓12%/h</code>/<code>6h</code>。glass summary では <code>label value</code> 連結で <code>Drain ↓12%/h</code> とやや冗長。</td></tr>
+    </table>
+    <h3 class="open">Open questions</h3>
+    <ul>
+      <li>drain/est の glass 上の表示ラベル/書式（<code>Drain ↓12%/h</code> の冗長さ、EST の <code>~</code> 有無）は実機で要確認。</li>
+      <li>onChange を含む複合（特に AND で複数 onChange）の時間遷移は実機 .ehpk で要確認。</li>
+      <li>cross-metric 条件（EST を電池 % でゲート）の需要が出たら metric 拡張を検討。</li>
+    </ul>
+
+    <h2 class="done">機能2 旧仕様: 表示条件は segment 単位（group 単位から変更）</h2>
+    <p>当初 Phase B〜D で <strong>group 単位</strong>の表示条件を実装したが、ユーザー要望
+      「条件を細かい要素ごとに（memory は memory の値がこうなったら表示）」により
+      <strong>segment 単位に置換</strong>した（未リリースのため後方互換不要）。下の Phase B/C/D 節は group 単位時の実装履歴。</p>
+    <table>
+      <tr><th>項目</th><th>最新仕様</th></tr>
+      <tr><td>粒度</td><td><strong>segment 単位</strong>。各 segment を自身の値で個別に表示/非表示。<code>SegCfg.visibility?</code>（<code>GroupCfg.visibility</code> は撤去）</td></tr>
+      <tr><td>metric</td><td>常に self（その segment 自身）。条件型から <code>segId</code> を drop → <code>always | threshold{op,value} | onChange{holdMs}</code></td></tr>
+      <tr><td>評価</td><td><code>computeVisibleMap</code> が segment をループ。<code>VisibleMap</code>/<code>VisStates</code> のキーは <code>"src|grp|seg"</code>（<code>segKey</code>）</td></tr>
+      <tr><td>描画</td><td><code>groupLine</code> が enabled かつ可視な segment だけ連結（全部隠れたら group 行は消える）。detail も同様に隠す。<code>buildViews</code> は可視 segment がある group のみ</td></tr>
+      <tr><td>UI</td><td>各 metric 行のサブ行に条件エディタ（self なので segment 選択無し）。threshold は percent を持つ segment のみ候補</td></tr>
+      <tr><td>検証</td><td class="done">lint/build PASS（132KB）。純粋コア単体 18/18（segment キー・独立性・onChange transient）。ブラウザ end-to-end: mem≥99 で <strong>mem だけ</strong>消え CPU は残る / 更新時で mem だけ hidden。コンソールエラー無し</td></tr>
+    </table>
+
+    <h2 class="done">Phase A: バッテリー消耗レート（実装済み）</h2>
+    <p>G2 電池の level 変化イベントをローカルに蓄積し、直近の単調減少 run から消耗レートと ETA を算出して
+      HUD の g2 segment に併記する（例 <code>G2 74% 12%/h ~6h</code>）。IMU と同じ Functional Core / Imperative Shell 構成。</p>
+    <table>
+      <tr><th>ファイル</th><th>役割</th></tr>
+      <tr><td><code>src/battery/rate.ts</code></td><td>純粋コア: <code>appendBatteryEvent</code> / <code>computeDrainRate</code> / <code>formatDrainRate</code> + 型</td></tr>
+      <tr><td><code>src/battery/log.ts</code></td><td>Shell: bridge 永続(<code>toolbar.batteryLog</code>) + cached rate。<code>recordBatteryLevel</code> / <code>getDrainRateText</code> / <code>setBatteryRateConfig</code></td></tr>
+      <tr><td><code>src/battery/index.ts</code></td><td>公開 API バレル</td></tr>
+    </table>
+    <h3>Design decisions</h3>
+    <table>
+      <tr><th>項目</th><th>決定</th></tr>
+      <tr><td>対象電池</td><td>G2 のみ。phone 電池は SDK 非対応（<code>device-state</code> の方針踏襲）。</td></tr>
+      <tr><td>ログ形式</td><td>level <strong>変化時のみ</strong> <code>{level, ts}</code> をリングバッファ(上限 64)に追記し <code>bridge.setLocalStorage</code> 永続。同 level は無視。</td></tr>
+      <tr><td>レート算出</td><td>末尾から後方走査で直近の単調減少 run を取り、<code>run 区間の平均</code>（総 drop / 総 span × 3.6e6）= %/h。<code>level 上昇(充電)</code> か <code>gap&gt;2h</code> で run 打ち切り、<code>span&lt;60s</code> はノイズとして null。</td></tr>
+      <tr><td>ETA</td><td><code>currentLevel / (%/h)</code> 時間。<code>~6h</code> / <code>~1h20m</code> 形式。</td></tr>
+      <tr><td>表記カスタム</td><td><code>config.batteryRate.format</code>: <code>rate</code>(↓12%/h) / <code>mPerPct</code>(↓8m/%) / <code>eta</code>(~6h) / <code>rateEta</code>(併記, 既定)。companion で循環選択。</td></tr>
+      <tr><td>充電/データ不足</td><td>suffix を出さない（<code>''</code>）。充電判定は描画時の現在値で live ゲート（cached とは独立）。</td></tr>
+    </table>
+    <h3 class="warn">Deviations（計画/素朴な期待から外した点）</h3>
+    <table>
+      <tr><th>箇所</th><th>変更と理由</th></tr>
+      <tr><td><code>CONFIG_VERSION</code> 据え置き（4 にしない）</td><td>計画では v4 だったが、<code>migrate()</code> は <code>version!==CONFIG_VERSION</code> を旧 machines 形式として扱うため、bump すると<strong>既存 v3 config が破壊的に再 migrate され sources/groups を失う</strong>。<code>imu</code> と同じく additive optional + <code>??=</code> 補完で後方互換を保つ。</td></tr>
+      <tr><td>レート = 中央値 → 区間平均</td><td>計画は「直近 N 個の 1% 間隔の中央値」。実装は run 全体の平均レート（簡素・堅牢）。外れ値耐性が要れば後で中央値 / EWMA へ。</td></tr>
+      <tr><td><code>computeDrainRate</code> から <code>now</code> 引数を削除</td><td>未使用（ETA は最新 level から算出）。シグネチャ簡素化。</td></tr>
+      <tr><td>companion <code>applyBatteryRate</code></td><td>トグル/表記変更時に <code>setBatteryRateConfig</code> + <code>refreshBuiltins</code> を呼び、共有 battery モジュールへ即反映 + プレビュー更新（glass 不在のブラウザでも config を適用）。</td></tr>
+    </table>
+    <h3>影響ファイル</h3>
+    <table>
+      <tr><th>ファイル</th><th>種別</th><th>内容</th></tr>
+      <tr><td><code>src/battery/{rate,log,index}.ts</code></td><td>新規</td><td>純粋コア + Shell + バレル</td></tr>
+      <tr><td><code>src/config.ts</code></td><td>編集</td><td><code>batteryRate?</code> 追加 + <code>defaultBatteryRateConfig()</code> 補完（version 据え置き）</td></tr>
+      <tr><td><code>src/glass.ts</code></td><td>編集</td><td><code>initGlass</code> で bridge/config/log 復元、<code>initDeviceBattery</code> で level 変化を <code>recordBatteryLevel</code></td></tr>
+      <tr><td><code>src/builtins.ts</code></td><td>編集</td><td>g2 segment 値に <code>getDrainRateText(charging)</code> を併記</td></tr>
+      <tr><td><code>src/companion.ts</code> / <code>src/styles.css</code></td><td>編集</td><td>"Battery drain rate" トグル + 表記循環ボタン（<code>.fmt-btn</code>）</td></tr>
+    </table>
+    <h3>検証</h3>
+    <table>
+      <tr><th>項目</th><th>状況</th></tr>
+      <tr><td><code>npm run lint</code> (biome)</td><td class="done">PASS（22 files, no errors）</td></tr>
+      <tr><td><code>npm run build</code></td><td class="done">PASS（129KB、型エラーなし）</td></tr>
+      <tr><td>純粋コア単体（合成データ）</td><td class="done">10/10 PASS（減少 run=6%/h・充電境界で run 分割・gap&gt;2h・データ不足 null・ring 上限・eta 形式）</td></tr>
+      <tr><td>ブラウザ no-regression</td><td class="done">companion に "Battery drain rate" 行、表記 4 種循環・トグル動作、glass preview に g2 suffix 無し（電池データ無し）、コンソールエラー無し</td></tr>
+      <tr><td>実機（.ehpk）</td><td class="open">未実施。実機で消耗レートの精度と <code>MIN_SPAN(60s)</code>/<code>MAX_GAP(2h)</code>/上限 64 の妥当性を要確認。</td></tr>
+    </table>
+    <p class="open">Open: レート算出窓と平滑（区間平均 → 中央値/EWMA）の調整は実機ログ取得後に判断。</p>
+
+    <h2 class="done">Phase B: 表示タイミング条件エンジン（threshold）（実装済み）</h2>
+    <p>group 単位で「閾値を満たすときだけ表示」を可能にするエンジン。条件は pure 評価し、可視マップ
+      <code>visibleMap</code> を shell(glass/companion) が算出して pure render に注入する。<strong>本フェーズは UI を持たない</strong>
+      （threshold/onChange の条件エディタは Phase D に集約）。</p>
+    <table>
+      <tr><th>ファイル</th><th>役割</th></tr>
+      <tr><td><code>src/visibility/conditions.ts</code></td><td>純粋コア: <code>VisibilityCond</code> / <code>VisibleMap</code>、<code>isGroupVisible</code> / <code>evaluateVisibility</code> / <code>isVisible</code> / <code>visKey</code></td></tr>
+      <tr><td><code>src/visibility/index.ts</code></td><td>公開 API バレル</td></tr>
+    </table>
+    <h3>Design decisions</h3>
+    <table>
+      <tr><th>項目</th><th>決定</th></tr>
+      <tr><td>条件モデル</td><td><code>VisibilityCond = always | threshold{segId,op:'lte'|'gte',value} | onChange{segId,holdMs}</code>。onChange は Phase C で評価実装（B では常に true）。</td></tr>
+      <tr><td>metric 参照</td><td>self（同一 group 内 segment の <code>percent</code>）。<code>lte</code>=<code>&lt;=value</code>、<code>gte</code>=<code>&gt;=value</code>。</td></tr>
+      <tr><td>fail-open</td><td>metric segment 不在 / <code>percent</code> 無しは <strong>true（表示）</strong>。データ欠落で勝手に隠さない。</td></tr>
+      <tr><td>pure / shell 分離</td><td>threshold は状態なし pure。<code>evaluateVisibility(config, statuses)</code> を glass/companion が呼び <code>visibleMap</code> を算出 → <code>summarySections</code>/<code>buildViews</code>/<code>renderGlass</code> に optional 引数で渡す（未指定=全可視で後方互換）。Phase C で shell(タイマー) を足す前提の設計。</td></tr>
+      <tr><td>非表示の扱い</td><td>threshold 非充足の group は <code>buildViews</code> からも除外 → summary からもスワイプ詳細からも消える。</td></tr>
+      <tr><td>map を小さく保つ</td><td><code>evaluateVisibility</code> は always / status 未到着の group を map に載せない（<code>isVisible</code> 既定 true）。</td></tr>
+    </table>
+    <h3>影響ファイル</h3>
+    <table>
+      <tr><th>ファイル</th><th>種別</th><th>内容</th></tr>
+      <tr><td><code>src/visibility/{conditions,index}.ts</code></td><td>新規</td><td>純粋コア + バレル</td></tr>
+      <tr><td><code>src/config.ts</code></td><td>編集</td><td><code>GroupCfg.visibility?</code> 追加（version 据え置き、未指定=always）</td></tr>
+      <tr><td><code>src/glass-render.ts</code></td><td>編集</td><td><code>summarySections</code>/<code>summaryBody</code>/<code>buildViews</code>/<code>renderGlass</code> に <code>visible?</code> 引数を thread</td></tr>
+      <tr><td><code>src/glass.ts</code></td><td>編集</td><td>module <code>visible</code> を init/store/config 更新で再計算し描画に渡す</td></tr>
+      <tr><td><code>src/companion.ts</code></td><td>編集</td><td>プレビューに <code>visible</code> 反映（Items リストは編集用に全 group 表示のまま）</td></tr>
+      <tr><td><code>vite.config.ts</code></td><td>編集</td><td>mac <code>disk</code> に使用率 <code>percent</code> 追加（<code>df</code> Capacity 列）。value は空き GB のまま</td></tr>
+    </table>
+    <h3>検証</h3>
+    <table>
+      <tr><th>項目</th><th>状況</th></tr>
+      <tr><td><code>npm run lint</code> / <code>build</code></td><td class="done">PASS（24 files、130KB、型エラーなし）</td></tr>
+      <tr><td>純粋コア単体（合成データ）</td><td class="done">18/18 PASS（threshold lte/gte 境界・fail-open・evaluateVisibility map・isVisible 既定 true）</td></tr>
+      <tr><td><code>/api/status</code> disk percent</td><td class="done">PASS（<code>disk</code> に <code>percent:28</code>、value <code>46.2G</code>）</td></tr>
+      <tr><td>ブラウザ no-regression</td><td class="done">全 group 表示・プレビュー描画・コンソールエラー無し（render 引数追加で破綻なし）</td></tr>
+      <tr><td>条件 hide/show の UI 経由検証</td><td class="done">Phase D で end-to-end 検証済み（下記）</td></tr>
+    </table>
+
+    <h2 class="done">Phase C + D: onChange transient + 条件エディタ UI（実装済み）</h2>
+    <p><strong>Phase C</strong>: <code>onChange</code> = metric segment の <code>value</code> が更新されたとき <code>holdMs</code> だけ表示。
+      pure ロジックは状態受け渡しの <code>computeVisibleMap</code> に保ち、shell singleton <code>runtime.ts</code> が transient 状態
+      （前回値 / 活性期限）と窓終了の再描画タイマーを持つ。<strong>Phase D</strong>: companion の group 展開部に条件エディタ
+      （Always / 閾値 / 更新時）。これで機能2は完成。</p>
+    <table>
+      <tr><th>ファイル</th><th>変更</th></tr>
+      <tr><td><code>src/visibility/conditions.ts</code></td><td>編集: <code>evaluateVisibility</code> を <code>computeVisibleMap(config, statuses, prevStates, now) → {map, states, wakeAt}</code>（pure）へ発展。<code>OnChangeState</code>/<code>VisStates</code> 追加</td></tr>
+      <tr><td><code>src/visibility/runtime.ts</code></td><td>新規: shell singleton。<code>computeVisible</code>（状態保持 + <code>wakeAt</code> に <code>setTimeout</code>→<code>pokeListeners</code>）/ <code>resetVisibility</code></td></tr>
+      <tr><td><code>src/store.ts</code></td><td>編集: <code>pokeListeners()</code> 公開（窓終了で全 subscriber 再描画）</td></tr>
+      <tr><td><code>src/glass.ts</code> / <code>src/companion.ts</code></td><td>編集: <code>evaluateVisibility</code> → <code>computeVisible</code>。glass <code>cleanup</code> に <code>resetVisibility</code></td></tr>
+      <tr><td><code>src/companion.ts</code> / <code>src/styles.css</code></td><td>編集: group 展開部に条件エディタ（<code>vis-kind</code>/<code>vis-seg</code>/<code>vis-op</code>/<code>vis-value</code>/<code>vis-hold</code>）+ <code>change</code> 委譲リスナ + <code>.vis-*</code> CSS</td></tr>
+    </table>
+    <h3>Design decisions</h3>
+    <table>
+      <tr><th>項目</th><th>決定</th></tr>
+      <tr><td>pure / shell 分離</td><td><code>computeVisibleMap</code>（状態入出力 pure）と <code>runtime</code>（singleton 状態 + timer）。onChange を決定的にテスト可能。</td></tr>
+      <tr><td>onChange 既定</td><td>初回観測 = 非表示（フラッシュ防止）。value 変化時のみ <code>now+holdMs</code> まで表示。</td></tr>
+      <tr><td>多重ドライブの冪等性</td><td>glass / companion が同一 <code>store.notify</code> で各々 <code>computeVisible</code> を呼ぶが、prevValue 即更新 + 絶対時刻 <code>activeUntil</code> + timer clear/再設定で同じ結果。</td></tr>
+      <tr><td>再描画トリガ</td><td>窓終了の <code>wakeAt</code> に <code>setTimeout</code> → <code>pokeListeners()</code>（store.notify）→ glass/companion 再評価で hide。runtime→store の一方向依存（循環なし）。</td></tr>
+      <tr><td>UI（self 参照）</td><td>threshold は同一 group の <code>percent</code> segment、onChange は全 segment を候補に。<code>&lt;select&gt;</code>+number、<code>change</code> 委譲。Always 選択で <code>visibility</code> 未設定化。</td></tr>
+    </table>
+    <h3>検証</h3>
+    <table>
+      <tr><th>項目</th><th>状況</th></tr>
+      <tr><td><code>npm run lint</code> / <code>build</code></td><td class="done">PASS（25 files、133KB、型エラーなし）</td></tr>
+      <tr><td>純粋コア単体（<code>computeVisibleMap</code>）</td><td class="done">15/15 PASS（onChange 初回 hidden・変化で visible・窓終了で hidden・<code>wakeAt</code> 最小・stale キー破棄・多重呼び出し冪等・threshold 継続）</td></tr>
+      <tr><td>ブラウザ end-to-end（UI 操作）</td><td class="done">Mac group: 展開→エディタ表示 / 閾値 mem≥99 で消える・≥1 で出る / 更新時で既定 hidden / Always で復帰。コンソールエラー無し</td></tr>
+      <tr><td>transient 表示の時間遷移（実機・実 value 変化）</td><td class="open">server メトリックの実変化が要るため単体テストで担保。実機 .ehpk で Session 更新時の数秒表示を確認予定</td></tr>
+    </table>
+    <p>将来の IMU「上下を向いたら n 秒表示」は <code>runtime</code> に <code>direction</code> cond
+      （<code>onDirectionChange</code> 購読→<code>activeUntil</code> 設定）を足すだけで乗る。</p>
+
+    <hr style="margin:2.5rem 0;border:none;border-top:2px solid #ccc;" />
+    <h2>—— IMU 方向検出 基盤（完了・参考）——</h2>
+
+    <h2 class="done">現状: ライブラリ化済み (src/imu/) + UI 撤去</h2>
+    <p>up/down/forward は実機で良好（「問題なし」）。すぐ使わないため検出ロジックを
+      <code>src/imu/</code> の自己完結ライブラリに整理し、IMU 関連 UI は撤去した（コア + 有効化 API のみ残す）。</p>
+    <table>
+      <tr><th>ファイル</th><th>役割</th></tr>
+      <tr><td><code>src/imu/orientation.ts</code></td><td>純粋コア（classify/step/anglesOf、型）</td></tr>
+      <tr><td><code>src/imu/controller.ts</code></td><td>bridge 制御 + 購読: startImu/stopImu/feedImuSample/onDirectionChange/setImuConfig/isImuStarted</td></tr>
+      <tr><td><code>src/imu/config.ts</code></td><td>ImuConfig + defaultImuConfig（実測キャリブ値: pitch=x/roll=y, offset -3/-5.4, up10/down-13）</td></tr>
+      <tr><td><code>src/imu/index.ts</code></td><td>公開 API バレル</td></tr>
+    </table>
+    <p><strong>撤去したもの</strong>: glass の Look group・imu-debug overlay、companion の IMUトグル/Reset/capture/ライブ表示、dev server の <code>/imu-log</code> endpoint、<code>config.imu.debug</code>、capture/log scaffolding。
+      <strong>残した薄いアダプタ</strong>（glass.ts）: <code>onEvent</code> の <code>IMU_DATA_REPORT</code>→<code>feedImuSample</code>（潜在バグ修正 + 供給）、<code>applyImuConfig</code>（config.imu.enabled 駆動 start/stop）、cleanup の stopImu。</p>
+    <p><strong>有効化 (将来の「上下を向いたら n 秒表示」consumer)</strong>:
+      <code>config.imu.enabled=true</code> で glass アダプタが startImu → feedImuSample 供給。consumer は
+      <code>onDirectionChange((e)=&gt; …)</code>（e.direction / e.phase 'enter'|'hold'）を購読するだけ。現状 consumer 未配線で休眠。</p>
+    <p class="open">left/right は capture UI 撤去で当面再キャリブ不可（roll 値は provisional）。必要時に capture を一時復活させて roll 再取得 → defaultImuConfig を更新。</p>
+
+    <h2>Design decisions（仕様が曖昧な箇所での選択）</h2>
+    <table>
+      <tr><th>項目</th><th>決定</th></tr>
+      <tr><td>アーキテクチャ</td><td>Functional Core / Imperative Shell。純粋コア <code>src/orientation.ts</code>（分類 + hold 状態機械）と bridge シェル <code>src/imu.ts</code>（lifecycle + 購読 + debug）に分離。コアは実機なしでも合成ベクトルで検証可能。</td></tr>
+      <tr><td>imuData の解釈</td><td>SDK 未定義のため <strong>重力ベクトル(加速度)</strong> と仮定。tilt 公式で pitch/roll を算出し分類。<code>IMU_Report_Data.x/y/z</code> は optional のため <code>?? 0</code> で補正。</td></tr>
+      <tr><td>方向の規約</td><td>pitch&gt;0→up / &lt;0→down、roll&gt;0→right / &lt;0→left。符号・軸は <code>AxisConfig</code> で反転調整可能。両方超過時は絶対値が大きい方を採用。</td></tr>
+      <tr><td>hold 検出</td><td>同一 direction が <code>holdMs</code> 継続で <code>phase:'hold'</code> を 1 回 emit。向いた瞬間は <code>phase:'enter'</code>。両方を未定アクションへ供給。</td></tr>
+      <tr><td>ノイズ対策</td><td>EMA 平滑(<code>emaAlpha</code>) + <code>forwardDeg</code> デッドバンド（forward と up/down/left/right の間に <code>unknown</code> 余白）でフリッカ抑制。</td></tr>
+      <tr><td>既定 ON/OFF</td><td><code>enabled:false</code>。アクション未定で消費電力/BLE 負荷を避けるため。companion トグルと config 永続で有効化。</td></tr>
+      <tr><td>config 移行</td><td><code>imu?</code> を optional 追加（version 据え置き=3）。<code>emptyConfig</code>/<code>migrate</code> で <code>defaultImuConfig()</code> 補完。旧 config は壊さない。</td></tr>
+      <tr><td>デバッグ表示</td><td>glass のビュー巡回に <code>imu-debug</code> view を追加（<code>debug:true</code> 時のみ末尾）。raw x/y/z・pitch/roll・direction・hold を表示。再描画は <strong>≤2Hz に throttle</strong> し、active view が debug のときだけ更新（BLE 飽和防止）。</td></tr>
+      <tr><td>イベント供給経路</td><td>別 <code>onEvenHubEvent</code> を張らず、既存 <code>glass.ts onEvent</code> 内で <code>IMU_DATA_REPORT</code> を <code>feedImuSample</code> へ供給（二重購読回避）。</td></tr>
+    </table>
+
+    <h2 class="warn">Deviations（意図的に仕様/素朴な期待から外した点）</h2>
+    <table>
+      <tr><th>箇所</th><th>変更と理由</th></tr>
+      <tr><td>「左右」= 首かしげ(roll)</td><td>水平に首を振る yaw は重力ベクトルから<strong>原理的に検出不可</strong>（ジャイロ積分=ドリフト or フュージョンが必要）。左右は首かしげ(roll)として実装。</td></tr>
+      <tr><td>軸/しきい値はプレースホルダ</td><td>imuData の軸の向き・スケールが不明なため <code>defaultImuConfig()</code> の値は仮。実機の imu-debug 表示でキャリブレーション前提。</td></tr>
+      <tr><td>潜在バグ修正を同梱</td><td>既存 <code>onEvent</code> は未知 sysEvent を全てシングルクリック扱い（<code>idx=0; refresh()</code>）。IMU 有効化で <code>IMU_DATA_REPORT</code> がこれに落ちると<strong>ビューリセット + BLE 洪水</strong>。click fallback より前に IMU 分岐を追加して遮断。</td></tr>
+    </table>
+
+    <h2>Tradeoffs（検討した代替案）</h2>
+    <ul>
+      <li>ユニットテスト vs on-glass デバッグ: 後者を採用（ユーザー選択）。テストランナー未導入のため追加せず。コアは純粋に保ち将来テスト可能。</li>
+      <li>pace 変更のランタイム反映: <code>setImuConfig</code> で axis/thresholds は即反映するが、pace 変更は OFF→ON で再起動が必要（edge、簡素優先）。</li>
+      <li>debug view を巡回に統合 vs 専用モード: 既存のスワイプ巡回機構を再利用（実装簡素）。</li>
+      <li class="done">電池対策の範囲: <strong>設定トグル（既定 OFF）のみで十分</strong>とユーザー決定（2026-05）。auto-stop タイマー・フォアグラウンド限定・UI 警告ラベルは入れない。電池消費が大きいことは把握済みで、常時 ON を避けるのは利用者の明示 opt-in に委ねる。将来 consumer（向いたときのアクション）を設計する段階で、起動方式（イベント駆動で短時間だけ / R1 Ring トリガ等）を併せて検討する。</li>
+    </ul>
+
+    <h2>影響ファイル</h2>
+    <table>
+      <tr><th>ファイル</th><th>種別</th><th>内容</th></tr>
+      <tr><td><code>src/orientation.ts</code></td><td>新規</td><td>純粋コア（<code>classify</code>/<code>step</code>/<code>anglesOf</code>/型）</td></tr>
+      <tr><td><code>src/imu.ts</code></td><td>新規</td><td>bridge シェル（<code>startImu</code>/<code>stopImu</code>/<code>feedImuSample</code>/<code>onDirectionChange</code>/<code>getDebugSnapshot</code>）</td></tr>
+      <tr><td><code>src/config.ts</code></td><td>編集</td><td><code>ImuConfig</code> + <code>defaultImuConfig</code> + 補完</td></tr>
+      <tr><td><code>src/glass.ts</code></td><td>編集</td><td>バグ修正 + IMU 供給 + 起動/停止/トグル反映 + cleanup</td></tr>
+      <tr><td><code>src/glass-render.ts</code></td><td>編集</td><td><code>imu-debug</code> view</td></tr>
+      <tr><td><code>src/companion.ts</code></td><td>編集</td><td>設定トグル 2 つ（Detect orientation / IMU debug overlay）</td></tr>
+    </table>
+
+    <h2>検証状況</h2>
+    <table>
+      <tr><th>項目</th><th>状況</th></tr>
+      <tr><td><code>npm run lint</code> (biome)</td><td class="done">PASS（16 files, no errors）</td></tr>
+      <tr><td><code>npm run build</code> (tsc + vite)</td><td class="done">PASS（built, 型エラーなし）</td></tr>
+      <tr><td>シミュレータ</td><td class="warn">IMU 不可。<code>imuData</code> を常に null にするため方向検出は <strong>実機のみ検証可能</strong>。sim では「壊れていない」確認止まり。</td></tr>
+      <tr><td>実機 (.ehpk)</td><td class="open">未実施（ユーザー）。下記キャリブレーション手順参照。</td></tr>
+    </table>
+
+    <h2>コミュニティ/公式 調査結果（2026-05）</h2>
+    <p>Zenn・GitHub・公式ドキュメントを調査。<strong>未知点は公式・コミュニティとも未文書化</strong>で、今回の実装方針（加速度=重力ベクトル前提 + 自前 pitch/roll + 実機キャリブレーション + yaw 非対応）を裏付ける結果だった。</p>
+    <table>
+      <tr><th>論点</th><th>調査結果</th><th>本実装への含意</th></tr>
+      <tr><td>imuData の正体</td><td>公式は「3 つの float」とのみ。Zenn 記事(bigdra)はセクション名を「IMU（加速度センサ）」とし <strong>accelerometer として扱う</strong>。SDK d.ts に gyro/mag/orientation 等の語・別ストリームは無く、単一 <code>{x,y,z}</code> のみ。</td><td>重力ベクトル前提は妥当。</td></tr>
+      <tr><td>軸/単位/スケール</td><td>公式・記事とも<strong>記載なし</strong>（座標系・g/m·s⁻²・生値の別すべて非公開）。</td><td>実機キャリブレーション必須は不可避。</td></tr>
+      <tr><td>ImuReportPace</td><td>公式「protocol pacing codes, not literal Hz」。Zenn 記事の実測で報告間隔 100ms/500ms/1000ms を確認（非公式）。</td><td>pace=500 は妥当。</td></tr>
+      <tr><td>pitch/roll 算出</td><td>コミュニティ標準は <code>atan2(-x, hypot(y,z))</code> / <code>atan2(y,z)</code>。G2 専用のヘルパーや姿勢検出サンプルは公式・GitHub とも<strong>存在せず</strong>自前計算。</td><td>本実装の <code>anglesOf</code>（atan2 を AxisConfig で一般化）と一致。</td></tr>
+      <tr><td>yaw / heading</td><td>G2 ハードウェアは加速度+ジャイロ+地磁気(コンパス)を搭載（公式ブログ）だが、<strong>SDK は単一 {x,y,z} しか公開せず</strong>ジャイロ/磁気の個別ストリーム無し。加速度のみでは yaw 不可。</td><td>左右=roll の判断が妥当。将来 SDK が磁気/ジャイロを公開すれば yaw 検出の余地あり。</td></tr>
+      <tr><td class="warn">バッテリー消費</td><td><strong>IMU 有効化は電池を大きく消費</strong>。Zenn スクラップ(gpsnmeajp)実測で <code>P1000</code>(1s間隔)でも <strong>10 分で約 10%</strong>。常時待機は非現実的。「イベント時に 1 分だけ起動」「R1 Ring 活用」等の工夫が必要との指摘。加えてアプリ稼働中は画面非表示でも消費が増える印象との gotcha も。</td><td><strong>既定 OFF + 設定トグルで明示 opt-in は必須</strong>(実装済)。常時 ON は避ける設計が要る。</td></tr>
+    </table>
+    <p>出典(電池): <code>zenn.dev/gpsnmeajp/scraps/beb45043a2d731</code></p>
+    <p>出典: <code>zenn.dev/bigdra/articles/eveng2-sdk-features</code> / <code>hub.evenrealities.com/docs/guides/device-apis</code> / evenrealities.com ブログ（G2 センサ解説）。</p>
+
+    <h2 class="done">キャリブレーション実測</h2>
+    <p>軸: gravity=z(+)、pitch=x、roll=y（実測確定。当初 placeholder は pitch/roll が逆だった）。センサーは加速度・1g 正規化（\|v\|≈1.00）。</p>
+    <h3>up/down/forward（確定）</h3>
+    <p>forward→up→forward→down→forward の交互キャプチャ（各 3-5s 静止）で確定:</p>
+    <table>
+      <tr><th>pose</th><th>pitch</th><th>forward 基準 rel</th></tr>
+      <tr><td>forward</td><td>-3.0°</td><td>0</td></tr>
+      <tr><td>up</td><td>+15.9°</td><td><strong>+18.9°</strong></td></tr>
+      <tr><td>down</td><td>-29.8°</td><td><strong>-26.8°</strong></td></tr>
+    </table>
+    <p><code>defaultImuConfig()</code> 確定値: <code>pitchOffsetDeg:-3, rollOffsetDeg:-5.4, pitchUpDeg:10, pitchDownDeg:-13, forwardDeg:6</code>（rollDeg は暫定 15）。app.json → 0.1.10。</p>
+    <h3 class="warn">left/right（yaw は検出不可）</h3>
+    <p>左右を<strong>水平に首を振る(yaw)</strong>で行ったため rel_roll が left -0.6°/right +2.7° とノイズ同然で<strong>検出不可</strong>だった（重力ベクトルが変わらない=加速度の原理的限界）。決定: 左右は<strong>首かしげ(roll, 耳を肩へ)</strong>で再キャプチャし roll(y) を反応させる。</p>
+    <p class="open">次: clear log → forward→left(かしげ)→forward→right(かしげ)→forward を各 3-5s 静止でキャプチャ → roll 符号・<code>rollDeg</code>・roll offset を確定。ログは生値なので 0.1.10 .ehpk でそのまま取得可。スマホ <code>#imu-live</code> で値を見ながら可能。</p>
+
+    <h2 class="open">Open questions（確認・調整してほしい点）</h2>
+    <ol>
+      <li><strong>imuData の正体</strong>: 加速度(重力)か、ジャイロか、フュージョン姿勢か。実機の imu-debug で静止時に重力軸へ ~1g 相当が乗るかを確認してほしい。ジャイロなら本コアの前提（重力ベクトル）が崩れる。</li>
+      <li><strong>軸キャリブレーション</strong>: imu-debug を見ながら、正面静止で pitch≈0/roll≈0、上を向く→pitch が増える、右にかしげる→roll が増える、になるよう <code>defaultImuConfig()</code> の <code>axis</code>（from/sign）を確定してほしい。</li>
+      <li><strong>しきい値</strong>: <code>pitchUpDeg/pitchDownDeg/rollDeg/forwardDeg/holdMs/emaAlpha</code> を実機の体感で調整。</li>
+      <li><strong>yaw が必要か</strong>: 左右に首を振る検出が要るなら、imuData がジャイロを含むか実機確認 → 別途積分/フュージョン設計が必要。</li>
+      <li><strong>向いたときのアクション</strong>: 未定。<code>onDirectionChange((e) =&gt; ...)</code> でフックできる。</li>
+    </ol>
+
+    <h2 class="done">推奨: データキャプチャ → AI 分析（dev server）</h2>
+    <p>目視より確実な方法。ラベル付き IMU サンプルを dev server に集めて、Claude に <code>imu-log.jsonl</code> を分析させ、軸/符号/しきい値を算出する。</p>
+    <table>
+      <tr><th>要素</th><th>内容</th></tr>
+      <tr><td>収集経路</td><td>アプリ(WebView) → <code>fetch POST {base}/imu-log</code> → Vite plugin(<code>imuLogPlugin</code>) → <code>imu-log.jsonl</code> 追記。ACAO/OPTIONS 対応済み（.ehpk は別オリジンのため）。<strong>base = companion の設定済みサーバー source の url</strong>（= dev server origin、status fetch と同一）。<code>.ehpk</code> では相対 <code>/imu-log</code> が Mac に届かないため絶対 URL を使う。dev server 直配信時は base 無しで相対送信。</td></tr>
+      <tr><td>ラベル付け</td><td>companion の <strong>IMU capture</strong> セクションのポーズボタン[forward/up/down/left/right]。タップで <code>setCaptureLabel</code>、サンプルに label が付く。ポーズ選択時は IMU を自動 ON。</td></tr>
+      <tr><td>送信</td><td><code>imu.ts</code> がキャプチャ中サンプルをバッファし <code>LOG_FLUSH_MS</code>(750ms) ごとに配列で POST。stop / clear log ボタンあり。</td></tr>
+      <tr><td>分析</td><td>Claude が <code>imu-log.jsonl</code> を Read → 各 label の x/y/z 平均から gravity/pitch/roll 軸と符号、pitch/roll レンジ → しきい値を提案 → <code>defaultImuConfig()</code> に反映。</td></tr>
+    </table>
+    <h3>キャプチャ手順（.ehpk）</h3>
+    <ol>
+      <li>Mac で <code>npm run dev</code> を起動したまま（<code>/imu-log</code> と <code>/api/status</code> を提供）。</li>
+      <li>実機に <code>.ehpk</code> をインストール。companion で <strong>Mac の dev server URL をサーバー source として登録</strong>（status fetch と同じ URL。これがログ送信先 base になる）。capture セクションに <code>log → &lt;url&gt;/imu-log</code> が表示されることを確認。</li>
+      <li>IMU capture で「clear log」→ 各ポーズボタンをタップし、そのポーズで <strong>3-5 秒静止</strong>（forward → up → down → left → right）。最後に「stop」。</li>
+      <li>各ポーズ 1 回で十分。迷ったら同じポーズを再タップして追記してよい（label で区別される）。</li>
+      <li>「<code>imu-log.jsonl</code> を分析して」と Claude に依頼 → 確定した axis/thresholds を <code>defaultImuConfig()</code> に反映 → rebuild/pack → companion「Reset IMU calibration」で適用。</li>
+    </ol>
+    <p>dev server から直接配信（QR）する場合は base 不要で相対 <code>/imu-log</code> に届くが、ユーザー報告では QR は実機で不安定なため <code>.ehpk</code> + 絶対 URL 経路を推奨。</p>
+
+    <h2>実機キャリブレーション手順（手動・overlay 目視）</h2>
+    <p>capture を使わない場合の代替。imu-debug overlay の raw x/y/z と pitch/roll を見ながら、軸特定 → デフォルト編集 → Reset 反映 → 体感調整 のループを回す。</p>
+
+    <h3>Step 1. 軸特定（最重要）</h3>
+    <p>各ポーズで 2-3 秒静止し、imu-debug overlay の値を読む。</p>
+    <table>
+      <tr><th>ポーズ</th><th>観察</th><th>設定（<code>defaultImuConfig().axis</code>）</th></tr>
+      <tr><td>直立・正面静止</td><td>x/y/z のうち <strong>1 つだけ大きい値</strong>（重力が乗ってる軸）</td><td>その軸 → <code>gravityFrom</code>。値が負なら <code>gravitySign: -1</code>、正なら <code>1</code></td></tr>
+      <tr><td>上を向く（後ろに ~30°）</td><td>残り 2 軸のうち動く方</td><td>その軸 → <code>pitchFrom</code>。<code>pitch</code> が正に増えたら <code>pitchSign: 1</code>、負に行ったら <code>-1</code></td></tr>
+      <tr><td>右かしげ（耳を右肩へ）</td><td>最後に残った軸</td><td>その軸 → <code>rollFrom</code>。<code>roll</code> が正なら <code>rollSign: 1</code>、負なら <code>-1</code></td></tr>
+    </table>
+    <p>規約: pitch&gt;0→up / &lt;0→down、roll&gt;0→right / &lt;0→left、<code>gravityFrom</code> 軸は直立で正に乗る前提（サインで揃える）。</p>
+
+    <h3>Step 2. 反映方法（持続化の落とし穴）</h3>
+    <p><code>config.imu</code> はトグルした瞬間に localStorage に永続化されるため、<code>defaultImuConfig()</code> をコード編集してリビルドしても、<strong>既存の永続化された値が優先</strong>されて新デフォルトが反映されない。</p>
+    <p>→ companion の <strong>「Reset IMU calibration」ボタン</strong> をクリックして <code>config.imu</code> を新しい <code>defaultImuConfig()</code> で上書き保存する。<code>enabled</code>/<code>debug</code> トグル状態は維持される。<code>saveConfig</code> が <code>toolbar:config-changed</code> を発火し、glass 側の <code>onConfigChanged</code>→<code>applyImuConfig</code>→<code>setImuConfig</code> で即座にランタイム反映される。</p>
+    <p>反復ループ: <em>軸/値を src/config.ts で編集 → npm run build → deploy → Reset クリック → 確認</em>。</p>
+
+    <h3>Step 3. しきい値調整（体感）</h3>
+    <table>
+      <tr><th>パラメータ</th><th>既定</th><th>調整指針</th></tr>
+      <tr><td><code>forwardDeg</code></td><td>15°</td><td>「正面」と判定する余白。揺れで up/down にこぼれるなら拡げ、正面が出にくいなら狭める。<strong><code>forwardDeg &lt; pitchUpDeg/rollDeg</code></strong> を必ず守る（間がヒステリシス余白）</td></tr>
+      <tr><td><code>pitchUpDeg</code> / <code>pitchDownDeg</code></td><td>±25°</td><td>深め(±35°) = 意識的に向いたときだけ発火 / 浅め(±18°) = 軽い動きでも</td></tr>
+      <tr><td><code>rollDeg</code></td><td>25°</td><td>左右かしげの発火閾値</td></tr>
+      <tr><td><code>holdMs</code></td><td>800ms</td><td>hold までの保持時間。短すぎ=誤発火、長すぎ=レスポンス悪い</td></tr>
+      <tr><td><code>emaAlpha</code></td><td>0.3</td><td>平滑の追従性。フリッカするなら下げる(0.2)、応答が遅いなら上げる(0.4-0.5)</td></tr>
+    </table>
+
+    <h3>Step 4. 検証</h3>
+    <ul>
+      <li>正面静止で <code>dir: forward</code> が安定（フリッカなし）。</li>
+      <li>各方向を 800ms+ 保持して <code>HELD x.xs</code> が出る。</li>
+      <li>devtools 接続時は <code>[IMU] enter|hold &lt;dir&gt; pitch=… roll=…</code> が console に出る。</li>
+    </ul>
+  </body>
+</html>

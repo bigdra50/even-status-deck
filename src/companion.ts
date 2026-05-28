@@ -6,6 +6,7 @@ import {
   type GroupRef,
   loadConfig,
   removeSource,
+  type SegCfg,
   saveConfig,
   sourceById,
   syncSourceWithStatus,
@@ -14,7 +15,7 @@ import { fetchMachineFrom, type MachineInfo } from './data'
 import { esc } from './escape'
 import { type GlassData, summarySections } from './glass-render'
 import { icon } from './icons'
-import type { Group } from './status-types'
+import type { Group, Segment } from './status-types'
 import {
   getAllStatuses,
   getSourceStatus,
@@ -23,6 +24,10 @@ import {
   startPolling,
   subscribe,
 } from './store'
+import { computeVisible, type VisibilityLeaf } from './visibility'
+
+// 1 segment が持てる条件 leaf の上限 (UI が破綻しない緩い上限)。
+const MAX_CONDS = 4
 
 // companion (スマホ WebView) の Home / Source 編集。複数ソースを横断して設定する。
 let view: 'home' | 'source-edit' = 'home'
@@ -57,7 +62,8 @@ function syncAll(): boolean {
 // ── プレビュー ──
 // glass と同じく top/bottom セクションに分け、bottom は画面下端へ寄せる (.gsec-bot)。
 function glassPreviewHtml(): string {
-  const { top, bottom } = summarySections(glassData())
+  const visible = computeVisible(config, getAllStatuses())
+  const { top, bottom } = summarySections(glassData(), visible)
   if (top.length + bottom.length === 0) top.push('(no metric)')
   const row = (l: string) => `<span class="grow">${esc(l)}</span>`
   const hint = config.glassHints ? '<span class="grow ghint">swipe: detail  tap: back</span>' : ''
@@ -78,6 +84,54 @@ function visibleSig(): string {
     .join('|')
 }
 
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, Number.isFinite(n) ? n : lo))
+}
+
+// 1 leaf 行 (kind select + params + 削除ボタン)。threshold は percent を持つ segment のみ候補。
+// 既存 threshold leaf は percent が無くても候補に残す (data 移行後の編集を壊さない)。
+function leafRow(seg2: string, leaf: VisibilityLeaf, i: number, hasPct: boolean): string {
+  const a = `${seg2} data-idx="${i}"`
+  const allowThreshold = hasPct || leaf.kind === 'threshold'
+  const kindSel = `<select class="vis-select" data-action="seg-vis-leaf-kind" ${a}>
+    ${allowThreshold ? `<option value="threshold" ${leaf.kind === 'threshold' ? 'selected' : ''}>When…</option>` : ''}
+    <option value="onChange" ${leaf.kind === 'onChange' ? 'selected' : ''}>On update</option>
+  </select>`
+  const params =
+    leaf.kind === 'threshold'
+      ? `<select class="vis-select" data-action="seg-vis-leaf-op" ${a}>
+          <option value="gte" ${leaf.op === 'gte' ? 'selected' : ''}>≥</option>
+          <option value="lte" ${leaf.op === 'lte' ? 'selected' : ''}>≤</option>
+        </select>
+        <input class="vis-num" type="number" min="0" max="100" data-action="seg-vis-leaf-value" ${a} value="${leaf.value}" />%`
+      : `<input class="vis-num" type="number" min="1" max="60" data-action="seg-vis-leaf-hold" ${a} value="${Math.round(leaf.holdMs / 1000)}" />s`
+  const del = `<button class="vis-del" data-action="seg-vis-remove" ${a} title="Remove" aria-label="Remove">${icon('x', { size: 14 })}</button>`
+  return `<div class="vis-cond-row">${kindSel}${params}${del}</div>`
+}
+
+// segment 単位の表示タイミング条件エディタ (metric 行のサブ行)。metric は self (その segment 自身)。
+// leaf を AND/OR で複合。conditions 空 = 常時表示。2 件以上で combinator(All of/Any of) を出す。
+function segVisEditor(key: string, sc: SegCfg, seg: Segment): string {
+  const seg2 = `data-key="${key}" data-seg="${esc(sc.id)}"`
+  const hasPct = typeof seg.percent === 'number'
+  const conditions = sc.visibility?.conditions ?? []
+  const combinator = sc.visibility?.combinator ?? 'and'
+  const head =
+    conditions.length >= 2
+      ? `<select class="vis-select" data-action="seg-vis-combinator" ${seg2}>
+          <option value="and" ${combinator === 'and' ? 'selected' : ''}>All of</option>
+          <option value="or" ${combinator === 'or' ? 'selected' : ''}>Any of</option>
+        </select>`
+      : `<span class="vis-always">${conditions.length === 0 ? 'always' : 'when'}</span>`
+  const rows = conditions.map((l, i) => leafRow(seg2, l, i, hasPct)).join('')
+  const add =
+    conditions.length < MAX_CONDS
+      ? `<button class="vis-add" data-action="seg-vis-add" ${seg2}>${icon('plus', { size: 13 })} Add condition</button>`
+      : ''
+  return `<div class="vis-row" ${seg2}><span class="vis-label">Show</span>${head}</div>
+    <div class="vis-conds">${rows}${add}</div>`
+}
+
 function groupRow(ref: GroupRef): string {
   const g = statusGroup(ref.sourceId, ref.groupId)
   const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
@@ -92,10 +146,11 @@ function groupRow(ref: GroupRef): string {
         .map((sc) => {
           const seg = segById.get(sc.id)
           if (!seg) return ''
-          return `<div class="metric-row"><span class="mgrip">${icon('grip', { size: 16 })}</span>
+          return `<div class="metric"><div class="metric-row"><span class="mgrip">${icon('grip', { size: 16 })}</span>
               <span class="mname">${esc(seg.label || seg.id)}</span>
               <span class="mval">${esc(seg.value)}</span>
-              <button class="tg sm ${sc.enabled ? 'on' : ''}" data-action="toggle-seg" data-key="${key}" data-seg="${esc(sc.id)}"></button></div>`
+              <button class="tg sm ${sc.enabled ? 'on' : ''}" data-action="toggle-seg" data-key="${key}" data-seg="${esc(sc.id)}"></button></div>
+            ${segVisEditor(key, sc, seg)}</div>`
         })
         .join('')}</div>`
     : ''
@@ -346,6 +401,44 @@ async function onClick(e: MouseEvent): Promise<void> {
       await saveConfig(config)
       render()
       break
+    case 'seg-vis-add': {
+      const ref = parseKey(t.dataset.key ?? '')
+      const sc = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find(
+        (s) => s.id === t.dataset.seg,
+      )
+      if (sc) {
+        const seg = statusGroup(ref.sourceId, ref.groupId)?.segments.find(
+          (s) => s.id === t.dataset.seg,
+        )
+        const hasPct = typeof seg?.percent === 'number'
+        const cond = sc.visibility ?? { combinator: 'and', conditions: [] }
+        if (cond.conditions.length < MAX_CONDS) {
+          cond.conditions.push(
+            hasPct
+              ? { kind: 'threshold', op: 'gte', value: 80 }
+              : { kind: 'onChange', holdMs: 5000 },
+          )
+          sc.visibility = cond
+          await saveConfig(config)
+          render()
+        }
+      }
+      break
+    }
+    case 'seg-vis-remove': {
+      const ref = parseKey(t.dataset.key ?? '')
+      const sc = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find(
+        (s) => s.id === t.dataset.seg,
+      )
+      const idx = Number(t.dataset.idx)
+      if (sc?.visibility && Number.isInteger(idx)) {
+        sc.visibility.conditions.splice(idx, 1)
+        if (sc.visibility.conditions.length === 0) sc.visibility = undefined
+        await saveConfig(config)
+        render()
+      }
+      break
+    }
     case 'test':
       await runConnectionTest()
       break
@@ -355,6 +448,49 @@ async function onClick(e: MouseEvent): Promise<void> {
     default:
       break
   }
+}
+
+// segment 条件エディタ (combinator select / leaf の kind・op・value・hold) の変更を
+// config.groups[*][*].segments[*].visibility に反映する。leaf は data-idx で特定する。
+async function onSegVisChange(e: Event): Promise<void> {
+  const t = e.target as HTMLInputElement | HTMLSelectElement
+  const action = t.dataset.action
+  const key = t.dataset.key
+  const segId = t.dataset.seg
+  if (!action?.startsWith('seg-vis-') || !key || !segId) return
+  const ref = parseKey(key)
+  const sc = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find((s) => s.id === segId)
+  const vis = sc?.visibility
+  if (!vis) return
+  const val = t.value
+  if (action === 'seg-vis-combinator') {
+    vis.combinator = val === 'or' ? 'or' : 'and'
+  } else {
+    const idx = Number(t.dataset.idx)
+    const leaf = vis.conditions[idx]
+    if (!leaf) return
+    switch (action) {
+      case 'seg-vis-leaf-kind':
+        vis.conditions[idx] =
+          val === 'threshold'
+            ? { kind: 'threshold', op: 'gte', value: 80 }
+            : { kind: 'onChange', holdMs: 5000 }
+        break
+      case 'seg-vis-leaf-op':
+        if (leaf.kind === 'threshold') leaf.op = val === 'lte' ? 'lte' : 'gte'
+        break
+      case 'seg-vis-leaf-value':
+        if (leaf.kind === 'threshold') leaf.value = clamp(Number(val), 0, 100)
+        break
+      case 'seg-vis-leaf-hold':
+        if (leaf.kind === 'onChange') leaf.holdMs = clamp(Number(val), 1, 60) * 1000
+        break
+      default:
+        return
+    }
+  }
+  await saveConfig(config)
+  render()
 }
 
 // 編集中ソースの URL を検証・更新し、store に反映する。
@@ -389,9 +525,7 @@ async function runConnectionTest(): Promise<void> {
 function onStoreUpdate(): void {
   syncAll() // 新 group を config に取り込み (永続)
   if (view !== 'home') return
-  // 表示項目の構成 (status の有無で変わる) が変化したら項目リストごと再描画。
-  // 値だけの更新はプレビューのみ (drag を壊さない)。
-  // ※ config に group が永続済みでも status 到着で visible 集合が変わるため changed だけでは不十分。
+  // 表示項目の構成 (status の有無で変わる) が変化したら項目リストごと再描画。値だけの更新はプレビューのみ。
   if (visibleSig() !== lastVisibleSig) render()
   else updatePreview()
 }
@@ -399,6 +533,7 @@ function onStoreUpdate(): void {
 export async function mountCompanion(el: HTMLElement): Promise<void> {
   root = el
   el.addEventListener('click', (e) => void onClick(e))
+  el.addEventListener('change', (e) => void onSegVisChange(e)) // segment 条件エディタの select/number
   subscribe(onStoreUpdate)
 
   config = await loadConfig()

@@ -1,5 +1,6 @@
 import type { Config, GroupCfg, GroupRef } from './config'
 import type { Group, StatusDoc } from './status-types'
+import { isVisible, segKey, type VisibleMap } from './visibility'
 
 // glass 描画の純粋ロジック (bridge 非依存)。複数ソース (builtin + server) を groupOrder で
 // 横断描画する。GlassData の statuses は sourceId -> 直近 StatusDoc。
@@ -28,13 +29,16 @@ function findGroup(d: GlassData, ref: GroupRef): Group | undefined {
   return d.statuses[ref.sourceId]?.groups.find((g) => g.id === ref.groupId)
 }
 
-// 1 group の summary 行: 有効 segment を "label value" (空ラベルは値のみ) で連結。
-function groupLine(g: Group, gcfg: GroupCfg): string | null {
+// 1 group の summary 行: enabled かつ表示条件を満たす segment を "label value" で連結。
+// segment 単位の表示タイミング条件 (visible map) を適用する。全部隠れたら null (行ごと消える)。
+function groupLine(g: Group, gcfg: GroupCfg, ref: GroupRef, visible?: VisibleMap): string | null {
   const segs = new Map(g.segments.map((s) => [s.id, s]))
   const parts: string[] = []
   for (const sc of gcfg.segments) {
     const seg = segs.get(sc.id)
-    if (sc.enabled && seg) parts.push(seg.label ? `${seg.label} ${seg.value}` : seg.value)
+    if (!sc.enabled || !seg) continue
+    if (!isVisible(visible, segKey(ref.sourceId, ref.groupId, sc.id))) continue
+    parts.push(seg.label ? `${seg.label} ${seg.value}` : seg.value)
   }
   if (!parts.length) return null
   return g.label ? `${g.label}  ${parts.join('  ')}` : parts.join('  ')
@@ -43,7 +47,10 @@ function groupLine(g: Group, gcfg: GroupCfg): string | null {
 // summary 本文を align ごとに分割する。groupOrder を横断し、各 group の行を
 // align ('top' 既定 / 'bottom') に応じて top / bottom セクションへ振り分ける。
 // 各セクション内の順序は groupOrder のまま。companion プレビューでも再利用する。
-export function summarySections(d: GlassData): { top: string[]; bottom: string[] } {
+export function summarySections(
+  d: GlassData,
+  visible?: VisibleMap,
+): { top: string[]; bottom: string[] } {
   const top: string[] = []
   const bottom: string[] = []
   for (const ref of d.config.groupOrder) {
@@ -51,7 +58,7 @@ export function summarySections(d: GlassData): { top: string[]; bottom: string[]
     if (!gcfg?.enabled) continue
     const g = findGroup(d, ref)
     if (!g) continue
-    const line = groupLine(g, gcfg)
+    const line = groupLine(g, gcfg, ref, visible)
     if (!line) continue
     if (gcfg.align === 'bottom') bottom.push(line)
     else top.push(line)
@@ -60,18 +67,19 @@ export function summarySections(d: GlassData): { top: string[]; bottom: string[]
 }
 
 // summary 本文 (align を畳んだ平坦リスト)。detail フォールバック等で使う。
-export function summaryBody(d: GlassData): string[] {
-  const { top, bottom } = summarySections(d)
+export function summaryBody(d: GlassData, visible?: VisibleMap): string[] {
+  const { top, bottom } = summarySections(d, visible)
   const all = [...top, ...bottom]
   return all.length ? all : ['(no metric)']
 }
 
-// 詳細本文: その group の全 segment を bar 表示 (percent あれば)。
-function detailBody(d: GlassData, ref: GroupRef): string[] {
+// 詳細本文: その group の (表示条件を満たす) segment を bar 表示 (percent あれば)。
+function detailBody(d: GlassData, ref: GroupRef, visible?: VisibleMap): string[] {
   const g = findGroup(d, ref)
-  if (!g) return summaryBody(d)
+  if (!g) return summaryBody(d, visible)
   const lines: string[] = g.label ? [g.label] : []
   for (const seg of g.segments) {
+    if (!isVisible(visible, segKey(ref.sourceId, ref.groupId, seg.id))) continue
     if (typeof seg.percent === 'number') {
       const name = seg.label ? pad(seg.label, 8) : ''
       lines.push(
@@ -101,7 +109,7 @@ function frame(body: string[], hint: string | null): string {
 // HUD は builtin group として本文に含まれるため、本文 + ヒント を MAX_ROWS に収める。
 // summary は align で top/bottom セクションに分け、間を空行で埋めて上下に寄せる。
 // detail は単一 group なので従来通り上詰め。超過時は "+N more" に畳む (行予算 hard cap)。
-export function renderGlass(view: GView, d: GlassData): string {
+export function renderGlass(view: GView, d: GlassData, visible?: VisibleMap): string {
   const hint = d.config.glassHints
     ? view === 'summary'
       ? 'swipe: detail  tap: back'
@@ -109,9 +117,9 @@ export function renderGlass(view: GView, d: GlassData): string {
     : null
   const budget = MAX_ROWS - (hint ? 1 : 0)
 
-  if (view !== 'summary') return frame(clampRows(detailBody(d, view), budget), hint)
+  if (view !== 'summary') return frame(clampRows(detailBody(d, view, visible), budget), hint)
 
-  const { top, bottom } = summarySections(d)
+  const { top, bottom } = summarySections(d, visible)
   if (top.length + bottom.length === 0) return frame(['(no metric)'], hint)
 
   // 下寄せ無し → 従来の上詰め (frame が hint を下段へ押す)。
@@ -127,12 +135,15 @@ export function renderGlass(view: GView, d: GlassData): string {
   return frame([...top, ...Array<string>(gap).fill(''), ...bottom], hint)
 }
 
-// 表示するビュー: summary + 有効 group (groupOrder 順)。
-export function buildViews(d: GlassData): GView[] {
+// 表示するビュー: summary + 表示可能な segment が 1 つ以上ある有効 group (groupOrder 順)。
+// 全 segment が条件で隠れた group は detail も出さない (groupLine が null)。
+export function buildViews(d: GlassData, visible?: VisibleMap): GView[] {
   const out: GView[] = ['summary']
   for (const ref of d.config.groupOrder) {
     const gcfg = d.config.groups[ref.sourceId]?.[ref.groupId]
-    if (gcfg?.enabled && findGroup(d, ref)) out.push(ref)
+    if (!gcfg?.enabled) continue
+    const g = findGroup(d, ref)
+    if (g && groupLine(g, gcfg, ref, visible)) out.push(ref)
   }
   return out
 }

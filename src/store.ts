@@ -20,6 +20,11 @@ function notify(): void {
   for (const l of listeners) l()
 }
 
+// 外部 (visibility runtime の窓終了タイマー等) から全 subscriber 再描画を促す公開トリガ。
+export function pokeListeners(): void {
+  notify()
+}
+
 export function subscribe(fn: Listener): () => void {
   listeners.add(fn)
   return () => {

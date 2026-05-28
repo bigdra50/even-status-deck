@@ -1,5 +1,6 @@
 // builtin local ソース: 時刻/日付/G2 電池を client 算出し、server と同じ StatusDoc 形で返す。
 // (旧 HUD。これにより HUD も 1 つの group として並べ替え・ON/OFF 対象になる)
+import { formatEta, formatRate, getBatteryDrainRate } from './battery'
 import { getGlassBattery } from './device-state'
 import type { Segment, StatusDoc } from './status-types'
 
@@ -56,7 +57,9 @@ function timeDate(): { time: string; date: string } {
   return { time, date: `${WEEKDAYS[now.getDay()]} ${num}` }
 }
 
-// builtin local の StatusDoc。group "hud" に time/date(空ラベル=値のみ)/g2 電池。
+// builtin local の StatusDoc。group "hud" に time/date(空ラベル=値のみ)/g2 電池 + drain/est。
+// drain(消耗レート)/est(残り時間) は独立 segment。充電中/データ不足で算出できないときは出さない
+// (segment 不在=非描画。config entry は sync 済みなら温存され toggle/順/条件は保持される)。
 export function localStatus(): StatusDoc {
   const { time, date } = timeDate()
   const { level, charging } = getGlassBattery()
@@ -72,6 +75,11 @@ export function localStatus(): StatusDoc {
       percent: level,
       defaultEnabled: true,
     })
+    const rate = getBatteryDrainRate(charging) // 充電中/データ不足は null
+    const drain = formatRate(rate)
+    if (drain) segments.push({ id: 'drain', label: 'Drain', value: drain, defaultEnabled: true })
+    const est = formatEta(rate)
+    if (est) segments.push({ id: 'est', label: 'EST', value: est, defaultEnabled: true })
   }
   return { version: 1, ts: Date.now(), groups: [{ id: 'hud', label: '', segments }] }
 }
