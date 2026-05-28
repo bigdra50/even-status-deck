@@ -354,5 +354,135 @@
       <li>各方向を 800ms+ 保持して <code>HELD x.xs</code> が出る。</li>
       <li>devtools 接続時は <code>[IMU] enter|hold &lt;dir&gt; pitch=… roll=…</code> が console に出る。</li>
     </ul>
+
+    <h1 style="margin-top:3rem;border-top:3px solid #333;padding-top:1rem">白画面修正 — Plan A (実装済) / Plan B (worktree で着手)</h1>
+    <p>
+      症状: 実機 iPhone (iOS18.7, Even App 内 WKWebView)・<strong>前面・画面ON・放置</strong>で
+      約数分後に companion が白画面 + グラス更新停止。原因は WKWebView の
+      <strong>WebContent プロセス強制終了 (jettison)</strong>。JS 例外でも lifecycle でもなく、JS 文脈ごと死ぬため
+      JS からは検知・自己回復不可。詳細な bisect ログは issue <code>#4</code> に集約。
+    </p>
+    <table>
+      <tr><th>確定事項 (bisect)</th><th>結論</th></tr>
+      <tr><td>周期処理ゼロ (0.1.19)</td><td class="done">安定 (10分超)</td></tr>
+      <tr><td>毎分 clock のみでも (0.1.20 / 0.1.23)</td><td class="warn">停止</td></tr>
+      <tr><td>DOM 再描画 / bridge(textContainerUpgrade) / network / AudioContext / footprint</td><td>各々<strong>無罪</strong></td></tr>
+      <tr><td>残る差分</td><td>toolbar 固有の「毎 notify で pub-sub 集約 (<code>getAllStatuses</code>/<code>syncAll</code>/<code>computeVisible</code>/<code>buildViews</code>) + companion DOM 再描画」</td></tr>
+      <tr><td>落ちない兄弟 (er-clock / wareki / even-toolkit)</td><td>最小の<strong>直接描画</strong>のみ (store 集約も companion 周期再描画も無し)</td></tr>
+    </table>
+
+    <h2 class="done">Plan A (実装済み・実機検証待ち) — er-clock 式の最小更新に寄せる</h2>
+    <p>main ブランチ。commit <code>a46764a</code> (fix) + <code>2693ef0</code> (release 0.1.26)。
+      <code>eveng2-toolbar.ehpk</code> を pack 済み。<strong>実機での放置安定性をユーザーが検証する。</strong></p>
+    <table>
+      <tr><th>ファイル</th><th>変更</th></tr>
+      <tr><td><code>src/store.ts</code></td><td><code>tickClock</code>/<code>startClock</code>/<code>clockTimer</code> を撤去 (時刻 tick は glass が所有)。<code>refreshSource</code> に内容シグネチャ diff を追加し、無変化 poll の <code>notify</code> を抑制。<code>refreshBuiltins</code> は電池 (低頻度) 用に残す。</td></tr>
+      <tr><td><code>src/glass.ts</code></td><td>glass-local の分境界タイマー (<code>scheduleGlassClock</code>/<code>glassTick</code>) で <code>builtins.localStatus()</code> を直接再計算し <code>refresh</code> するだけ (<code>store.notify</code> を介さない)。<code>refresh</code> に content-diff を入れ、無変化なら <code>textContainerUpgrade</code> をスキップ。<code>onStoreUpdate</code>/<code>initGlass</code> で builtin の時刻を上書きし poll 時も最新化。</td></tr>
+      <tr><td><code>src/companion.ts</code></td><td><code>startClock</code> 呼び出しを撤去。<code>onStoreUpdate</code> の毎 tick <code>updatePreview()</code> を撤去し、構成変化 (<code>visibleSig</code> 変化) 時の <code>render()</code> のみに。<code>updatePreview</code> は drag ハンドラ用に関数は残す。</td></tr>
+    </table>
+    <h3>Design decisions</h3>
+    <table>
+      <tr><th>項目</th><th>決定 / 理由</th></tr>
+      <tr><td>clock の所有者</td><td>store の pub-sub から glass-local の自走タイマーへ移管。無サーバ時 (再現条件) は毎分 <code>localStatus()+renderGlass+textContainerUpgrade(diff)</code> のみ = er-clock 相当。</td></tr>
+      <tr><td>集約の発火条件</td><td>poll 成功かつ<strong>実データ変化時</strong>だけ <code>notify</code> → 集約。サーバが同値を返す poll は内容シグネチャで握り潰す。</td></tr>
+      <tr><td>companion preview</td><td>放置中はライブ更新しない (設定モックなので値追従はユーザー編集/構成変化/並べ替えで十分)。実機グラスは glass-local clock で毎分更新。</td></tr>
+    </table>
+    <h3 class="open">Open questions / 既知の挙動変化</h3>
+    <ul>
+      <li>builtin に対する時刻依存の表示条件は非対応 (clock tick では visibility を再評価せず cache 利用)。電池条件は notify 経由で評価される。実用上、時刻 threshold は設定されない前提。</li>
+      <li><span class="open">本質検証は実機放置のみ。</span>ブラウザでは bridge が無く glass-local clock は走らない (lint/build + companion 動作 + console エラー無しまで確認済み)。</li>
+      <li>これで直らなければ Plan B (even-toolkit 全面移行) へ。根治の保険はホスト側 (Even App が <code>webViewWebContentProcessDidTerminate</code> で reload) で、これは Even Realities 製のため web 側では対処不可。</li>
+    </ul>
+
+    <h2>Plan B (worktree で B-0 着手) — even-toolkit (React + useGlasses) へ全面移行</h2>
+    <p>
+      A が効かない場合の保険。落ちない er-clock と同じスタック (even-toolkit の
+      <code>useGlasses</code> + <code>EvenHubBridge</code> + keep-alive) へ移行する。
+      worktree <code>../eveng2-toolbar-plan-b</code> / branch <code>plan-b/even-toolkit</code> / commit <code>0dd134c</code>。
+      gpt-5.5 と議論し「最初から feature parity を狙わず、白画面仮説を検証する最小縦スライス (B-0) から」を採用。
+    </p>
+    <table>
+      <tr><th>MS</th><th>目的</th><th>含む</th><th>状況</th></tr>
+      <tr><td>B-0</td><td>白画面仮説を even-toolkit 経路で検証</td><td>時刻/電池/消耗レート + 単一サーバ status を useGlasses で表示</td><td class="done">実装済み (browser smoke 済 / 実機未)</td></tr>
+      <tr><td>B-1</td><td>HUD として最低限</td><td>複数ソース横断 / スワイプ巡回 / 既存 config 読込</td><td class="open">未着手</td></tr>
+      <tr><td>B-2</td><td>companion parity</td><td>source 追加 / drag 並べ替え / 表示タイミング条件編集 (even-toolkit web components)</td><td class="open">未着手</td></tr>
+      <tr><td>B-3</td><td>周辺機能</td><td>IMU / 詳細表示 / UX</td><td class="open">未着手</td></tr>
+    </table>
+    <h3>B-0 の構成</h3>
+    <table>
+      <tr><th>ファイル</th><th>役割</th></tr>
+      <tr><td><code>src/state.ts</code></td><td>immutable snapshot ストア。内容シグネチャで dedup し、変化時だけ新参照を <code>commit</code>。時刻 tick (毎分) / server poll (60s) / G2 電池購読 (生 SDK <code>waitForEvenAppBridge</code>) を所有。pub-sub store は廃止。</td></tr>
+      <tr><td><code>src/glass/render.ts</code></td><td>snapshot → <code>DisplayData</code> (10行) の純粋関数 (even-toolkit の <code>line</code>/<code>separator</code>)。</td></tr>
+      <tr><td><code>src/glass/AppGlasses.tsx</code></td><td><code>useGlasses</code> ホスト。<code>getSnapshot</code> を 100ms 参照比較し変化時だけ <code>bridge.updateHomeText</code>。<code>getPageMode=home</code> で double-click 終了。</td></tr>
+      <tr><td><code>src/companion/Companion.tsx</code></td><td>単一サーバ URL 設定 + 接続テスト + 状態表示。<code>useSyncExternalStore</code> で snapshot 購読 (毎 tick の DOM 再描画なし)。</td></tr>
+      <tr><td>core 流用</td><td><code>data.ts</code> / <code>builtins.ts</code> / <code>battery/</code> / <code>device-state.ts</code> / <code>status-types.ts</code> はそのまま。vite に React plugin 追加、既存 dev API (<code>/api/status</code>) は維持。</td></tr>
+    </table>
+    <h3>Design decisions / Tradeoffs</h3>
+    <table>
+      <tr><th>項目</th><th>決定 / 理由</th></tr>
+      <tr><td>開始スコープ</td><td>feature parity ではなく検証用縦スライス (gpt-5.5 推奨)。A が実機で効けば B は破棄しうるため、不要作業 (companion 編集 UI / DnD / 条件編集) を最初から巻き込まない。</td></tr>
+      <tr><td>状態管理</td><td>旧 pub-sub store (notify→全 subscriber 集約) を廃し、immutable snapshot + 参照比較 (useGlasses の前提) + <code>useSyncExternalStore</code>。これが「毎 tick の重い集約/再描画」を構造的に起こさない。</td></tr>
+      <tr><td>電池取得</td><td><code>EvenHubBridge</code> は device info/status を公開しないため、表示は useGlasses の bridge、電池は生 SDK bridge を併用 (同一チャネル)。</td></tr>
+      <tr><td>old vanilla 残置</td><td><code>store.ts</code>/<code>glass.ts</code>/<code>companion.ts</code> 等の旧実装は worktree に残置 (tsc は通る dead code)。B-1/B-2 で順次置換・削除。</td></tr>
+    </table>
+    <h3 class="open">Open questions</h3>
+    <ul>
+      <li><span class="open">app.json の bump / pack は未実施。</span>A と B は同一 <code>package_id</code> で実機に同時共存できないため、A の実機検証を優先。A が不採用と決まった時点で B のバージョンを bump (例 0.2.0) して pack する。</li>
+      <li>バンドルは 328KB (gzip 109KB) と A (134KB) より大きいが、footprint は bisect で無罪・er-clock も同スタックで安定のため B-0 の検証対象ではない。</li>
+      <li>B-0 の<strong>完了条件は「便利さ」ではなく、実機 WKWebView で周期 fetch + glass 更新を走らせても白画面化しないこと</strong>。これが満たされて初めて全面移行の根拠になる。</li>
+    </ul>
+
+    <h1 style="margin-top:3rem;border-top:3px solid #333;padding-top:1rem">表示要素の情報アーキテクチャ刷新（Plan A 本線の改善）</h1>
+    <p>
+      白画面が Plan A で解決した後、companion の表示を整理する。gpt-5.5 と 2 回議論して合意。
+      方針: <strong>group は「素材」(編集・ON/OFF・条件の単位)、glass の行は「表示レシピ」(配置の単位)</strong> として分離する。
+      group は実装都合 (builtin/server) でなく<strong>意味単位</strong>で切る。
+    </p>
+    <table>
+      <tr><th>#</th><th>内容</th><th>状況</th></tr>
+      <tr><td>0</td><td>companion の overscroll (端の白い余白) 抑制</td><td class="done">済 (0.1.28)</td></tr>
+      <tr><td>1</td><td>builtin を Clock / G2 Battery に再構成 + ラベル明確化 + code-owned 化</td><td class="done">実装済 (実機検証待ち)</td></tr>
+      <tr><td>2</td><td>glass layout 分離 (<code>rows</code> モデル)</td><td class="open">設計済・未実装</td></tr>
+      <tr><td>3</td><td>Network 要素</td><td class="warn">不採用 (iOS WKWebView で速度計測不可)</td></tr>
+    </table>
+
+    <h2 class="done">#1 builtin 再構成（commit edf6f3c）</h2>
+    <p><strong>「本体(時刻/電池)」という日本語ラベルの根本原因</strong>: config 全体 (sources 配列を含む) を localStorage に保存しており、builtin source の label もそこに永続化される。
+      i18n commit (<code>6f42e6d</code>) で default を <code>'Device'</code> に変えたが、<code>ensureBuiltin</code> は「無ければ追加」だけで既存 label を上書きしないため、実機の旧日本語ラベルが残っていた。
+      companion の group 行はラベルが空のとき source label にフォールバックするので、それが表示されていた。</p>
+    <table>
+      <tr><th>group</th><th>segment (内部ID)</th><th>glass 短縮</th><th>companion 説明的</th></tr>
+      <tr><td rowspan="2"><strong>Clock</strong></td><td>time</td><td><code>12:34</code> (値のみ)</td><td>Time</td></tr>
+      <tr><td>date</td><td><code>Thu 05-28</code></td><td>Date</td></tr>
+      <tr><td rowspan="3"><strong>G2 Battery</strong></td><td>level</td><td><code>Bat 82%</code></td><td>Battery level</td></tr>
+      <tr><td>rate (旧 drain)</td><td><code>↓12%/h</code></td><td>Rate</td></tr>
+      <tr><td>eta (旧 est)</td><td><code>Left 6h</code></td><td>Estimated time left</td></tr>
+    </table>
+    <h3>Design decisions</h3>
+    <table>
+      <tr><th>項目</th><th>決定 / 理由</th></tr>
+      <tr><td>グルーピング軸</td><td>「Phone」でなく <strong>Clock</strong>。「Phone で計算」は実装都合の名前で <code>builtin</code> と同じ失敗をする。中の segment が Time/Date なので group=Clock が階層明確 (Time&gt;Time の衝突回避)。</td></tr>
+      <tr><td>ラベルの所在</td><td>builtin の表示ラベルは <strong>code-owned</strong> (<code>BUILTIN_GROUP_LABELS</code>/<code>BUILTIN_SEG_LABELS</code>)。localStorage に保存せず、companion はこれで行名を出す。永続 source label にフォールバックしない。</td></tr>
+      <tr><td>glass / companion 分離</td><td>glass は狭いので短縮ラベル (builtins.ts の <code>seg.label</code>)、companion は説明的ラベル (config の map)。同一 <code>StatusDoc</code> から両表示を出し分ける。</td></tr>
+      <tr><td>source 非表示</td><td>builtin は SOURCES 一覧から除外 (サーバ設定専用に純化)。ITEMS にのみ Clock/G2 Battery として出す。</td></tr>
+      <tr><td>移行 (migrate)</td><td>旧 <code>hud</code> group を <code>clock</code>/<code>g2</code> へ再構成。segment id が変わる (g2→level, drain→rate, est→eta) ため旧トグルは引き継がず既定 ON で sync 補充。builtin の表示順 (先頭) は維持。<strong>CONFIG_VERSION は bump しない</strong> (additive な正規化。bump すると else 分岐が v3 config を破壊する既知の罠)。</td></tr>
+      <tr><td>Network 不採用</td><td>iOS WKWebView は <code>navigator.connection</code> 非対応で回線速度を常時計測できない (実測は帯域消費で HUD 不適)。速度実測は Mac 側のみ可だが、ユーザー判断で今回は見送り。</td></tr>
+    </table>
+    <h3 class="open">挙動変化</h3>
+    <ul>
+      <li>glass の HUD が <strong>1 行 → 2 行</strong>になる (Clock 行 + G2 Battery 行)。#2 の layout 分離で 1 行に混ぜることも可能になる。</li>
+      <li>実機の旧 builtin segment トグル (time/date/g2 等の ON/OFF) はリセットされ既定 ON に戻る (id 変更のため)。</li>
+    </ul>
+
+    <h2 class="open">#2 glass layout 分離（設計済・未実装）</h2>
+    <p>現状 glass-render は <strong>論理 group = 物理 1 行</strong>固定で、「1 行目に時計と電池を混ぜる」等ができない。group (素材) と行 (表示レシピ) を分離する。</p>
+    <table>
+      <tr><th>項目</th><th>設計 (gpt-5.5 合意)</th></tr>
+      <tr><td>内部モデル</td><td><code>config.glassLayout.rows: [{ anchor:'top'|'bottom', items: segKey[] }]</code>。segment 側に行番号/改行 hint を持たせるのは悪手 (表示都合が意味モデルに漏れる)。</td></tr>
+      <tr><td>UI</td><td>自由キャンバスにせず、Top/Bottom の各行に segment を追加・削除・並べ替えする程度に制限。</td></tr>
+      <tr><td>横溢れ</td><td>折返し禁止・末尾 <code>…</code> 省略 + companion プレビューで「長すぎ警告」。glass は 10 行固定。</td></tr>
+      <tr><td>後方互換</td><td>既存の group=1行 (+align) を rows へ機械変換。既存ユーザーは見た目不変で開始。</td></tr>
+      <tr><td>MVP</td><td>(1) config に <code>glassLayout.rows</code> 追加 (2) 未設定なら既存 group 設定から rows 生成 (3) renderer を group毎→row毎に変更 (4) companion は row に segment 追加/削除/並べ替え (5) anchor は row が持つ。</td></tr>
+    </table>
   </body>
 </html>
