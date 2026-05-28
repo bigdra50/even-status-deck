@@ -492,27 +492,64 @@ body {
   gap: var(--space-2);
 }
 
-/* glass layout エディタ (rows / chips) */
-.lay-row {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-3);
-  margin-bottom: var(--space-2);
-  background: var(--surface);
-}
-.lay-row-head {
+/* glass layout WYSIWYG エディタ (GLASS PREVIEW 上で segment を配置) */
+.cmp-label-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+}
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  padding: 0;
+}
+.wys-screen {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 180px;
   gap: var(--space-2);
-  margin-bottom: var(--space-2);
 }
-.lay-warn {
-  color: #e0a458;
-  margin-left: auto;
+.wys-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wys-bot {
+  justify-content: flex-end;
+}
+.wys-empty {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  border: 1px dashed #333;
+  border-radius: 6px;
+  padding: 6px;
+  text-align: center;
+}
+.wys-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.wys-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1;
+  min-height: 26px;
+  padding: 2px;
+  border-radius: 6px;
+}
+.wys-row-ctl {
   display: inline-flex;
+  gap: 2px;
+  flex: 0 0 auto;
 }
-.lay-row-x,
-.lay-x {
+.wys-row-btn,
+.wys-x {
   background: none;
   border: none;
   color: var(--text-dim);
@@ -520,33 +557,43 @@ body {
   padding: 0;
   display: inline-flex;
 }
-.lay-row-head .lay-row-x {
-  margin-left: var(--space-1, 4px);
+.wys-over {
+  color: #e0a458;
+  display: inline-flex;
 }
-.lay-items {
+.wys-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 12px;
+  background: rgba(216, 240, 216, 0.12);
+  color: #d8f0d8;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.wys-grip {
+  cursor: grab;
+  opacity: 0.6;
+  display: inline-flex;
+}
+.wys-bar {
   display: flex;
-  flex-wrap: wrap;
   gap: var(--space-2);
-  min-height: 32px;
+  margin-top: var(--space-2);
 }
-.lay-unplaced {
+.save-btn.sm {
+  margin-top: 0;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-sm);
+}
+.wys-shelf {
+  background: var(--surface);
   border: 1px dashed var(--border);
   border-radius: var(--radius-md);
   padding: var(--space-2) var(--space-3);
-}
-.lay-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  background: var(--input-bg);
-  border-radius: 14px;
-  font-size: var(--fs-sm);
-}
-.lay-grip {
-  cursor: grab;
-  color: var(--text-dim);
-  display: inline-flex;
+  min-height: 32px;
 }
 
 /* glass preview (companion 内, 実機比率) */

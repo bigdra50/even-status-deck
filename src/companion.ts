@@ -6,6 +6,7 @@ import {
   BUILTIN_SOURCE_ID,
   type Config,
   emptyConfig,
+  type GAlign,
   type GlassRow,
   type GroupRef,
   generateGlassLayout,
@@ -39,6 +40,9 @@ let root: HTMLElement | null = null
 let testState: 'idle' | 'testing' | 'ok' | 'error' = 'idle'
 let testError = ''
 let testUrl = ''
+
+// glass layout の編集モード (GLASS PREVIEW を WYSIWYG 編集面にする / 普段は view)。
+let layoutEditing = false
 
 function glassData(): GlassData {
   return { config, statuses: getAllStatuses() }
@@ -238,46 +242,65 @@ function rowOverflow(row: GlassRow): boolean {
   return len + Math.max(0, n - 1) * 2 > 40
 }
 
-function layoutChip(key: string, placed: boolean): string {
+// WYSIWYG の segment chip。グラス上に置く編集要素 (grip + ラベル + 除去×)。
+function wysChip(key: string): string {
   const { group, seg } = segLabelParts(key)
-  const x = placed
-    ? `<button class="lay-x" data-action="layout-item-remove" data-segkey="${esc(key)}" title="Unplace" aria-label="Unplace">${icon('x', { size: 12 })}</button>`
-    : ''
-  return `<span class="lay-chip" data-segkey="${esc(key)}"><span class="lay-grip">${icon('grip', { size: 13 })}</span><span class="lay-txt">${esc(group)} ${esc(seg)}</span>${x}</span>`
+  const label = group ? `${group} ${seg}` : seg
+  return `<span class="wys-chip" data-segkey="${esc(key)}" title="${esc(label)}"><span class="wys-grip">${icon('grip', { size: 11 })}</span><span class="wys-txt">${esc(seg)}</span><button class="wys-x" data-action="layout-item-remove" data-segkey="${esc(key)}" aria-label="Unplace">${icon('x', { size: 10 })}</button></span>`
 }
 
-function renderLayoutSection(): string {
-  const lay = config.glassLayout
-  if (!lay) {
-    return `<div class="cmp-label">Glass layout</div>
-      <div class="cmp-sub">各 group を 1 行ずつ表示中。カスタマイズすると時計と電池を 1 行にまとめる等、自由に配置できます。</div>
-      <button class="save-btn" data-action="layout-customize">${icon('plus', { size: 16 })}Customize layout</button>`
-  }
+// WYSIWYG の 1 行 (chip コンテナ + 行操作: 上下反転 / 削除)。
+function wysRow(row: GlassRow): string {
+  const chips = row.items.map(wysChip).join('')
+  const flip = `<button class="wys-row-btn" data-action="layout-row-anchor" data-row-id="${esc(row.id)}" title="${row.anchor === 'bottom' ? 'Move to top' : 'Move to bottom'}">${icon(row.anchor === 'bottom' ? 'align-top' : 'align-bottom', { size: 12 })}</button>`
+  const del = `<button class="wys-row-btn" data-action="layout-row-remove" data-row-id="${esc(row.id)}" aria-label="Remove row">${icon('x', { size: 12 })}</button>`
+  const warn = rowOverflow(row)
+    ? `<span class="wys-over" title="1 行に長すぎる可能性">${icon('alert', { size: 12 })}</span>`
+    : ''
+  return `<div class="wys-row" data-row-id="${esc(row.id)}"><div class="wys-items" data-row-id="${esc(row.id)}">${chips}</div><span class="wys-row-ctl">${warn}${flip}${del}</span></div>`
+}
+
+// 編集モードのキャンバス (top/bottom ゾーン) + 棚 + 行追加 / Reset。
+function renderGlassEdit(lay: NonNullable<Config['glassLayout']>): string {
+  const top = lay.rows.filter((r) => r.anchor !== 'bottom')
+  const bot = lay.rows.filter((r) => r.anchor === 'bottom')
   const placed = new Set(lay.rows.flatMap((r) => r.items))
   const unplaced = allEnabledSegKeys().filter((k) => !placed.has(k))
-  const rows = lay.rows
-    .map((row) => {
-      const bottom = row.anchor === 'bottom'
-      const anchor = `<button class="align-btn ${bottom ? 'bottom' : ''}" data-action="layout-row-anchor" data-row-id="${esc(row.id)}" title="${bottom ? 'Bottom-aligned' : 'Top-aligned'}">${icon(bottom ? 'align-bottom' : 'align-top', { size: 16 })}</button>`
-      const warn = rowOverflow(row)
-        ? `<span class="lay-warn" title="1 行に長すぎる可能性">${icon('alert', { size: 14 })}</span>`
-        : ''
-      const del = `<button class="lay-row-x" data-action="layout-row-remove" data-row-id="${esc(row.id)}" title="Remove row" aria-label="Remove row">${icon('x', { size: 14 })}</button>`
-      const chips = row.items.map((k) => layoutChip(k, true)).join('')
-      return `<div class="lay-row"><div class="lay-row-head">${anchor}${warn}${del}</div>
-        <div class="lay-items" data-row-id="${esc(row.id)}">${chips}</div></div>`
-    })
-    .join('')
-  const unplacedHtml = unplaced.length
-    ? unplaced.map((k) => layoutChip(k, false)).join('')
+  const zone = (rows: GlassRow[], cls: string, empty: string) =>
+    `<div class="wys-zone ${cls}">${rows.map(wysRow).join('') || `<div class="wys-empty">${empty}</div>`}</div>`
+  const shelf = unplaced.length
+    ? unplaced.map(wysChip).join('')
     : '<span class="cmp-sub">未配置なし</span>'
-  return `<div class="cmp-label">Glass layout</div>
-    <div class="cmp-sub">segment を行間でドラッグ。Top は上寄せ / Bottom は下寄せ。</div>
-    <div id="lay-rows">${rows}</div>
-    <button class="save-btn" data-action="layout-row-add">${icon('plus', { size: 16 })}Add row</button>
+  return `<div class="gpv"><div class="gpv-cap">G2 576×288 — editing</div>
+      <div class="gpv-screen wys-screen">
+        ${zone(top, 'wys-top', 'top rows (上寄せ)')}
+        ${zone(bot, 'wys-bot', 'bottom rows (下寄せ)')}
+      </div></div>
+    <div class="wys-bar">
+      <button class="save-btn sm" data-action="layout-row-add" data-anchor="top">${icon('plus', { size: 14 })}Top row</button>
+      <button class="save-btn sm" data-action="layout-row-add" data-anchor="bottom">${icon('plus', { size: 14 })}Bottom row</button>
+    </div>
     <div class="cmp-label">Unplaced</div>
-    <div class="lay-items lay-unplaced" data-unplaced="1">${unplacedHtml}</div>
+    <div class="wys-items wys-shelf" data-shelf="1">${shelf}</div>
     <button class="danger-btn" data-action="layout-reset">Reset to auto</button>`
+}
+
+// Glass セクション: プレビュー一本。view は実機同等の連結テキスト、edit は WYSIWYG。
+function renderGlassSection(): string {
+  const lay = config.glassLayout
+  if (!lay) {
+    return `<div class="cmp-label">Glass</div>
+      <div class="gpv"><div class="gpv-cap">G2 576×288</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
+      <div class="cmp-sub">各 group を 1 行ずつ表示中。Customize するとプレビュー上で自由に配置できます。</div>
+      <button class="save-btn" data-action="layout-customize">${icon('plus', { size: 16 })}Customize layout</button>`
+  }
+  if (layoutEditing) {
+    return `<div class="cmp-label cmp-label-row">Glass layout<button class="link-btn" data-action="layout-edit-toggle">Done</button></div>
+      <div class="cmp-sub">segment をグラス上の行間・棚へドラッグ。上段=上寄せ / 下段=下寄せ。</div>
+      ${renderGlassEdit(lay)}`
+  }
+  return `<div class="cmp-label cmp-label-row">Glass<button class="link-btn" data-action="layout-edit-toggle">Edit layout</button></div>
+    <div class="gpv"><div class="gpv-cap">G2 576×288</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>`
 }
 
 function renderHome(): string {
@@ -297,11 +320,7 @@ function renderHome(): string {
       <span class="src-name" style="font-size:var(--fs-md);font-weight:500;">Show glass hints</span>
       <button class="tg sm ${config.glassHints ? 'on' : ''}" data-action="toggle-hints"></button></div></div>
 
-    ${renderLayoutSection()}
-
-    <div class="cmp-label">Glass preview</div>
-    <div class="gpv"><div class="gpv-cap">G2 576×288</div>
-      <div class="gpv-screen">${glassPreviewHtml()}</div></div>
+    ${renderGlassSection()}
   `
 }
 
@@ -353,8 +372,9 @@ function render(): void {
 }
 
 function updatePreview(): void {
+  // 編集モードの WYSIWYG キャンバス (.wys-screen) は上書きしない (view の連結テキストのみ更新)。
   const el = root?.querySelector('.gpv-screen')
-  if (el) el.innerHTML = glassPreviewHtml()
+  if (el && !el.classList.contains('wys-screen')) el.innerHTML = glassPreviewHtml()
 }
 
 // ── ドラッグ並べ替え ──
@@ -382,32 +402,39 @@ function attachSortables(): void {
       }),
     )
   }
-  // glass layout: 行間 + 未配置を跨いで segment chip をドラッグ (共有 group)。
-  for (const el of document.querySelectorAll<HTMLElement>('.lay-items')) {
-    sortables.push(
-      Sortable.create(el, {
-        group: 'glayout',
-        handle: '.lay-grip',
-        animation: 150,
-        onEnd: () => recomputeLayoutFromDom(),
-      }),
-    )
+  // WYSIWYG: グラス上の行 + 棚を跨いで segment chip をドラッグ (共有 group)。
+  // forceFallback: iOS WKWebView では HTML5 DnD が touch で動かないため必須。
+  if (layoutEditing) {
+    for (const el of document.querySelectorAll<HTMLElement>('.wys-items')) {
+      sortables.push(
+        Sortable.create(el, {
+          group: 'wys',
+          handle: '.wys-grip',
+          animation: 150,
+          forceFallback: true,
+          onEnd: () => recomputeWysFromDom(),
+        }),
+      )
+    }
   }
 }
 
-// ドラッグ後、DOM の各 row の chip 並びから glassLayout.rows を再構築する。
-// 未配置コンテナ (#lay-rows 外) の chip は items から外れる。anchor は id で引き継ぐ。
-function recomputeLayoutFromDom(): void {
+// ドラッグ後、WYSIWYG キャンバスの DOM から glassLayout.rows を再構築する。
+// anchor は所属ゾーン (top/bottom) から決まる。棚 (data-shelf) の chip は items から外れる。
+function recomputeWysFromDom(): void {
   if (!config.glassLayout) return
-  const byId = new Map(config.glassLayout.rows.map((r) => [r.id, r]))
   const rows: GlassRow[] = []
-  for (const el of document.querySelectorAll<HTMLElement>('#lay-rows .lay-items')) {
-    const id = el.dataset.rowId ?? ''
-    const items = [...el.querySelectorAll<HTMLElement>('.lay-chip')]
-      .map((c) => c.dataset.segkey ?? '')
-      .filter(Boolean)
-    rows.push({ id, anchor: byId.get(id)?.anchor ?? 'top', items })
+  const readZone = (sel: string, anchor: GAlign) => {
+    for (const el of document.querySelectorAll<HTMLElement>(`${sel} .wys-items[data-row-id]`)) {
+      const id = el.dataset.rowId ?? ''
+      const items = [...el.querySelectorAll<HTMLElement>('.wys-chip')]
+        .map((c) => c.dataset.segkey ?? '')
+        .filter(Boolean)
+      rows.push({ id, anchor, items })
+    }
   }
+  readZone('.wys-top', 'top')
+  readZone('.wys-bot', 'bottom')
   config.glassLayout = { rows }
   void saveConfig(config)
   render()
@@ -565,19 +592,26 @@ async function onClick(e: MouseEvent): Promise<void> {
       }
       break
     }
+    case 'layout-edit-toggle':
+      layoutEditing = !layoutEditing
+      render()
+      break
     case 'layout-customize':
       config.glassLayout = generateGlassLayout(config)
+      layoutEditing = true // 生成と同時に編集モードへ
       await saveConfig(config)
       render()
       break
     case 'layout-reset':
       config.glassLayout = undefined
+      layoutEditing = false
       await saveConfig(config)
       render()
       break
     case 'layout-row-add':
       if (config.glassLayout) {
-        config.glassLayout.rows.push({ id: genSourceId(), anchor: 'top', items: [] })
+        const anchor: GAlign = t.dataset.anchor === 'bottom' ? 'bottom' : 'top'
+        config.glassLayout.rows.push({ id: genSourceId(), anchor, items: [] })
         await saveConfig(config)
         render()
       }

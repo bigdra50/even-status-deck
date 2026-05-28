@@ -486,5 +486,18 @@
       <tr><td>後方互換 / version</td><td>CONFIG_VERSION は bump しない (glassLayout は optional・additive)。既存ユーザーは undefined のまま従来描画で開始。</td></tr>
     </table>
     <p class="open">ブラウザ検証済: Customize / ラベル整合 (preview パリティ) / item-remove / anchor / reset。<strong>ドラッグ merge は MCP(desktop) では HTML5 DnD を模擬できず未自動検証</strong>だが、recompute は検証済みの save+render と同経路 + DOM 属性確認済みで、実機タッチでは動く想定。実機確認推奨。</p>
+
+    <h2 class="done">#2b WYSIWYG プレビュー編集（実装済・ブラウザ検証済 / 実機未）</h2>
+    <p>ユーザー選択により、抽象的な行リストエディタを廃し、<strong>GLASS PREVIEW を edit/view 切替の編集面</strong>にした（WYSIWYG）。gpt-5.5 と設計合意。「現状の行エディタも hit target は同程度に小さい」ため、実機表示そのままで編集する直感性を取る判断。</p>
+    <table>
+      <tr><th>項目</th><th>実装</th></tr>
+      <tr><td>一本化</td><td>companion の <code>renderGlassSection</code> で Glass を 1 セクションに統合。<strong>view</strong> = 実機同等の連結テキスト (現行プレビュー)、<strong>edit</strong> = 576:288 キャンバスに top/bottom ゾーン。Edit/Done トグル。</td></tr>
+      <tr><td>編集操作</td><td>Customize で生成→即編集、segment chip を行間・棚へドラッグ、× で未配置へ、行の上下反転 (ゾーン移動=anchor)、+Top/+Bottom row、Reset to auto。</td></tr>
+      <tr><td>anchor</td><td>行が属するゾーン (top/bottom) が anchor。<code>recomputeWysFromDom</code> がゾーンから anchor を決定。flip は view プレビューの上下寄せに反映される (検証済)。</td></tr>
+      <tr><td>SortableJS</td><td>各行 (<code>.wys-items</code>) + 棚を共有 group、<code>forceFallback:true</code> (iOS WKWebView の touch 用)、handle <code>.wys-grip</code>。</td></tr>
+      <tr><td>溢れ警告</td><td>当面は概算文字数 (<code>rowOverflow</code>)。<strong>実測 scrollWidth は次段階 (step 5 未実装)</strong>。</td></tr>
+      <tr><td>抽象エディタ</td><td>WYSIWYG に一本化し撤去 (gpt は当面併存を推奨したが、二重 UI の混乱を避け廃止。コードは git 履歴に残す)。</td></tr>
+    </table>
+    <p class="open">既知の挙動: <strong>server データ読込前に Customize すると Clock だけで生成</strong>され、後から来る server group は未配置 (rows は status で自動変更しない設計)。通常はプレビューにデータが揃ってから Customize する想定。ドラッグは実機タッチ前提 (MCP desktop 未検証)。</p>
   </body>
 </html>
