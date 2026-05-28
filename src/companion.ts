@@ -8,6 +8,7 @@ import {
   emptyConfig,
   type GroupRef,
   generateGlassLayout,
+  LABEL_SEG,
   loadConfig,
   removeSource,
   type SegCfg,
@@ -214,12 +215,14 @@ function segLabelParts(key: string): { group: string; seg: string } {
   }
 }
 
-// enabled な全 segment の segKey (groupOrder 順)。未配置リストの母集合。
-function allEnabledSegKeys(): string[] {
+// 配置可能な全 key (groupOrder 順)。未配置リストの母集合。
+// 各 group につき「ラベル chip」(LABEL_SEG) + enabled な segment chip。
+function allPlaceableKeys(): string[] {
   const keys: string[] = []
   for (const ref of config.groupOrder) {
     const gc = config.groups[ref.sourceId]?.[ref.groupId]
     if (!gc) continue
+    keys.push(segKey(ref.sourceId, ref.groupId, LABEL_SEG)) // 配置式ラベル chip
     for (const sc of gc.segments) {
       if (sc.enabled) keys.push(segKey(ref.sourceId, ref.groupId, sc.id))
     }
@@ -241,23 +244,28 @@ function rowOverflow(items: string[]): boolean {
   return len + Math.max(0, n - 1) * 2 > 40
 }
 
-// WYSIWYG の segment chip。グラス上 / 棚に置く編集要素 (grip + 実値 + 除去×)。
-// chip は実機に出る表示文字列 (label value / value) を出す (本来の WYSIWYG)。
-// status 未取得時は segment ラベルで代用。group 名は title (hover) で識別。
+// WYSIWYG の chip。LABEL_SEG はラベル chip (group 名を出す配置式ヘッダ)、それ以外は値 chip。
+// 値 chip は実機の表示文字列 (label value / value) + group 名を小さく添える (重複名の判別)。
 function wysChip(key: string): string {
   const [sourceId, groupId, segId] = key.split('|')
   const { group, seg } = segLabelParts(key)
+  const x = `<button class="wys-x" data-action="layout-item-remove" data-segkey="${esc(key)}" aria-label="Unplace">${icon('x', { size: 10 })}</button>`
+  const grip = `<span class="wys-grip">${icon('grip', { size: 11 })}</span>`
+  if (segId === LABEL_SEG) {
+    // ラベル chip: group 名そのもの (glass に出すヘッダ)。
+    return `<span class="wys-chip wys-label-chip" data-segkey="${esc(key)}" title="${esc(group)} label">${grip}<span class="wys-txt">${esc(group)}</span>${x}</span>`
+  }
   const sg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
   const text = sg ? (sg.label ? `${sg.label} ${sg.value}` : sg.value) : seg
-  const title = group ? `${group} ${seg}` : seg
-  return `<span class="wys-chip" data-segkey="${esc(key)}" title="${esc(title)}"><span class="wys-grip">${icon('grip', { size: 11 })}</span><span class="wys-txt">${esc(text)}</span><button class="wys-x" data-action="layout-item-remove" data-segkey="${esc(key)}" aria-label="Unplace">${icon('x', { size: 10 })}</button></span>`
+  const grp = group ? `<span class="wys-grp">${esc(group)}</span>` : '' // 判別用 (glass には出ない)
+  return `<span class="wys-chip" data-segkey="${esc(key)}" title="${esc(group ? `${group} ${seg}` : seg)}">${grip}${grp}<span class="wys-txt">${esc(text)}</span>${x}</span>`
 }
 
 // 編集モードのキャンバス: 固定 MAX_ROWS 行 (行番号ガター + ドロップセル) + 未配置棚 + Reset。
 // 行番号 = glass の上からの絶対位置。glass にヒント行は出さないので予約行も無い (全行配置可)。
 function renderGlassEdit(lay: NonNullable<Config['glassLayout']>): string {
   const placed = new Set(lay.rows.flat())
-  const unplaced = allEnabledSegKeys().filter((k) => !placed.has(k))
+  const unplaced = allPlaceableKeys().filter((k) => !placed.has(k))
   const lines: string[] = []
   for (let i = 0; i < MAX_ROWS; i++) {
     const items = lay.rows[i] ?? []

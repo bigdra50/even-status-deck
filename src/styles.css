@@ -572,6 +572,17 @@ body {
   opacity: 0.6;
   display: inline-flex;
 }
+/* ラベル chip (配置式 group ヘッダ): 値 chip と区別 */
+.wys-label-chip {
+  background: rgba(60, 250, 68, 0.16);
+  border: 1px solid rgba(60, 250, 68, 0.4);
+  font-weight: 600;
+}
+/* 値 chip 内の group 名 (editor 判別用。glass には出ない) */
+.wys-grp {
+  font-size: 10px;
+  opacity: 0.55;
+}
 .wys-x {
   background: none;
   border: none;

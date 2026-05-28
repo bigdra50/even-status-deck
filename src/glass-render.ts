@@ -1,4 +1,11 @@
-import type { Config, GroupCfg, GroupRef } from './config'
+import {
+  BUILTIN_GROUP_LABELS,
+  BUILTIN_SOURCE_ID,
+  type Config,
+  type GroupCfg,
+  type GroupRef,
+  LABEL_SEG,
+} from './config'
 import type { Group, StatusDoc } from './status-types'
 import { isVisible, segKey, type VisibleMap } from './visibility'
 
@@ -44,14 +51,27 @@ function groupLine(g: Group, gcfg: GroupCfg, ref: GroupRef, visible?: VisibleMap
   return g.label ? `${g.label}  ${parts.join('  ')}` : parts.join('  ')
 }
 
-// items(segKey) を解決し、group.enabled / segment.enabled / 表示条件 / status 有無 を
-// フィルタして "label value" を連結した行文字列を返す。何も残らなければ '' (空行)。
+// group ラベルテキスト (builtin は code-owned、server は status group.label or source label)。
+function groupLabelText(d: GlassData, sourceId: string, groupId: string): string {
+  if (sourceId === BUILTIN_SOURCE_ID) return BUILTIN_GROUP_LABELS[groupId] ?? groupId
+  return (
+    findGroup(d, { sourceId, groupId })?.label ||
+    d.config.sources.find((s) => s.id === sourceId)?.label ||
+    groupId
+  )
+}
+
+// items を解決して行文字列を連結する。glass に出るのは置いた要素だけ (自動接頭辞は無い)。
+// LABEL_SEG の要素は group ラベルテキスト、それ以外は segment 値 (enabled/表示条件/status でフィルタ)。
 function rowText(items: string[], d: GlassData, visible?: VisibleMap): string {
   const parts: string[] = []
-  let sole: GroupRef | null | undefined // undefined=未設定 / null=複数 group 混在
   for (const key of items) {
     const [sourceId, groupId, segId] = key.split('|')
     if (!sourceId || !groupId || !segId) continue
+    if (segId === LABEL_SEG) {
+      parts.push(groupLabelText(d, sourceId, groupId)) // 配置式ラベル
+      continue
+    }
     const gcfg = d.config.groups[sourceId]?.[groupId]
     if (!gcfg?.enabled) continue // group 無効
     const sc = gcfg.segments.find((s) => s.id === segId)
@@ -59,15 +79,9 @@ function rowText(items: string[], d: GlassData, visible?: VisibleMap): string {
     if (!isVisible(visible, key)) continue // 表示タイミング条件
     const seg = findGroup(d, { sourceId, groupId })?.segments.find((s) => s.id === segId)
     if (!seg) continue // status 欠落 (missing) → 描画時 skip (rows からは消さない)
-    if (sole === undefined) sole = { sourceId, groupId }
-    else if (sole && (sole.sourceId !== sourceId || sole.groupId !== groupId)) sole = null
     parts.push(seg.label ? `${seg.label} ${seg.value}` : seg.value)
   }
-  if (!parts.length) return ''
-  const body = parts.join('  ')
-  // 行内が単一 group のみなら group ラベルを接頭辞に (混在行はラベル無し)。builtin は ''。
-  const label = sole ? findGroup(d, sole)?.label : ''
-  return label ? `${label}  ${body}` : body
+  return parts.length ? parts.join('  ') : ''
 }
 
 // custom layout (固定行) の絶対行レンダー。budget 行ぶん (空行は '' で保持) を返す。

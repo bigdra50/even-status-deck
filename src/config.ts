@@ -9,6 +9,10 @@ import { segKey, type VisibilityCond, type VisibilityLeaf } from './visibility'
 export const CONFIG_VERSION = 3
 export const BUILTIN_SOURCE_ID = 'builtin.local'
 
+// glass layout の「ラベル chip」を表す予約 segId。items の key が `src|grp|@label` のとき、
+// その group のラベルテキスト (Claude Code 等) を glass に出す (自動接頭辞は廃止、配置式)。
+export const LABEL_SEG = '@label'
+
 // builtin の表示ラベルはコード所有 (localStorage に保存しない)。companion はこれで
 // group/segment の行名を出し、永続化された source label (旧: '本体(時刻/電池)') へ
 // フォールバックしない。glass は builtins.ts の短縮ラベルを使う。
