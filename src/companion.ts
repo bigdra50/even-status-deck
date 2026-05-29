@@ -285,7 +285,7 @@ function renderGlassEdit(lay: NonNullable<Config['glassLayout']>): string {
     const items = lay.rows[i] ?? []
     const chips = items.map(wysChip).join('')
     const warn = rowOverflow(items)
-      ? `<span class="wys-over" title="1 行に長すぎる可能性">${icon('alert', { size: 12 })}</span>`
+      ? `<span class="wys-over" title="May be too long for one line">${icon('alert', { size: 12 })}</span>`
       : ''
     lines.push(
       `<div class="wys-line"><span class="wys-ln">${i + 1}</span><div class="wys-cell" data-row="${i}">${chips}</div>${warn}</div>`,
@@ -293,13 +293,13 @@ function renderGlassEdit(lay: NonNullable<Config['glassLayout']>): string {
   }
   const shelf = unplaced.length
     ? unplaced.map(wysChip).join('')
-    : '<span class="cmp-sub">未配置なし</span>'
+    : '<span class="cmp-sub">Nothing unplaced</span>'
   return `<div class="gpv"><div class="gpv-cap">G2 576×288 — editing</div>
       <div class="gpv-screen wys-screen">${lines.join('')}</div></div>
     <div class="cmp-label">Unplaced</div>
     <div class="wys-cell wys-shelf" data-shelf="1">${shelf}</div>
     <div class="field-row wys-add">
-      <input class="lay-add-input" type="text" maxlength="64" placeholder="任意ラベル (見出し / 区切り 等)" />
+      <input class="lay-add-input" type="text" maxlength="64" placeholder="Custom label (heading / divider …)" />
       <button class="save-btn sm" data-action="label-add">${icon('plus', { size: 14 })}Add label</button>
     </div>
     <button class="danger-btn" data-action="layout-reset">Reset to auto</button>`
@@ -311,18 +311,18 @@ function renderGlassSection(): string {
   if (!lay) {
     return `<div class="cmp-label">Glass</div>
       <div class="gpv"><div class="gpv-cap">G2 576×288</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
-      <div class="cmp-sub">glass 操作: tap = サマリへ / swipe = ビュー切替 / double-tap = 終了</div>
-      <div class="cmp-sub">各 group を 1 行ずつ表示中。Customize するとプレビュー上で自由に配置できます。</div>
+      <div class="cmp-sub">Glass gestures: tap = summary / swipe = switch view / double-tap = exit</div>
+      <div class="cmp-sub">One row per group. Customize to place items freely on the preview.</div>
       <button class="save-btn" data-action="layout-customize">${icon('plus', { size: 16 })}Customize layout</button>`
   }
   if (layoutEditing) {
     return `<div class="cmp-label cmp-label-row">Glass layout<button class="link-btn" data-action="layout-edit-toggle">Done</button></div>
-      <div class="cmp-sub">segment を行 (1〜${MAX_ROWS}) や Unplaced 棚へドラッグ。行番号 = glass の上からの位置。</div>
+      <div class="cmp-sub">Drag items to rows (1–${MAX_ROWS}) or the Unplaced shelf. Row number = position from top of glass.</div>
       ${renderGlassEdit(lay)}`
   }
   return `<div class="cmp-label cmp-label-row">Glass<button class="link-btn" data-action="layout-edit-toggle">Edit layout</button></div>
     <div class="gpv"><div class="gpv-cap">G2 576×288</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
-    <div class="cmp-sub">glass 操作: tap = サマリへ / swipe = ビュー切替 / double-tap = 終了</div>`
+    <div class="cmp-sub">Glass gestures: tap = summary / swipe = switch view / double-tap = exit</div>`
 }
 
 function renderHome(): string {

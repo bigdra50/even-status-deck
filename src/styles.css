@@ -595,6 +595,7 @@ textarea {
 /* 「+ Add label」入力行 */
 .wys-add {
   margin-top: var(--space-2);
+  align-items: stretch; /* 入力欄とボタンの高さを揃える (縦 padding 差を吸収) */
 }
 .wys-add .lay-add-input {
   flex: 1;
@@ -606,10 +607,11 @@ textarea {
   color: var(--text);
   font-size: var(--fs-sm);
 }
-/* Add label ボタンは内容幅に (入力欄を主役にする)。.save-btn の width:100% を打ち消す */
+/* Add label ボタンは内容幅に (入力欄を主役にする)。.save-btn の width:100% / margin-top を打ち消す */
 .wys-add .save-btn {
   flex: 0 0 auto;
   width: auto;
+  margin-top: 0; /* base .save-btn の margin-top:space-4 を消し、入力欄と高さ・上端を揃える */
   white-space: nowrap;
 }
 .wys-x {
