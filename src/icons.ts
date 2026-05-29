@@ -5,12 +5,15 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Copy,
   ExternalLink,
   GripVertical,
   LoaderCircle,
+  Pencil,
   Plus,
   Settings,
   Tag,
+  Trash2,
   TriangleAlert,
   X,
 } from 'lucide-static'
@@ -32,6 +35,9 @@ export type IconName =
   | 'external-link'
   | 'alert'
   | 'tag'
+  | 'pencil'
+  | 'copy'
+  | 'trash'
 
 const SVGS: Record<IconName, string> = {
   settings: Settings,
@@ -48,6 +54,9 @@ const SVGS: Record<IconName, string> = {
   'external-link': ExternalLink,
   alert: TriangleAlert,
   tag: Tag,
+  pencil: Pencil,
+  copy: Copy,
+  trash: Trash2,
 }
 
 type IconOpts = { size?: number; stroke?: number; cls?: string }

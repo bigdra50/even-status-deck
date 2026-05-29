@@ -9,7 +9,9 @@ import {
   parseClockFormat,
 } from './builtins'
 import {
+  activeProfile,
   activeView,
+  addProfile,
   addServer,
   BUILTIN_GROUP_LABELS,
   BUILTIN_SEG_LABELS,
@@ -17,6 +19,8 @@ import {
   type Config,
   customLabelId,
   customLabelKey,
+  DEFAULT_PROFILE_ID,
+  duplicateActiveProfile,
   emptyConfig,
   ensureDefaultServer,
   type GlassLayout,
@@ -27,10 +31,13 @@ import {
   isRightDivider,
   loadConfig,
   RIGHT_DIVIDER,
+  removeProfile,
   removeSource,
+  renameProfile,
   type SegMeta,
   type SourceDef,
   saveConfig,
+  setActiveProfile,
   sourceById,
   sourceUrl,
   syncSourceWithStatus,
@@ -452,6 +459,31 @@ function renderGlassSection(): string {
     <div class="cmp-sub">Glass gestures: tap = summary / swipe = switch view / double-tap = exit</div>`
 }
 
+// ── Profile (プリセット) ──
+// Home 最上部の状況セット切替。select で active を切替え、隣のボタンで追加/複製/リネーム/削除。
+// Default (id 'default') は削除不可なので、active が Default のときは削除ボタンを無効化する。
+function renderProfileBar(): string {
+  const active = activeProfile(config)
+  const options = config.profiles
+    .map(
+      (p) =>
+        `<option value="${esc(p.id)}" ${p.id === active.id ? 'selected' : ''}>${esc(p.name)}</option>`,
+    )
+    .join('')
+  // Default は削除不可 + profile が 1 個だけのときも削除不可 (最後の 1 個は残す)。
+  const canDelete = active.id !== DEFAULT_PROFILE_ID && config.profiles.length > 1
+  const delAttr = canDelete ? '' : 'disabled'
+  return `
+    <div class="cmp-label">Preset</div>
+    <div class="profile-bar">
+      <select class="profile-select" data-action="profile-switch" aria-label="Preset">${options}</select>
+      <button class="gear-btn" data-action="profile-rename" title="Rename preset" aria-label="Rename preset">${icon('pencil', { size: 16 })}</button>
+      <button class="gear-btn" data-action="profile-duplicate" title="Duplicate preset" aria-label="Duplicate preset">${icon('copy', { size: 16 })}</button>
+      <button class="gear-btn" data-action="profile-add" title="Add preset" aria-label="Add preset">${icon('plus', { size: 16 })}</button>
+      <button class="gear-btn danger" data-action="profile-delete" title="Delete preset" aria-label="Delete preset" ${delAttr}>${icon('trash', { size: 16 })}</button>
+    </div>`
+}
+
 function renderHome(): string {
   // builtin (Clock/G2 Battery) は SOURCES に出さない。設定するサーバ専用のリストにする。
   const sources = config.sources
@@ -459,6 +491,8 @@ function renderHome(): string {
     .map((s) => sourceRow(s))
     .join('')
   return `
+    ${renderProfileBar()}
+
     <div class="cmp-label cmp-label-row">Sources<button class="add-btn" data-action="add-source" title="Add source" aria-label="Add source">${icon('plus', { size: 16 })}</button></div>
     ${sources}
 
@@ -640,6 +674,20 @@ function onSegReorder(key: string, oldIndex?: number, newIndex?: number): void {
   updatePreview()
 }
 
+// profile を切替/複製/追加した後の共通処理。enabledSourceIds が変わるので store の fetch 範囲を
+// 更新し (setSourcesFromConfig)、glass へは saveConfig の config-changed が view 差し替えを伝える。
+// layoutEditing は profile を跨ぐと配置が混乱するため必ず解除する。
+// syncAll: 切替先 (新規/複製先) の view が空でも、既に取得済みの status から group/segment 枠を
+//   補充する (setSourcesFromConfig は未変更ソースを再 fetch しない = onStoreUpdate が来ないため、
+//   ここで明示的に active view へ反映してから描画する)。
+function applyProfileChange(): void {
+  layoutEditing = false
+  void saveConfig(config)
+  syncAll() // 切替先 view を cached status から補充 (変化あれば内部で保存)
+  setSourcesFromConfig(config)
+  render()
+}
+
 // ── イベント ──
 async function onClick(e: MouseEvent): Promise<void> {
   const t = (e.target as HTMLElement).closest('[data-action]') as HTMLElement | null
@@ -649,6 +697,31 @@ async function onClick(e: MouseEvent): Promise<void> {
       view = 'home'
       render()
       break
+    case 'profile-add':
+      addProfile(config, `Preset ${config.profiles.length + 1}`)
+      applyProfileChange()
+      break
+    case 'profile-duplicate':
+      duplicateActiveProfile(config)
+      applyProfileChange()
+      break
+    case 'profile-rename': {
+      const cur = activeProfile(config)
+      const name = window.prompt('Preset name', cur.name)
+      if (name?.trim()) {
+        renameProfile(config, cur.id, name)
+        void saveConfig(config)
+        render()
+      }
+      break
+    }
+    case 'profile-delete': {
+      const cur = activeProfile(config)
+      if (cur.id === DEFAULT_PROFILE_ID || config.profiles.length <= 1) break
+      if (!window.confirm(`Delete preset "${cur.name}"?`)) break
+      if (removeProfile(config, cur.id)) applyProfileChange()
+      break
+    }
     case 'add-source': {
       const def = addServer(config, 'New server')
       void saveConfig(config)
@@ -837,8 +910,18 @@ async function onClick(e: MouseEvent): Promise<void> {
 // change イベントの振り分け: clock フォーマット (Time/Date/順序) → onClockFormatChange、それ以外 → onSegVisChange。
 function onChange(e: Event): void {
   const action = (e.target as HTMLElement).dataset.action ?? ''
-  if (action.startsWith('clock-')) onClockFormatChange(e)
+  if (action === 'profile-switch') onProfileSwitch(e)
+  else if (action.startsWith('clock-')) onClockFormatChange(e)
   else onSegVisChange(e)
+}
+
+// Preset select の変更で active profile を切替える。enabledSourceIds が変わるため
+// fetch 範囲も更新する (applyProfileChange)。
+function onProfileSwitch(e: Event): void {
+  const id = (e.target as HTMLSelectElement).value
+  if (!id || id === config.activeProfileId) return
+  setActiveProfile(config, id)
+  applyProfileChange()
 }
 
 // clock の Time/Date/順序 select 変更を合成して素材 SegMeta.format に保存。

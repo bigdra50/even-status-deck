@@ -510,6 +510,88 @@ export function sourceById(cfg: Config, id: string): SourceDef | undefined {
   return cfg.sources.find((s) => s.id === id)
 }
 
+// ── profile 操作 (Phase 2: プリセット切替) ──
+// active profile を切替える (見つからなければ無視)。fetch 範囲 (enabledSources) が変わるため、
+// 呼び出し側で saveConfig → setSourcesFromConfig → render を続ける。
+export function setActiveProfile(cfg: Config, id: string): void {
+  if (cfg.profiles.some((p) => p.id === id)) cfg.activeProfileId = id
+}
+
+// 空 view の新規 profile を追加し、active にする。enabledSourceIds は builtin + 全 server
+// (新規 profile でも何も出ないと混乱するため既定で全 source を有効化)。追加した profile を返す。
+export function addProfile(cfg: Config, name: string): Profile {
+  const prof: Profile = {
+    id: genProfileId(),
+    name: name || 'New preset',
+    enabledSourceIds: cfg.sources.map((s) => s.id),
+    view: emptyProfileView(),
+  }
+  cfg.profiles.push(prof)
+  cfg.activeProfileId = prof.id
+  return prof
+}
+
+// active profile を複製して active にする。view は deep copy (参照共有しない = 独立に編集可能)。
+// enabledSourceIds も複製する (同じ fetch 範囲から始める)。
+export function duplicateActiveProfile(cfg: Config, name?: string): Profile {
+  const src = activeProfile(cfg)
+  const prof: Profile = {
+    id: genProfileId(),
+    name: name || `${src.name} copy`,
+    enabledSourceIds: [...src.enabledSourceIds],
+    view: cloneView(src.view),
+  }
+  cfg.profiles.push(prof)
+  cfg.activeProfileId = prof.id
+  return prof
+}
+
+// profile を削除する (Default は不可、最後の 1 個も不可)。active を消したら別 profile を active にする。
+// 削除したら true。
+export function removeProfile(cfg: Config, id: string): boolean {
+  if (id === DEFAULT_PROFILE_ID) return false
+  if (cfg.profiles.length <= 1) return false
+  const idx = cfg.profiles.findIndex((p) => p.id === id)
+  if (idx < 0) return false
+  cfg.profiles.splice(idx, 1)
+  if (cfg.activeProfileId === id) {
+    cfg.activeProfileId = cfg.profiles[0]?.id ?? DEFAULT_PROFILE_ID
+  }
+  return true
+}
+
+// profile 名を変更する (空名は無視)。
+export function renameProfile(cfg: Config, id: string, name: string): void {
+  const trimmed = name.trim()
+  if (!trimmed) return
+  const prof = cfg.profiles.find((p) => p.id === id)
+  if (prof) prof.name = trimmed
+}
+
+// ProfileView を deep copy する (複製時の参照共有を断つ)。ViewGroup / GroupRef / GlassLayout
+// すべて新規オブジェクトにし、複製後の編集が元 profile に波及しないようにする。
+function cloneView(view: ProfileView): ProfileView {
+  const groups: Record<string, Record<string, ViewGroup>> = {}
+  for (const [sid, gmap] of Object.entries(view.groups)) {
+    groups[sid] = {}
+    for (const [gid, vg] of Object.entries(gmap)) {
+      groups[sid][gid] = { ...vg, segments: { ...vg.segments } }
+    }
+  }
+  const next: ProfileView = {
+    groups,
+    groupOrder: view.groupOrder.map((r) => ({ ...r })),
+  }
+  if (view.glassLayout) {
+    const customLabels: Record<string, { text: string }> = {}
+    for (const [id, v] of Object.entries(view.glassLayout.customLabels)) {
+      customLabels[id] = { text: v.text }
+    }
+    next.glassLayout = { rows: view.glassLayout.rows.map((r) => [...r]), customLabels }
+  }
+  return next
+}
+
 function emptyRows(): string[][] {
   return Array.from({ length: MAX_ROWS }, () => [])
 }
