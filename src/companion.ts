@@ -9,6 +9,7 @@ import {
   parseClockFormat,
 } from './builtins'
 import {
+  activeView,
   addServer,
   BUILTIN_GROUP_LABELS,
   BUILTIN_SEG_LABELS,
@@ -18,6 +19,7 @@ import {
   customLabelKey,
   emptyConfig,
   ensureDefaultServer,
+  type GlassLayout,
   type GroupRef,
   generateGlassLayout,
   genLabelId,
@@ -26,9 +28,11 @@ import {
   loadConfig,
   RIGHT_DIVIDER,
   removeSource,
-  type SegCfg,
+  type SegMeta,
+  type SourceDef,
   saveConfig,
   sourceById,
+  sourceUrl,
   syncSourceWithStatus,
 } from './config'
 import { fetchMachineFrom, type MachineInfo } from './data'
@@ -48,7 +52,7 @@ import {
   getRenderableStatuses,
   getSourceHealth,
   getSourceStatus,
-  setSources,
+  setSourcesFromConfig,
   startPolling,
   subscribe,
 } from './store'
@@ -104,7 +108,7 @@ function glassPreviewHtml(): string {
   const visible = computeVisible(config, getRenderableStatuses())
   const d = glassData()
   const grow = (l: string) => `<span class="grow">${l ? esc(l) : '&nbsp;'}</span>`
-  if (config.glassLayout) {
+  if (activeView(config).glassLayout) {
     // 各行を左右クラスタで表示。右クラスタがあれば flex space-between で右端へ寄せる
     // (実機の space 近似と違い、プレビューは px 量子化せず正確に左右配置する)。
     const row = ({ left, right }: { left: string; right: string }) =>
@@ -119,9 +123,9 @@ function glassPreviewHtml(): string {
 }
 
 // ── 表示項目 (groupOrder 横断) ──
-// 実在する (status にある) group だけを groupOrder 順に並べる。
+// 実在する (status にある) group だけを active view の groupOrder 順に並べる。
 function visibleRefs(): GroupRef[] {
-  return config.groupOrder.filter((r) => statusGroup(r.sourceId, r.groupId))
+  return activeView(config).groupOrder.filter((r) => statusGroup(r.sourceId, r.groupId))
 }
 
 // 表示項目リストの構成シグネチャ (順序込み)。変化したら項目リストを再描画する。
@@ -165,12 +169,13 @@ function leafRow(seg2: string, leaf: VisibilityLeaf, i: number, hasPct: boolean)
 }
 
 // segment 単位の表示タイミング条件エディタ (metric 行のサブ行)。metric は self (その segment 自身)。
+// 条件は素材 (SegMeta.visibility。profile 非依存) を読み書きする。
 // leaf を AND/OR で複合。conditions 空 = 常時表示。2 件以上で combinator(All of/Any of) を出す。
-function segVisEditor(key: string, sc: SegCfg, seg: Segment): string {
-  const seg2 = `data-key="${key}" data-seg="${esc(sc.id)}"`
+function segVisEditor(key: string, sm: SegMeta, seg: Segment): string {
+  const seg2 = `data-key="${key}" data-seg="${esc(sm.id)}"`
   const hasPct = typeof seg.percent === 'number'
-  const conditions = sc.visibility?.conditions ?? []
-  const combinator = sc.visibility?.combinator ?? 'and'
+  const conditions = sm.visibility?.conditions ?? []
+  const combinator = sm.visibility?.combinator ?? 'and'
   const head =
     conditions.length >= 2
       ? `<select class="vis-select" data-action="seg-vis-combinator" ${seg2}>
@@ -188,14 +193,14 @@ function segVisEditor(key: string, sc: SegCfg, seg: Segment): string {
 }
 
 // clock (datetime) segment の合成フォーマット UI: Time / Date / 順序 の 3 select。
-// 現在の SegCfg.format (無ければロケール既定) を逆解析して選択状態を復元する。
-function clockFormatControls(key: string, sc: SegCfg): string {
-  const cur = parseClockFormat(sc.format ?? defaultClockFormat())
+// 現在の SegMeta.format (素材。無ければロケール既定) を逆解析して選択状態を復元する。
+function clockFormatControls(key: string, sm: SegMeta): string {
+  const cur = parseClockFormat(sm.format ?? defaultClockFormat())
   const opt = (o: { format: string; label: string }, selected: string) =>
     `<option value="${esc(o.format)}" ${o.format === selected ? 'selected' : ''}>${esc(o.label)}</option>`
   const time = CLOCK_TIME_OPTS.map((o) => opt(o, cur.time)).join('')
   const date = CLOCK_DATE_OPTS.map((o) => opt(o, cur.date)).join('')
-  const a = `data-key="${key}" data-seg="${esc(sc.id)}"`
+  const a = `data-key="${key}" data-seg="${esc(sm.id)}"`
   return `<div class="clock-ctl">
     <label class="clock-fld">Time<select class="format-select" data-action="clock-time" ${a}>${time}</select></label>
     <label class="clock-fld">Date<select class="format-select" data-action="clock-date" ${a}>${date}</select></label>
@@ -208,8 +213,9 @@ function clockFormatControls(key: string, sc: SegCfg): string {
 
 function groupRow(ref: GroupRef): string {
   const g = statusGroup(ref.sourceId, ref.groupId)
-  const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
-  if (!g || !gcfg) return ''
+  const meta = config.groups[ref.sourceId]?.[ref.groupId]
+  const vg = activeView(config).groups[ref.sourceId]?.[ref.groupId]
+  if (!g || !meta || !vg) return ''
   const src = sourceById(config, ref.sourceId)
   const isBuiltin = ref.sourceId === BUILTIN_SOURCE_ID
   const key = `${esc(ref.sourceId)}|${esc(ref.groupId)}`
@@ -217,21 +223,23 @@ function groupRow(ref: GroupRef): string {
   const title = isBuiltin
     ? (BUILTIN_GROUP_LABELS[ref.groupId] ?? ref.groupId)
     : g.label || src?.label || ref.groupId
-  const caret = icon(gcfg.expanded ? 'chevron-down' : 'chevron-right', { size: 16 })
+  const caret = icon(vg.expanded ? 'chevron-down' : 'chevron-right', { size: 16 })
   const segById = new Map(g.segments.map((s) => [s.id, s]))
-  const metrics = gcfg.expanded
-    ? `<div class="src-metrics" data-key="${key}">${gcfg.segments
-        .map((sc) => {
-          const seg = segById.get(sc.id)
+  // segment の並びは素材 (meta.segments)、ON/OFF・条件は view/素材から引く。
+  const metrics = vg.expanded
+    ? `<div class="src-metrics" data-key="${key}">${meta.segments
+        .map((sm) => {
+          const seg = segById.get(sm.id)
           if (!seg) return ''
+          const enabled = vg.segments[sm.id] ?? true
           // clock の datetime segment は Time/Date/順序 の合成フォーマット UI を出す。
-          const isClock = isBuiltin && ref.groupId === 'clock' && sc.id === CLOCK_SEG
+          const isClock = isBuiltin && ref.groupId === 'clock' && sm.id === CLOCK_SEG
           return `<div class="metric"><div class="metric-row"><span class="mgrip">${icon('grip', { size: 16 })}</span>
               <span class="mname">${esc(isBuiltin ? (BUILTIN_SEG_LABELS[seg.id] ?? seg.id) : seg.label || seg.id)}</span>
               <span class="mval">${esc(seg.value)}</span>
-              <button class="tg sm ${sc.enabled ? 'on' : ''}" data-action="toggle-seg" data-key="${key}" data-seg="${esc(sc.id)}"></button></div>
-            ${isClock ? clockFormatControls(key, sc) : ''}
-            ${segVisEditor(key, sc, seg)}</div>`
+              <button class="tg sm ${enabled ? 'on' : ''}" data-action="toggle-seg" data-key="${key}" data-seg="${esc(sm.id)}"></button></div>
+            ${isClock ? clockFormatControls(key, sm) : ''}
+            ${segVisEditor(key, sm, seg)}</div>`
         })
         .join('')}</div>`
     : ''
@@ -243,14 +251,14 @@ function groupRow(ref: GroupRef): string {
         ? `<span class="src-note">${esc(src.label)}</span>`
         : ''
   // default-label トグル (glass で group 名を前置するか)。位置/上詰めは Glass layout で決める。
-  const showsLabel = gcfg.showDefaultLabel ?? ref.groupId !== 'clock'
+  const showsLabel = vg.showDefaultLabel ?? ref.groupId !== 'clock'
   const labelBtn = `<button class="label-btn ${showsLabel ? 'on' : ''}" data-action="toggle-grouplabel" data-key="${key}" title="${showsLabel ? 'Group label shown on glass' : 'Group label hidden'}">${icon('tag', { size: 15 })}</button>`
   return `<div class="src" data-key="${key}"><div class="src-head"><span class="src-grip">${icon('grip', { size: 16 })}</span>
     <span class="src-caret" data-action="expand" data-key="${key}">${caret}</span>
     <span class="src-name" data-action="expand" data-key="${key}">${esc(title)}</span>
     ${srcTag}
     ${labelBtn}
-    <button class="tg ${gcfg.enabled ? 'on' : ''}" data-action="toggle-group" data-key="${key}"></button></div>${metrics}</div>`
+    <button class="tg ${vg.enabled ? 'on' : ''}" data-action="toggle-group" data-key="${key}"></button></div>${metrics}</div>`
 }
 
 function renderItems(): string {
@@ -260,7 +268,7 @@ function renderItems(): string {
 }
 
 // ── ソース一覧 ──
-function sourceRow(s: { id: string; kind: string; label: string; url?: string }): string {
+function sourceRow(s: SourceDef): string {
   if (s.kind === 'builtin') {
     return `<div class="src"><div class="src-head"><span class="conn-dot"></span>
       <span class="src-name">${esc(s.label)}</span><span class="src-note">Built-in</span></div></div>`
@@ -268,7 +276,7 @@ function sourceRow(s: { id: string; kind: string; label: string; url?: string })
   // 切断検出を反映: online=緑 / stale=琥珀 (瞬断中) / offline=灰 + "Last seen…"。
   const health = getSourceHealth(s.id)
   const dotCls = health === 'online' ? '' : health === 'stale' ? 'stale' : 'off'
-  const note = health === 'offline' ? lastSeenText(s.id) : (s.url ?? 'Not set')
+  const note = health === 'offline' ? lastSeenText(s.id) : (sourceUrl(s) ?? 'Not set')
   return `<div class="src"><div class="src-head"><span class="conn-dot ${dotCls}"></span>
     <span class="src-name">${esc(s.label)}</span>
     <span class="src-note">${esc(note)}</span>
@@ -303,20 +311,21 @@ function segLabelParts(key: string): { group: string; seg: string } {
   }
 }
 
-// 配置可能な全 key (groupOrder 順)。未配置リストの母集合。
+// 配置可能な全 key (active view の groupOrder 順)。未配置リストの母集合。
 // group ラベルは default-label (group 単位トグル) が自動で出すので chip にはしない。
 function allPlaceableKeys(): string[] {
+  const view = activeView(config)
   const keys: string[] = []
-  for (const ref of config.groupOrder) {
-    const gc = config.groups[ref.sourceId]?.[ref.groupId]
-    if (!gc) continue
-    for (const sc of gc.segments) {
-      if (sc.enabled) keys.push(segKey(ref.sourceId, ref.groupId, sc.id))
+  for (const ref of view.groupOrder) {
+    const meta = config.groups[ref.sourceId]?.[ref.groupId]
+    const vg = view.groups[ref.sourceId]?.[ref.groupId]
+    if (!meta || !vg) continue
+    for (const sm of meta.segments) {
+      if (vg.segments[sm.id] ?? true) keys.push(segKey(ref.sourceId, ref.groupId, sm.id))
     }
   }
   // ユーザー定義の custom ラベル
-  for (const id of Object.keys(config.glassLayout?.customLabels ?? {}))
-    keys.push(customLabelKey(id))
+  for (const id of Object.keys(view.glassLayout?.customLabels ?? {})) keys.push(customLabelKey(id))
   return keys
 }
 
@@ -325,12 +334,13 @@ function allPlaceableKeys(): string[] {
 // group default-label の前置分も run 先頭で加算 (rowText の dedup と合わせる)。
 const ROW_MAX_CHARS = 50
 function rowOverflow(items: string[]): boolean {
+  const view = activeView(config)
   let total = 0
   let n = 0
   let prevGroup: string | null = null
   for (const key of items) {
     if (isCustomLabelKey(key)) {
-      const text = config.glassLayout?.customLabels[customLabelId(key)]?.text ?? ''
+      const text = view.glassLayout?.customLabels[customLabelId(key)]?.text ?? ''
       if (!text) continue
       total += text.length
       prevGroup = null
@@ -340,13 +350,14 @@ function rowOverflow(items: string[]): boolean {
     const [sourceId, groupId, segId] = key.split('|')
     const seg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
     if (!seg) continue
-    const gc = config.groups[sourceId]?.[groupId]
+    const vg = view.groups[sourceId]?.[groupId]
+    const inMeta = config.groups[sourceId]?.[groupId]?.segments.some((s) => s.id === segId) ?? false
     // 無効化された segment は glass(rowText) で描画されないので幅計算からも除外 (過大評価防止)。
-    if (!gc?.segments.find((s) => s.id === segId)?.enabled) continue
+    if (!inMeta || !(vg?.segments[segId] ?? true)) continue
     const labelLen = seg.label ? seg.label.length + 1 : 0
     const valLen = seg.widthChars ?? seg.value.length
     let w = labelLen + valLen
-    const showsLabel = gc?.showDefaultLabel ?? groupId !== 'clock'
+    const showsLabel = vg?.showDefaultLabel ?? groupId !== 'clock'
     if (showsLabel && groupId !== prevGroup) {
       const { group } = segLabelParts(key)
       if (group) w += group.length + 1 // run 先頭の group 名前置
@@ -366,7 +377,7 @@ function wysChip(key: string): string {
   // custom ラベル: × は削除 (customLabels から除去)。値 chip の × は unplace。
   if (isCustomLabelKey(key)) {
     const id = customLabelId(key)
-    const text = config.glassLayout?.customLabels[id]?.text ?? ''
+    const text = activeView(config).glassLayout?.customLabels[id]?.text ?? ''
     const del = `<button class="wys-x" data-action="label-delete" data-label-id="${esc(id)}" title="Delete label" aria-label="Delete label">${icon('x', { size: 10 })}</button>`
     return `<span class="wys-chip wys-label-chip wys-custom-chip" data-segkey="${esc(key)}" title="${esc(text)}">${grip}<span class="wys-txt">${esc(text)}</span>${del}</span>`
   }
@@ -376,8 +387,8 @@ function wysChip(key: string): string {
   const sg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
   const text = sg ? (sg.label ? `${sg.label} ${sg.value}` : sg.value) : seg
   // default-label ON の group のみ group 名を薄く前置表示 (実機の前置ラベルに対応)
-  const gc = config.groups[sourceId]?.[groupId]
-  const showsLabel = gc?.showDefaultLabel ?? groupId !== 'clock'
+  const vg = activeView(config).groups[sourceId]?.[groupId]
+  const showsLabel = vg?.showDefaultLabel ?? groupId !== 'clock'
   const grp = group && showsLabel ? `<span class="wys-grp">${esc(group)}</span>` : ''
   return `<span class="wys-chip" data-segkey="${esc(key)}" title="${esc(group ? `${group} ${seg}` : seg)}">${grip}${grp}<span class="wys-txt">${esc(text)}</span>${x}</span>`
 }
@@ -385,7 +396,7 @@ function wysChip(key: string): string {
 // 編集モードのキャンバス: 固定 MAX_ROWS 行 (行番号ガター + 左/右ゾーン) + 未配置棚 + Reset。
 // 行番号 = glass の上からの絶対位置。glass にヒント行は出さないので予約行も無い (全行配置可)。
 // 各行は左ゾーン｜右ゾーンの 2 ドロップ領域。右ゾーンに置いた chip は実機で右寄せされる。
-function renderGlassEdit(lay: NonNullable<Config['glassLayout']>): string {
+function renderGlassEdit(lay: GlassLayout): string {
   const placed = new Set(lay.rows.flat().filter((k) => !isRightDivider(k)))
   const unplaced = allPlaceableKeys().filter((k) => !placed.has(k))
   const lines: string[] = []
@@ -422,7 +433,7 @@ function renderGlassEdit(lay: NonNullable<Config['glassLayout']>): string {
 
 // Glass セクション: プレビュー一本。view は実機同等の連結テキスト、edit は WYSIWYG。
 function renderGlassSection(): string {
-  const lay = config.glassLayout
+  const lay = activeView(config).glassLayout
   if (!lay) {
     return `<div class="cmp-label">Glass</div>
       <div class="gpv"><div class="gpv-cap">G2 576×288</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
@@ -479,7 +490,7 @@ function renderTestStatus(): string {
 
 function renderSourceEdit(): string {
   const s = editingSourceId ? sourceById(config, editingSourceId) : undefined
-  const url = testUrl || s?.url || 'http://127.0.0.1:8723'
+  const url = testUrl || (s ? sourceUrl(s) : undefined) || 'http://127.0.0.1:8723'
   const testing = testState === 'testing'
   return `
     <div class="topbar"><button class="nav-btn" data-action="home">${icon('arrow-left', { size: 16 })} Home</button>
@@ -577,7 +588,8 @@ function attachSortables(): void {
 // 右ゾーンに chip があれば左ゾーンとの間に @right 区切りを挿む (前=左/後=右クラスタ)。
 // 棚 (data-shelf) の chip はどの行にも無い = 未配置 (次の描画で棚に導出される)。
 function recomputeWysFromDom(): void {
-  if (!config.glassLayout) return
+  const view = activeView(config)
+  if (!view.glassLayout) return
   const readZone = (i: number, zone: 'left' | 'right'): string[] => {
     const el = document.querySelector<HTMLElement>(
       `.wys-cell[data-row="${i}"][data-zone="${zone}"]`,
@@ -592,7 +604,7 @@ function recomputeWysFromDom(): void {
     const right = readZone(i, 'right')
     return right.length ? [...left, RIGHT_DIVIDER, ...right] : left
   })
-  config.glassLayout = { rows, customLabels: config.glassLayout.customLabels }
+  view.glassLayout = { rows, customLabels: view.glassLayout.customLabels }
   void saveConfig(config)
   render()
 }
@@ -602,26 +614,28 @@ function parseKey(key: string): GroupRef {
   return { sourceId: sourceId ?? '', groupId: groupId ?? '' }
 }
 
-// groupOrder の並べ替え。indices は visibleRefs (実在 group) 基準。非表示 ref は温存。
+// active view の groupOrder を並べ替える。indices は visibleRefs (実在 group) 基準。非表示 ref は温存。
 function onGroupReorder(oldIndex?: number, newIndex?: number): void {
   if (oldIndex == null || newIndex == null || oldIndex === newIndex) return
+  const view = activeView(config)
   const visible = visibleRefs()
   const [moved] = visible.splice(oldIndex, 1)
   if (!moved) return
   visible.splice(newIndex, 0, moved)
-  const rest = config.groupOrder.filter((r) => !statusGroup(r.sourceId, r.groupId))
-  config.groupOrder = [...visible, ...rest]
+  const rest = view.groupOrder.filter((r) => !statusGroup(r.sourceId, r.groupId))
+  view.groupOrder = [...visible, ...rest]
   void saveConfig(config)
   updatePreview()
 }
 
+// segment の並び順は素材 (GroupMeta.segments) に持つ (全 profile 共通の順序基準)。
 function onSegReorder(key: string, oldIndex?: number, newIndex?: number): void {
   const ref = parseKey(key)
-  const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
-  if (!gcfg || oldIndex == null || newIndex == null || oldIndex === newIndex) return
-  const [moved] = gcfg.segments.splice(oldIndex, 1)
+  const meta = config.groups[ref.sourceId]?.[ref.groupId]
+  if (!meta || oldIndex == null || newIndex == null || oldIndex === newIndex) return
+  const [moved] = meta.segments.splice(oldIndex, 1)
   if (!moved) return
-  gcfg.segments.splice(newIndex, 0, moved)
+  meta.segments.splice(newIndex, 0, moved)
   void saveConfig(config)
   updatePreview()
 }
@@ -658,7 +672,7 @@ async function onClick(e: MouseEvent): Promise<void> {
       if (editingSourceId) {
         removeSource(config, editingSourceId)
         void saveConfig(config)
-        setSources(config.sources)
+        setSourcesFromConfig(config)
         editingSourceId = null
         view = 'home'
         render()
@@ -666,9 +680,9 @@ async function onClick(e: MouseEvent): Promise<void> {
       break
     case 'expand': {
       const ref = parseKey(t.dataset.key ?? '')
-      const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
-      if (gcfg) {
-        gcfg.expanded = !gcfg.expanded
+      const vg = activeView(config).groups[ref.sourceId]?.[ref.groupId]
+      if (vg) {
+        vg.expanded = !vg.expanded
         void saveConfig(config)
         render()
       }
@@ -676,9 +690,9 @@ async function onClick(e: MouseEvent): Promise<void> {
     }
     case 'toggle-group': {
       const ref = parseKey(t.dataset.key ?? '')
-      const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
-      if (gcfg) {
-        gcfg.enabled = !gcfg.enabled
+      const vg = activeView(config).groups[ref.sourceId]?.[ref.groupId]
+      if (vg) {
+        vg.enabled = !vg.enabled
         void saveConfig(config)
         render()
       }
@@ -687,9 +701,9 @@ async function onClick(e: MouseEvent): Promise<void> {
     case 'toggle-grouplabel': {
       // glass で group 名を前置するか (default-label)。
       const ref = parseKey(t.dataset.key ?? '')
-      const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
-      if (gcfg) {
-        gcfg.showDefaultLabel = !(gcfg.showDefaultLabel ?? ref.groupId !== 'clock')
+      const vg = activeView(config).groups[ref.sourceId]?.[ref.groupId]
+      if (vg) {
+        vg.showDefaultLabel = !(vg.showDefaultLabel ?? ref.groupId !== 'clock')
         void saveConfig(config)
         render()
       }
@@ -697,34 +711,34 @@ async function onClick(e: MouseEvent): Promise<void> {
     }
     case 'toggle-seg': {
       const ref = parseKey(t.dataset.key ?? '')
-      const seg = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find(
-        (s) => s.id === t.dataset.seg,
-      )
-      if (seg) {
-        seg.enabled = !seg.enabled
+      const vg = activeView(config).groups[ref.sourceId]?.[ref.groupId]
+      const segId = t.dataset.seg
+      if (vg && segId) {
+        vg.segments[segId] = !(vg.segments[segId] ?? true)
         void saveConfig(config)
         render()
       }
       break
     }
     case 'seg-vis-add': {
+      // 表示条件は素材 (SegMeta.visibility。profile 非依存)。
       const ref = parseKey(t.dataset.key ?? '')
-      const sc = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find(
+      const sm = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find(
         (s) => s.id === t.dataset.seg,
       )
-      if (sc) {
+      if (sm) {
         const seg = statusGroup(ref.sourceId, ref.groupId)?.segments.find(
           (s) => s.id === t.dataset.seg,
         )
         const hasPct = typeof seg?.percent === 'number'
-        const cond = sc.visibility ?? { combinator: 'and', conditions: [] }
+        const cond = sm.visibility ?? { combinator: 'and', conditions: [] }
         if (cond.conditions.length < MAX_CONDS) {
           cond.conditions.push(
             hasPct
               ? { kind: 'threshold', op: 'gte', value: 80 }
               : { kind: 'onChange', holdMs: 5000 },
           )
-          sc.visibility = cond
+          sm.visibility = cond
           void saveConfig(config)
           render()
         }
@@ -733,13 +747,13 @@ async function onClick(e: MouseEvent): Promise<void> {
     }
     case 'seg-vis-remove': {
       const ref = parseKey(t.dataset.key ?? '')
-      const sc = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find(
+      const sm = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find(
         (s) => s.id === t.dataset.seg,
       )
       const idx = Number(t.dataset.idx)
-      if (sc?.visibility && Number.isInteger(idx)) {
-        sc.visibility.conditions.splice(idx, 1)
-        if (sc.visibility.conditions.length === 0) sc.visibility = undefined
+      if (sm?.visibility && Number.isInteger(idx)) {
+        sm.visibility.conditions.splice(idx, 1)
+        if (sm.visibility.conditions.length === 0) sm.visibility = undefined
         void saveConfig(config)
         render()
       }
@@ -750,30 +764,33 @@ async function onClick(e: MouseEvent): Promise<void> {
       render()
       break
     case 'layout-customize':
-      config.glassLayout = generateGlassLayout(config)
+      activeView(config).glassLayout = generateGlassLayout(config)
       layoutEditing = true // 生成と同時に編集モードへ
       void saveConfig(config)
       render()
       break
     case 'layout-reset':
-      config.glassLayout = undefined
+      activeView(config).glassLayout = undefined
       layoutEditing = false
       void saveConfig(config)
       render()
       break
-    case 'fs-open':
+    case 'fs-open': {
       // フルスクリーン WYSIWYG エディタ (実験的)。custom layout 未生成なら生成して開く。
-      if (!config.glassLayout) {
-        config.glassLayout = generateGlassLayout(config)
+      const view = activeView(config)
+      if (!view.glassLayout) {
+        view.glassLayout = generateGlassLayout(config)
         void saveConfig(config)
       }
       openFsEditor()
       break
+    }
     case 'layout-item-remove': {
       // segment を全行から外す → 未配置 (Unplaced 棚) に導出される。
       const key = t.dataset.segkey
-      if (config.glassLayout && key) {
-        config.glassLayout.rows = config.glassLayout.rows.map((r) => r.filter((k) => k !== key))
+      const lay = activeView(config).glassLayout
+      if (lay && key) {
+        lay.rows = lay.rows.map((r) => r.filter((k) => k !== key))
         void saveConfig(config)
         render()
       }
@@ -783,8 +800,9 @@ async function onClick(e: MouseEvent): Promise<void> {
       // 任意テキストのラベルを作成 (未配置棚に出る)。inline input から読む。
       const input = root?.querySelector<HTMLInputElement>('.lay-add-input')
       const text = (input?.value ?? '').trim().slice(0, 64)
-      if (config.glassLayout && text) {
-        config.glassLayout.customLabels[genLabelId()] = { text }
+      const lay = activeView(config).glassLayout
+      if (lay && text) {
+        lay.customLabels[genLabelId()] = { text }
         void saveConfig(config)
         render()
       }
@@ -793,10 +811,11 @@ async function onClick(e: MouseEvent): Promise<void> {
     case 'label-delete': {
       // custom ラベルを完全削除 (customLabels から除去 + 全 rows の参照を除去)。
       const id = t.dataset.labelId
-      if (config.glassLayout && id) {
-        delete config.glassLayout.customLabels[id]
+      const lay = activeView(config).glassLayout
+      if (lay && id) {
+        delete lay.customLabels[id]
         const k = customLabelKey(id)
-        config.glassLayout.rows = config.glassLayout.rows.map((r) => r.filter((x) => x !== k))
+        lay.rows = lay.rows.map((r) => r.filter((x) => x !== k))
         void saveConfig(config)
         render()
       }
@@ -814,7 +833,7 @@ async function onClick(e: MouseEvent): Promise<void> {
 }
 
 // segment 条件エディタ (combinator select / leaf の kind・op・value・hold) の変更を
-// config.groups[*][*].segments[*].visibility に反映する。leaf は data-idx で特定する。
+// 素材 config.groups[*][*].segments[*].visibility に反映する。leaf は data-idx で特定する。
 // change イベントの振り分け: clock フォーマット (Time/Date/順序) → onClockFormatChange、それ以外 → onSegVisChange。
 function onChange(e: Event): void {
   const action = (e.target as HTMLElement).dataset.action ?? ''
@@ -822,7 +841,7 @@ function onChange(e: Event): void {
   else onSegVisChange(e)
 }
 
-// clock の Time/Date/順序 select 変更を合成して SegCfg.format に保存。
+// clock の Time/Date/順序 select 変更を合成して素材 SegMeta.format に保存。
 // saveConfig が config-changed を dispatch → glass が loadConfig して実機描画にも反映。
 function onClockFormatChange(e: Event): void {
   const t = e.target as HTMLSelectElement
@@ -830,13 +849,13 @@ function onClockFormatChange(e: Event): void {
   const segId = t.dataset.seg
   if (!key || !segId) return
   const ref = parseKey(key)
-  const sc = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find((s) => s.id === segId)
-  if (!sc) return
-  const cur = parseClockFormat(sc.format ?? defaultClockFormat())
+  const sm = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find((s) => s.id === segId)
+  if (!sm) return
+  const cur = parseClockFormat(sm.format ?? defaultClockFormat())
   if (t.dataset.action === 'clock-time') cur.time = t.value
   else if (t.dataset.action === 'clock-date') cur.date = t.value
   else if (t.dataset.action === 'clock-order') cur.order = t.value === 'date' ? 'date' : 'time'
-  sc.format = composeClockFormat(cur.time, cur.date, cur.order) || undefined
+  sm.format = composeClockFormat(cur.time, cur.date, cur.order) || undefined
   void saveConfig(config)
   render()
 }
@@ -848,8 +867,8 @@ function onSegVisChange(e: Event): void {
   const segId = t.dataset.seg
   if (!action?.startsWith('seg-vis-') || !key || !segId) return
   const ref = parseKey(key)
-  const sc = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find((s) => s.id === segId)
-  const vis = sc?.visibility
+  const sm = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find((s) => s.id === segId)
+  const vis = sm?.visibility
   if (!vis) return
   const val = t.value
   if (action === 'seg-vis-combinator') {
@@ -902,12 +921,14 @@ async function runConnectionTest(): Promise<void> {
   editMachine = m
   const src = sourceById(config, editingSourceId)
   if (src) {
+    // MVP は単一経路。urls を正にし、後方互換の url も同期する。
+    src.urls = [clean]
     src.url = clean
     src.label = m.label
   }
   await saveConfig(config)
   testState = 'ok'
-  setSources(config.sources) // store に新 URL を反映 → 取得 → onStoreUpdate で再描画
+  setSourcesFromConfig(config) // store に新 URL を反映 → 取得 → onStoreUpdate で再描画
   render()
 }
 
@@ -930,7 +951,8 @@ let fsDrag: { key: string; ghost: HTMLElement } | null = null
 
 // チップの表示文字列 (実機の値。custom ラベルは本文)。
 function fsChipText(key: string): string {
-  if (isCustomLabelKey(key)) return config.glassLayout?.customLabels[customLabelId(key)]?.text ?? ''
+  if (isCustomLabelKey(key))
+    return activeView(config).glassLayout?.customLabels[customLabelId(key)]?.text ?? ''
   const [sourceId, groupId, segId] = key.split('|')
   const sg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
   const { seg } = segLabelParts(key)
@@ -951,7 +973,7 @@ function fsChip(key: string, showGroup: boolean, rightSide: boolean): string {
 // グループ前置の判定 (showDefaultLabel。未設定は clock=false / 他=true)。
 function showsGroupLabel(key: string): boolean {
   const [sourceId, groupId] = key.split('|')
-  return config.groups[sourceId]?.[groupId]?.showDefaultLabel ?? groupId !== 'clock'
+  return activeView(config).groups[sourceId]?.[groupId]?.showDefaultLabel ?? groupId !== 'clock'
 }
 
 // 1 クラスタ (左 or 右) を描画。実機グラスと同じ run dedup: 直前と同じ group の連続では
@@ -974,7 +996,7 @@ function renderFsCluster(keys: string[], rightSide: boolean): string {
 
 // プレビュー本体 (10 行 × 左/右ゾーン) + Unplaced トレイの HTML。
 function renderFsBodyHtml(): string {
-  const lay = config.glassLayout
+  const lay = activeView(config).glassLayout
   if (!lay) return ''
   const rows: string[] = []
   for (let i = 0; i < MAX_ROWS; i++) {
@@ -1014,7 +1036,7 @@ function refreshFsBody(): void {
 
 // 各行を split→join で正規化し、空になった右クラスタの @right を落とす。
 function normalizeFsRows(): void {
-  const lay = config.glassLayout
+  const lay = activeView(config).glassLayout
   if (!lay) return
   lay.rows = lay.rows.map((r) => {
     const { left, right } = splitRowClusters(r)
@@ -1023,12 +1045,12 @@ function normalizeFsRows(): void {
 }
 
 function removeFsKey(key: string): void {
-  const lay = config.glassLayout
+  const lay = activeView(config).glassLayout
   if (lay) lay.rows = lay.rows.map((r) => r.filter((k) => k !== key))
 }
 
 function moveFsKeyToZone(key: string, rowIdx: number, side: 'left' | 'right'): void {
-  const lay = config.glassLayout
+  const lay = activeView(config).glassLayout
   if (!lay) return
   removeFsKey(key) // 重複配置を防ぐ (どこから来ても 1 箇所だけ)
   const { left, right } = splitRowClusters(lay.rows[rowIdx] ?? [])
@@ -1087,7 +1109,7 @@ function onFsPointerUp(e: PointerEvent): void {
   fsDrag = null
   drag?.ghost.remove()
   fsClearHot()
-  if (!drag || !config.glassLayout) return
+  if (!drag || !activeView(config).glassLayout) return
   const zone = fsZoneAt(e)
   if (!zone) return
   if (zone.classList.contains('fs-tray')) {
@@ -1111,7 +1133,7 @@ function onFsClick(e: MouseEvent): void {
   }
   if (t.dataset.action === 'fs-unplace') {
     const key = t.dataset.segkey
-    if (key && config.glassLayout) {
+    if (key && activeView(config).glassLayout) {
       removeFsKey(key)
       normalizeFsRows()
       void saveConfig(config)
@@ -1152,7 +1174,7 @@ export async function mountCompanion(el: HTMLElement): Promise<void> {
   config = await loadConfig()
   // 初回 (server ソース無し) は同一オリジンを既定の server として登録 (dev-URL / ブラウザ dev)
   if (ensureDefaultServer(config, location.origin)) await saveConfig(config)
-  setSources(config.sources)
+  setSourcesFromConfig(config)
   startPolling()
   render() // 時刻 (clock) は glass-local タイマーが所有。companion は周期再描画しない
 }
@@ -1161,6 +1183,6 @@ export async function mountCompanion(el: HTMLElement): Promise<void> {
 export async function onCompanionBridgeReady(): Promise<void> {
   config = await loadConfig()
   if (ensureDefaultServer(config, location.origin)) await saveConfig(config)
-  setSources(config.sources)
+  setSourcesFromConfig(config)
   render()
 }

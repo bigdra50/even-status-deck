@@ -2,7 +2,7 @@
 // glass / companion は購読して描画する。取得は 1 系統 (二重ポーリングなし)。
 // 失敗ソースは直近成功値を stale 保持。revision + abort で遅延応答を破棄。
 import { localStatus } from './builtins'
-import type { SourceDef } from './config'
+import { type Config, enabledSources, type SourceDef, sourceUrl } from './config'
 import { fetchStatusFrom } from './data'
 import type { StatusDoc } from './status-types'
 
@@ -96,7 +96,13 @@ function scheduleRetry(def: SourceDef): void {
   )
 }
 
-// ソース一覧を設定する (companion が config から渡す)。
+// active profile の enabledSourceIds に含まれる source だけを fetch 対象にする (builtin 含む)。
+// 切替時 (Phase 2) や source 追加/削除のたびに companion/glass から呼ぶ。MVP は Default=全 source。
+export function setSourcesFromConfig(cfg: Config): void {
+  setSources(enabledSources(cfg))
+}
+
+// ソース一覧を設定する (enabledSources で絞った list を受け取る)。
 // 変更/新規ソースだけ取得し、未変更は再 fetch しない (無駄な abort/取得を防ぐ)。消えたソースは掃除。
 export function setSources(next: SourceDef[]): void {
   const prev = new Map(defs.map((d) => [d.id, d]))
@@ -124,7 +130,7 @@ export function setSources(next: SourceDef[]): void {
   }
   for (const def of defs) {
     const p = prev.get(def.id)
-    if (!p || p.url !== def.url || p.kind !== def.kind) {
+    if (!p || sourceUrl(p) !== sourceUrl(def) || p.kind !== def.kind) {
       // URL/種別が変わった source は旧エンドポイントの鮮度を引き継がない。
       if (p) {
         clearRetry(def.id)
@@ -152,13 +158,14 @@ async function refreshSource(def: SourceDef): Promise<void> {
     notify()
     return
   }
-  if (!def.url) return
+  const url = sourceUrl(def)
+  if (!url) return
   const rev = (revisions.get(def.id) ?? 0) + 1
   revisions.set(def.id, rev)
   inflight.get(def.id)?.abort()
   const ctl = new AbortController()
   inflight.set(def.id, ctl)
-  const next = await fetchStatusFrom(def.url, ctl.signal)
+  const next = await fetchStatusFrom(url, ctl.signal)
   if (rev !== revisions.get(def.id)) return // 遅延応答は破棄
   if (next) {
     const wasUnhealthy = (failCount.get(def.id) ?? 0) > 0

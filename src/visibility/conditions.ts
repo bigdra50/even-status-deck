@@ -2,7 +2,7 @@
 // 条件は leaf(threshold/onChange) の AND/OR 複合。metric は常に self (その segment 自身)。
 // threshold は percent 比較、onChange は value 変化で holdMs だけ表示。transient(onChange) の状態は
 // 呼び出し側 (runtime shell) が保持し、ここは pure に受け渡す。config / status-types は型のみ参照。
-import type { Config } from '../config'
+import { activeView, type Config } from '../config'
 import type { Segment, StatusDoc } from '../status-types'
 
 // leaf = 条件の最小単位。threshold は seg.percent を比較、onChange は seg.value 変化で holdMs 表示。
@@ -61,17 +61,18 @@ export function computeVisibleMap(
   const map: VisibleMap = new Map()
   const states: VisStates = new Map() // onChange leaf のみ。毎回再構築 → stale キーは自然消滅
   let wakeAt: number | null = null
-  for (const ref of config.groupOrder) {
-    const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
-    if (!gcfg) continue
+  const view = activeView(config)
+  for (const ref of view.groupOrder) {
+    const meta = config.groups[ref.sourceId]?.[ref.groupId]
+    if (!meta) continue
     const group = statuses[ref.sourceId]?.groups.find((g) => g.id === ref.groupId)
     if (!group) continue
-    for (const sc of gcfg.segments) {
-      const cond = sc.visibility
+    for (const sm of meta.segments) {
+      const cond = sm.visibility
       if (!cond || cond.conditions.length === 0) continue // 条件無し = 常時表示 (map に載せない)
-      const seg = group.segments.find((s) => s.id === sc.id)
+      const seg = group.segments.find((s) => s.id === sm.id)
       if (!seg) continue
-      const key = segKey(ref.sourceId, ref.groupId, sc.id)
+      const key = segKey(ref.sourceId, ref.groupId, sm.id)
       const results: LeafResult[] = cond.conditions.map((leaf, i) => {
         if (leaf.kind === 'threshold') return evalThreshold(leaf, seg)
         // onChange: leaf 単位で transient 状態を保持
