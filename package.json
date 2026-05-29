@@ -8,6 +8,7 @@
     "preview": "vite preview",
     "sim": "evenhub-simulator http://localhost:5173",
     "pack": "npm run build && evenhub pack app.json dist -o eveng2-toolbar.ehpk",
+    "upload": "node scripts/upload.mjs",
     "qr": "evenhub qr --url \"http://$(ipconfig getifaddr en0):5173\"",
     "lint": "biome check src/",
     "lint:fix": "biome check --write src/",
