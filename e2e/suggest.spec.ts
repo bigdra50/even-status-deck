@@ -36,10 +36,12 @@ async function testConnection(p: Page, url: string): Promise<void> {
 // ならない (stale)。online={host-testbox} に対し Default が active より厳密に合致 → Default を提案。
 async function buildScenario(p: Page): Promise<void> {
   // (A) 既定サーバ server.local を localhost で安定化 → host-testbox (online, Default に属する)。
+  await p.locator('[data-action="manage-sources"]').click()
   await gear(p, 'server.local').click()
   await testConnection(p, URL_A)
-  await p.locator('[data-action="home"]').click()
+  await p.locator('[data-action="back"]').click() // Sources 一覧へ
   await expect(gear(p, ID_A)).toBeVisible()
+  await p.locator('[data-action="home"]').click()
 
   // (B) Preset 2 を追加 (active, enabledSourceIds = 現 source = {builtin, host-testbox} を複製)。
   await p.locator('[data-action="profile-add"]').click()
@@ -47,10 +49,12 @@ async function buildScenario(p: Page): Promise<void> {
 
   // (C) Preset 2 が active のまま 2 台目 (other.box) を追加・接続 → host-otherbox は active だけに属す。
   //     /api/status は 503 なので追加直後の fetch で online にならない。
-  await p.locator('[data-action="add-source"]').click()
+  await p.locator('[data-action="manage-sources"]').click()
+  await p.locator('[data-action="new-source"]').click()
   await testConnection(p, URL_B)
-  await p.locator('[data-action="home"]').click()
+  await p.locator('[data-action="back"]').click()
   await expect(gear(p, ID_B)).toBeVisible()
+  await p.locator('[data-action="home"]').click()
 }
 
 // このスペックは host-otherbox の /api/status を意図的に 503 にして「online でない source」を

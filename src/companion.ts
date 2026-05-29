@@ -74,7 +74,9 @@ import { computeVisible, segKey, type VisibilityLeaf } from './visibility'
 const MAX_CONDS = 4
 
 // companion (スマホ WebView) の Home / Source 編集。複数ソースを横断して設定する。
-let view: 'home' | 'source-edit' = 'home'
+let view: 'home' | 'source-edit' | 'sources' | 'add-source' = 'home'
+// source-edit から戻る先 (Sources 一覧経由か / Home への新規追加経由か)
+let sourceEditBack: 'home' | 'sources' = 'home'
 let editingSourceId: string | null = null
 let editMachine: MachineInfo | null = null // 接続テストの検出結果
 let config: Config = emptyConfig()
@@ -285,28 +287,40 @@ function renderItems(): string {
     .join('')
 }
 
-// ── ソース一覧 ──
-function sourceRow(s: SourceDef): string {
-  if (s.kind === 'builtin') {
-    return `<div class="src"><div class="src-head"><span class="conn-dot"></span>
-      <span class="src-name">${esc(s.label)}</span><span class="src-note">Built-in</span></div></div>`
-  }
-  // この preset で source を fetch/表示するか (enabledSourceIds)。OFF は fetch せず glass/Items から消す。
-  const enabled = isSourceEnabled(config, s.id)
-  // 切断検出を反映: online=緑 / stale=琥珀 (瞬断中) / offline=灰 + "Last seen…"。OFF は dot を消す。
+// ── source 行 (3 文脈: Home=preset 内 / Sources 一覧 / preset へ追加) ──
+// 接続状態 dot と note (online=緑 / stale=琥珀 / offline=灰+"Last seen…")。
+function sourceDotNote(s: SourceDef): { dotCls: string; note: string } {
   const health = getSourceHealth(s.id)
-  const dotCls = !enabled ? 'off' : health === 'online' ? '' : health === 'stale' ? 'stale' : 'off'
-  const note = !enabled
-    ? 'Off in this preset'
-    : health === 'offline'
-      ? lastSeenText(s.id)
-      : (sourceUrl(s) ?? 'Not set')
-  const toggle = `<button class="tg ${enabled ? 'on' : ''}" data-action="toggle-source" data-src="${esc(s.id)}" title="${enabled ? 'Shown in this preset' : 'Hidden in this preset'}" aria-label="Toggle source in this preset"></button>`
-  return `<div class="src${enabled ? '' : ' dim'}"><div class="src-head"><span class="conn-dot ${dotCls}"></span>
+  const dotCls = health === 'online' ? '' : health === 'stale' ? 'stale' : 'off'
+  const note = health === 'offline' ? lastSeenText(s.id) : (sourceUrl(s) ?? 'Not set')
+  return { dotCls, note }
+}
+
+// Home: この preset に追加済みの source。preset から外す操作のみ (非破壊)。編集は Sources 一覧へ。
+function sourcePresetRow(s: SourceDef): string {
+  const { dotCls, note } = sourceDotNote(s)
+  return `<div class="src"><div class="src-head"><span class="conn-dot ${dotCls}"></span>
     <span class="src-name">${esc(s.label)}</span>
     <span class="src-note">${esc(note)}</span>
-    ${toggle}
+    <button class="link-btn" data-action="remove-from-preset" data-src="${esc(s.id)}" title="Remove from this preset">Remove</button></div></div>`
+}
+
+// Sources 一覧: 全 source 実体の管理。編集 (URL/machineId/削除) へ。
+function sourceManageRow(s: SourceDef): string {
+  const { dotCls, note } = sourceDotNote(s)
+  return `<div class="src"><div class="src-head"><span class="conn-dot ${dotCls}"></span>
+    <span class="src-name">${esc(s.label)}</span>
+    <span class="src-note">${esc(note)}</span>
     <button class="gear-btn" data-action="edit-source" data-src="${esc(s.id)}" title="Edit" aria-label="Edit">${icon('settings', { size: 18 })}</button></div></div>`
+}
+
+// preset への追加候補: まだこの preset に無い source。タップで preset へ追加。
+function sourceAddRow(s: SourceDef): string {
+  const { dotCls, note } = sourceDotNote(s)
+  return `<div class="src"><div class="src-head"><span class="conn-dot ${dotCls}"></span>
+    <span class="src-name">${esc(s.label)}</span>
+    <span class="src-note">${esc(note)}</span>
+    <button class="link-btn" data-action="add-to-preset" data-src="${esc(s.id)}" title="Add to this preset">Add</button></div></div>`
 }
 
 // offline source の最終接続時刻を相対表記する ("Last seen 3m ago")。未接続は "Not connected"。
@@ -538,22 +552,58 @@ function renderProfileBar(): string {
 }
 
 function renderHome(): string {
-  // builtin (Clock/G2 Battery) は SOURCES に出さない。設定するサーバ専用のリストにする。
-  const sources = config.sources
-    .filter((s) => s.kind !== 'builtin')
-    .map((s) => sourceRow(s))
-    .join('')
+  // この preset に追加済みの server source だけ表示 (builtin は Items の Clock/G2 に出る)。
+  const sources = config.sources.filter(
+    (s) => s.kind !== 'builtin' && isSourceEnabled(config, s.id),
+  )
+  const sourcesHtml = sources.length
+    ? sources.map(sourcePresetRow).join('')
+    : '<div class="cmp-sub">No sources in this preset.</div>'
   return `
     ${renderSuggestionBanner()}
     ${renderProfileBar()}
 
-    <div class="cmp-label cmp-label-row">Sources<button class="add-btn" data-action="add-source" title="Add source" aria-label="Add source">${icon('plus', { size: 16 })}</button></div>
-    ${sources}
+    <div class="cmp-label cmp-label-row">Sources<span class="cmp-actions"><button class="link-btn" data-action="manage-sources">Manage all</button></span></div>
+    ${sourcesHtml}
+    <button class="save-btn sm" data-action="open-add-source">${icon('plus', { size: 14 })} Add source</button>
 
     <div class="cmp-label">Items (drag ${icon('grip', { size: 12 })} to reorder)</div>
     <div id="source-list">${renderItems()}</div>
 
     ${renderGlassSection()}
+  `
+}
+
+// Sources 一覧: 全 source 実体 (preset 非依存)。編集・削除はここに集約。
+function renderSources(): string {
+  const sources = config.sources.filter((s) => s.kind !== 'builtin')
+  const html = sources.length
+    ? sources.map(sourceManageRow).join('')
+    : '<div class="cmp-sub">No sources yet.</div>'
+  return `
+    <div class="topbar"><button class="nav-btn" data-action="home">${icon('arrow-left', { size: 16 })} Home</button>
+      <span class="h-title">Sources</span><span></span></div>
+    <div class="cmp-sub">Shared across all presets. Editing or deleting here affects every preset.</div>
+    ${html}
+    <button class="save-btn sm" data-action="new-source">${icon('plus', { size: 14 })} New source</button>
+  `
+}
+
+// preset への source 追加 (既存プールから / 新規作成)。
+function renderAddSource(): string {
+  const available = config.sources.filter(
+    (s) => s.kind !== 'builtin' && !isSourceEnabled(config, s.id),
+  )
+  const list = available.length
+    ? available.map(sourceAddRow).join('')
+    : '<div class="cmp-sub">All sources are already in this preset.</div>'
+  return `
+    <div class="topbar"><button class="nav-btn" data-action="home">${icon('arrow-left', { size: 16 })} Home</button>
+      <span class="h-title">Add source</span><span></span></div>
+    <div class="cmp-label">Existing sources</div>
+    ${list}
+    <div class="cmp-label">New</div>
+    <button class="save-btn sm" data-action="create-new-source">${icon('plus', { size: 14 })} Create new source</button>
   `
 }
 
@@ -580,8 +630,9 @@ function renderSourceEdit(): string {
   const s = editingSourceId ? sourceById(config, editingSourceId) : undefined
   const url = testUrl || (s ? sourceUrl(s) : undefined) || 'http://127.0.0.1:8723'
   const testing = testState === 'testing'
+  const backLabel = sourceEditBack === 'sources' ? 'Sources' : 'Home'
   return `
-    <div class="topbar"><button class="nav-btn" data-action="home">${icon('arrow-left', { size: 16 })} Home</button>
+    <div class="topbar"><button class="nav-btn" data-action="back">${icon('arrow-left', { size: 16 })} ${backLabel}</button>
       <span class="h-title">Server</span><span></span></div>
     <div class="field"><label>URL</label>
       <div class="field-row">
@@ -591,7 +642,7 @@ function renderSourceEdit(): string {
       <span class="help-link" data-action="help">Set up a local server ${icon('external-link', { size: 13 })}</span>
     </div>
     ${renderTestStatus()}
-    <button class="danger-btn" data-action="remove-source">Remove source</button>
+    <button class="danger-btn" data-action="delete-source">Delete source (all presets)</button>
   `
 }
 
@@ -601,7 +652,14 @@ function render(): void {
   // 起こり得る (接続テストで追加した source が即 offline になる等) が、その間の notify は
   // onStoreUpdate が握り潰すため、Home へ戻った描画時に必ず計算し直してバナーを正す。
   if (view === 'home') recomputeSuggestion()
-  root.innerHTML = view === 'source-edit' ? renderSourceEdit() : renderHome()
+  root.innerHTML =
+    view === 'source-edit'
+      ? renderSourceEdit()
+      : view === 'sources'
+        ? renderSources()
+        : view === 'add-source'
+          ? renderAddSource()
+          : renderHome()
   if (view === 'home') {
     lastVisibleSig = visibleSig()
     attachSortables()
@@ -789,13 +847,59 @@ async function onClick(e: MouseEvent): Promise<void> {
       if (removeProfile(config, cur.id)) applyProfileChange()
       break
     }
-    case 'add-source': {
+    case 'manage-sources':
+      view = 'sources'
+      render()
+      break
+    case 'open-add-source':
+      view = 'add-source'
+      render()
+      break
+    case 'add-to-preset': {
+      // 既存 source をこの preset に追加する。
+      const id = t.dataset.src
+      if (id) {
+        setSourceEnabled(config, id, true)
+        void saveConfig(config)
+        setSourcesFromConfig(config) // fetch 範囲を広げる (取得開始)
+        view = 'home'
+        render()
+      }
+      break
+    }
+    case 'remove-from-preset': {
+      // この preset から外す (非破壊)。実体は残り、Items/glass からは消える。
+      const id = t.dataset.src
+      if (id) {
+        setSourceEnabled(config, id, false)
+        void saveConfig(config)
+        setSourcesFromConfig(config) // fetch 範囲を狭める (停止/status 破棄)
+        render()
+      }
+      break
+    }
+    case 'create-new-source': {
+      // preset への新規追加: 実体を作り active preset に入れて URL 入力へ。戻り先は Home。
       const def = addServer(config, 'New server')
       void saveConfig(config)
       editingSourceId = def.id
       testState = 'idle'
       testUrl = ''
       editMachine = null
+      sourceEditBack = 'home'
+      view = 'source-edit'
+      render()
+      break
+    }
+    case 'new-source': {
+      // Sources 一覧からの新規 (実体追加)。戻り先は Sources 一覧。
+      const def = addServer(config, 'New server')
+      void saveConfig(config)
+      editingSourceId = def.id
+      testState = 'idle'
+      testUrl = ''
+      editMachine = null
+      sourceEditBack = 'sources'
       view = 'source-edit'
       render()
       break
@@ -805,16 +909,22 @@ async function onClick(e: MouseEvent): Promise<void> {
       testState = 'idle'
       testUrl = ''
       editMachine = null
+      sourceEditBack = 'sources'
       view = 'source-edit'
       render()
       break
-    case 'remove-source':
+    case 'back':
+      editingSourceId = null
+      view = sourceEditBack
+      render()
+      break
+    case 'delete-source':
       if (editingSourceId) {
         removeSource(config, editingSourceId)
         void saveConfig(config)
         setSourcesFromConfig(config)
         editingSourceId = null
-        view = 'home'
+        view = sourceEditBack
         render()
       }
       break
@@ -834,17 +944,6 @@ async function onClick(e: MouseEvent): Promise<void> {
       if (vg) {
         vg.enabled = !vg.enabled
         void saveConfig(config)
-        render()
-      }
-      break
-    }
-    case 'toggle-source': {
-      // この preset で source を fetch/表示するか。OFF は fetch 停止 + glass/Items から除外。
-      const id = t.dataset.src
-      if (id) {
-        setSourceEnabled(config, id, !isSourceEnabled(config, id))
-        void saveConfig(config)
-        setSourcesFromConfig(config) // fetch 範囲を更新 (OFF=停止/status 破棄, ON=取得開始)
         render()
       }
       break
