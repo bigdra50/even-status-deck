@@ -394,14 +394,15 @@ function renderGlassSection(): string {
       <div class="gpv"><div class="gpv-cap">G2 576×288</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
       <div class="cmp-sub">Glass gestures: tap = summary / swipe = switch view / double-tap = exit</div>
       <div class="cmp-sub">One row per group. Customize to place items freely on the preview.</div>
-      <button class="save-btn" data-action="layout-customize">${icon('plus', { size: 16 })}Customize layout</button>`
+      <button class="save-btn" data-action="layout-customize">${icon('plus', { size: 16 })}Customize layout</button>
+      <button class="save-btn sm" data-action="fs-open">${icon('plus', { size: 14 })}Fullscreen edit (beta)</button>`
   }
   if (layoutEditing) {
     return `<div class="cmp-label cmp-label-row">Glass layout<button class="link-btn" data-action="layout-edit-toggle">Done</button></div>
       <div class="cmp-sub">Drag items to rows (1–${MAX_ROWS}) or the Unplaced shelf. Row number = position from top of glass.</div>
       ${renderGlassEdit(lay)}`
   }
-  return `<div class="cmp-label cmp-label-row">Glass<button class="link-btn" data-action="layout-edit-toggle">Edit layout</button></div>
+  return `<div class="cmp-label cmp-label-row">Glass<span class="cmp-actions"><button class="link-btn" data-action="fs-open">Fullscreen</button><button class="link-btn" data-action="layout-edit-toggle">Edit layout</button></span></div>
     <div class="gpv"><div class="gpv-cap">G2 576×288</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
     <div class="cmp-sub">Glass gestures: tap = summary / swipe = switch view / double-tap = exit</div>`
 }
@@ -726,6 +727,14 @@ async function onClick(e: MouseEvent): Promise<void> {
       await saveConfig(config)
       render()
       break
+    case 'fs-open':
+      // フルスクリーン WYSIWYG エディタ (実験的)。custom layout 未生成なら生成して開く。
+      if (!config.glassLayout) {
+        config.glassLayout = generateGlassLayout(config)
+        await saveConfig(config)
+      }
+      openFsEditor()
+      break
     case 'layout-item-remove': {
       // segment を全行から外す → 未配置 (Unplaced 棚) に導出される。
       const key = t.dataset.segkey
@@ -875,6 +884,204 @@ function onStoreUpdate(): void {
   // 値だけの更新では再描画しない (毎 poll の innerHTML churn が iOS WebContent jettison を招くため。
   // プレビューはモックなので値追従はユーザー編集/構成変化/並べ替えで十分。issue #4)。
   if (visibleSig() !== lastVisibleSig) render()
+}
+
+// ── Fullscreen WYSIWYG レイアウトエディタ (実験的) ──
+// iOS WKWebView は orientation lock / requestFullscreen が不安定なため、CSS で強制横
+// (@media portrait で 90° 回転) する。回転コンテナ内では SortableJS の ghost 座標が壊れる
+// ため、D&D は Pointer Events で自前実装する (elementFromPoint で行/ゾーンを判定)。
+// 永続データは通常エディタと同じ glassLayout.rows + @right を共有する (新フォーマット無し)。
+let fsRoot: HTMLElement | null = null
+let fsDrag: { key: string; ghost: HTMLElement } | null = null
+
+// チップの表示文字列 (実機の値。custom ラベルは本文)。
+function fsChipText(key: string): string {
+  if (isCustomLabelKey(key)) return config.glassLayout?.customLabels[customLabelId(key)]?.text ?? ''
+  const [sourceId, groupId, segId] = key.split('|')
+  const sg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
+  const { seg } = segLabelParts(key)
+  return sg ? (sg.label ? `${sg.label} ${sg.value}` : sg.value) : seg
+}
+
+// glass 風チップ (緑/黒)。default-label ON の group は group 名を薄く前置。× で未配置へ。
+function fsChip(key: string): string {
+  const [sourceId, groupId] = key.split('|')
+  const { group } = segLabelParts(key)
+  const gc = config.groups[sourceId]?.[groupId]
+  const showsLabel = !isCustomLabelKey(key) && (gc?.showDefaultLabel ?? groupId !== 'clock')
+  const grp = showsLabel && group ? `<span class="fs-grp">${esc(group)}</span>` : ''
+  const cls = isCustomLabelKey(key) ? 'fs-chip fs-chip-label' : 'fs-chip'
+  const x = `<button class="fs-x" data-action="fs-unplace" data-segkey="${esc(key)}" aria-label="Unplace">${icon('x', { size: 12 })}</button>`
+  return `<span class="${cls}" data-segkey="${esc(key)}">${grp}<span class="fs-txt">${esc(fsChipText(key))}</span>${x}</span>`
+}
+
+// プレビュー本体 (10 行 × 左/右ゾーン) + Unplaced トレイの HTML。
+function renderFsBodyHtml(): string {
+  const lay = config.glassLayout
+  if (!lay) return ''
+  const rows: string[] = []
+  for (let i = 0; i < MAX_ROWS; i++) {
+    const { left, right } = splitRowClusters(lay.rows[i] ?? [])
+    const over = rowOverflow(lay.rows[i] ?? [])
+      ? `<span class="fs-over" title="May be too long for one line">${icon('alert', { size: 12 })}</span>`
+      : ''
+    rows.push(
+      `<div class="fs-row"><div class="fs-zone" data-row="${i}" data-zone="left">${left.map(fsChip).join('')}</div>` +
+        `<div class="fs-zone fs-zone-r" data-row="${i}" data-zone="right">${right.map(fsChip).join('')}${over}</div></div>`,
+    )
+  }
+  const placed = new Set(lay.rows.flat().filter((k) => !isRightDivider(k)))
+  const tray = allPlaceableKeys().filter((k) => !placed.has(k))
+  const trayHtml = tray.length
+    ? tray.map(fsChip).join('')
+    : '<span class="fs-empty">Nothing unplaced</span>'
+  return `<div class="fs-glass">${rows.join('')}</div>
+    <div class="fs-tray" data-zone="tray"><span class="fs-tray-label">Unplaced</span>${trayHtml}</div>`
+}
+
+function renderFsShell(): string {
+  return `<div class="fs-stage">
+      <div class="fs-bar"><span class="fs-title">Glass layout — drag items onto the preview</span>
+        <button class="fs-done" data-action="fs-done">Done</button></div>
+      <div class="fs-body">${renderFsBodyHtml()}</div>
+    </div>
+    <div class="fs-hint">Rotate your phone to landscape ↻</div>`
+}
+
+function refreshFsBody(): void {
+  const body = fsRoot?.querySelector('.fs-body')
+  if (body) body.innerHTML = renderFsBodyHtml()
+}
+
+// 各行を split→join で正規化し、空になった右クラスタの @right を落とす。
+function normalizeFsRows(): void {
+  const lay = config.glassLayout
+  if (!lay) return
+  lay.rows = lay.rows.map((r) => {
+    const { left, right } = splitRowClusters(r)
+    return right.length ? [...left, RIGHT_DIVIDER, ...right] : left
+  })
+}
+
+function removeFsKey(key: string): void {
+  const lay = config.glassLayout
+  if (lay) lay.rows = lay.rows.map((r) => r.filter((k) => k !== key))
+}
+
+function moveFsKeyToZone(key: string, rowIdx: number, side: 'left' | 'right'): void {
+  const lay = config.glassLayout
+  if (!lay) return
+  removeFsKey(key) // 重複配置を防ぐ (どこから来ても 1 箇所だけ)
+  const { left, right } = splitRowClusters(lay.rows[rowIdx] ?? [])
+  if (side === 'right') right.push(key)
+  else left.push(key)
+  lay.rows[rowIdx] = right.length ? [...left, RIGHT_DIVIDER, ...right] : left
+  normalizeFsRows()
+}
+
+function fsZoneAt(e: PointerEvent): HTMLElement | null {
+  const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
+  return el?.closest('.fs-zone, .fs-tray') ?? null
+}
+
+function fsClearHot(): void {
+  for (const z of document.querySelectorAll('.fs-zone.fs-hot, .fs-tray.fs-hot')) {
+    z.classList.remove('fs-hot')
+  }
+}
+
+function fsPositionGhost(e: PointerEvent): void {
+  if (!fsDrag) return
+  fsDrag.ghost.style.left = `${e.clientX}px`
+  fsDrag.ghost.style.top = `${e.clientY}px`
+}
+
+function onFsPointerDown(e: PointerEvent): void {
+  const target = e.target as HTMLElement
+  if (target.closest('.fs-x') || target.closest('.fs-done')) return // 削除/閉じるは click で処理
+  const chip = target.closest('.fs-chip') as HTMLElement | null
+  const key = chip?.dataset.segkey
+  if (!key) return
+  e.preventDefault()
+  const ghost = chip.cloneNode(true) as HTMLElement
+  ghost.classList.add('fs-ghost')
+  if (window.matchMedia('(orientation: portrait)').matches) ghost.classList.add('fs-ghost-rot')
+  document.body.appendChild(ghost)
+  fsDrag = { key, ghost }
+  fsPositionGhost(e)
+  window.addEventListener('pointermove', onFsPointerMove)
+  window.addEventListener('pointerup', onFsPointerUp)
+}
+
+function onFsPointerMove(e: PointerEvent): void {
+  if (!fsDrag) return
+  e.preventDefault()
+  fsPositionGhost(e)
+  fsClearHot()
+  fsZoneAt(e)?.classList.add('fs-hot')
+}
+
+function onFsPointerUp(e: PointerEvent): void {
+  window.removeEventListener('pointermove', onFsPointerMove)
+  window.removeEventListener('pointerup', onFsPointerUp)
+  const drag = fsDrag
+  fsDrag = null
+  drag?.ghost.remove()
+  fsClearHot()
+  if (!drag || !config.glassLayout) return
+  const zone = fsZoneAt(e)
+  if (!zone) return
+  if (zone.classList.contains('fs-tray')) {
+    removeFsKey(drag.key)
+    normalizeFsRows()
+  } else {
+    const row = Number(zone.dataset.row)
+    if (!Number.isInteger(row)) return
+    moveFsKeyToZone(drag.key, row, zone.dataset.zone === 'right' ? 'right' : 'left')
+  }
+  void saveConfig(config)
+  refreshFsBody()
+}
+
+function onFsClick(e: MouseEvent): void {
+  const t = (e.target as HTMLElement).closest('[data-action]') as HTMLElement | null
+  if (!t) return
+  if (t.dataset.action === 'fs-done') {
+    closeFsEditor()
+    return
+  }
+  if (t.dataset.action === 'fs-unplace') {
+    const key = t.dataset.segkey
+    if (key && config.glassLayout) {
+      removeFsKey(key)
+      normalizeFsRows()
+      void saveConfig(config)
+      refreshFsBody()
+    }
+  }
+}
+
+function openFsEditor(): void {
+  if (fsRoot) return
+  fsRoot = document.createElement('div')
+  fsRoot.className = 'fs-root'
+  fsRoot.innerHTML = renderFsShell()
+  document.body.appendChild(fsRoot)
+  fsRoot.addEventListener('pointerdown', onFsPointerDown)
+  fsRoot.addEventListener('click', onFsClick)
+}
+
+function closeFsEditor(): void {
+  if (!fsRoot) return
+  fsRoot.removeEventListener('pointerdown', onFsPointerDown)
+  fsRoot.removeEventListener('click', onFsClick)
+  window.removeEventListener('pointermove', onFsPointerMove)
+  window.removeEventListener('pointerup', onFsPointerUp)
+  fsDrag?.ghost.remove()
+  fsDrag = null
+  fsRoot.remove()
+  fsRoot = null
+  render() // 通常画面のプレビューを最新化
 }
 
 export async function mountCompanion(el: HTMLElement): Promise<void> {

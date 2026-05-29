@@ -600,5 +600,33 @@
     <p class="done">数値スモーク (bun): 行「時計左 / 電池右」= <code>10:30 Mon … Battery Bat 82%</code> 実幅 562px (inner 560, 誤差 2px) / 全左 92px / 全右 560px ぴったり。</p>
     <p class="done">ブラウザ E2E (Chrome): Add Sources 小型化 / Customize→Edit layout で各行 左｜右 2 ゾーン描画 / Clock chip を右ゾーンへドラッグ→右寄せ chip / Done でプレビューが右端寄せ。tsc・build・biome クリーン。</p>
     <p class="open">実機 (G2) 確認待ち: space 近似の右端整合 (誤差 ~2.5px) / 行内左右の見やすさ / 長文行 (左+右が INNER 超過) 時の折返し挙動。ブラウザは bridge 無しで reload すると layout リセット (memory のみ) = dev 想定。</p>
+    <hr>
+
+    <h2 class="done">フルスクリーン WYSIWYG レイアウトエディタ (実験的 / Phase 1) [2026-05-29]</h2>
+    <p>ユーザー要望: 動画フルスクリーンの強制横持ちのように、全画面・横向きで「実際の glass preview そのもの」上に
+      直接 D&D してレイアウト編集する画面。既存 Edit Layout は残す。粒度・実装は gpt-5.5 (copilot) と 2 ラウンド議論
+      (SortableJS ソースまで確認)。実機の振る舞いは AskUserQuestion でユーザーに確認。</p>
+
+    <h3>確定した前提 <span class="done">[decided]</span></h3>
+    <table>
+      <tr><th>項目</th><th>事実 / 決定</th></tr>
+      <tr><td>ホスト回転</td><td>ユーザー回答: Even App コンパニオンは<strong>縦固定 (回転しない)</strong>。よって横表示は CSS 強制回転でしか作れない。</td></tr>
+      <tr><td>横持ちの作り方</td><td><code>@media (orientation: portrait)</code> で <code>.fs-stage</code> を <code>rotate(90deg) translateY(-100vw)</code> (width:100vh/height:100vw/origin top-left) し portrait viewport を埋める。端末を横に倒すと正立 = 動画フルスクリーン体験。landscape では無回転。</td></tr>
+      <tr><td>D&D 実装</td><td>copilot 検証: 回転コンテナ内で SortableJS の fallback ghost は <code>clientX/clientY</code> 基準で 90° 逆変換せず破綻 → <strong>使用不可</strong>。よって <strong>Pointer Events 自前実装</strong>。<code>document.elementFromPoint</code> は transform 後のヒットを返すので行/ゾーン判定はそのまま動く。</td></tr>
+      <tr><td>データ</td><td>新フォーマット無し。通常エディタと同じ <code>glassLayout.rows + @right</code> を共有 (<code>splitRowClusters</code> 流用)。自由座標には広げない。</td></tr>
+      <tr><td>既存 Edit Layout</td><td>そのまま残置。入口を 2 つ (Fullscreen / Edit layout) に。</td></tr>
+    </table>
+
+    <h3>実装</h3>
+    <table>
+      <tr><th>層</th><th>変更</th></tr>
+      <tr><td>companion.ts</td><td>独立オーバーレイ (<code>document.body</code> 直下) を <code>openFsEditor</code>/<code>closeFsEditor</code> で管理 (root の render/SortableJS と非干渉)。<code>renderFsBodyHtml</code> が 10 行×左右ゾーン + Unplaced トレイを生成。自前 Pointer D&D (<code>onFsPointerDown/Move/Up</code> + <code>fsZoneAt=elementFromPoint</code> + 追従 ghost)。<code>moveFsKeyToZone</code>/<code>removeFsKey</code>/<code>normalizeFsRows</code> で rows 更新→saveConfig→<code>refreshFsBody</code>。入口 action <code>fs-open</code> (custom 未生成なら generate)。</td></tr>
+      <tr><td>styles.css</td><td><code>.fs-root/.fs-stage</code> (+ portrait media で 90° 回転)、<code>.fs-glass/.fs-row/.fs-zone(-r)</code> (緑/黒・10 等分)、<code>.fs-chip</code> (glass 風・draggable)、<code>.fs-hot</code> (drop ハイライト)、<code>.fs-ghost(-rot)</code> (追従 ghost)、<code>.fs-tray</code>、<code>.cmp-actions</code>。</td></tr>
+    </table>
+
+    <h3>検証 <span class="done">[done]</span> / 未確認 <span class="open">[open]</span></h3>
+    <p class="done">ブラウザ E2E (Chrome, landscape): Fullscreen 起動 → 10 行×左右ゾーン + 緑チップ描画 / 自前 D&D で <code>Mac Mem</code> を別行(row4)→row1 右ゾーンへ移動 = 時計左+Mem右 (iOS 型) / トレイへドロップで unplace + <code>@right</code> 自動掃除 / Done で通常プレビューに反映。tsc・biome・build クリーン。</p>
+    <p class="open">実機 (iOS portrait) 確認待ち: <code>@media portrait</code> の 90° 回転が viewport を正しく埋めるか (デスクトップ landscape では再現不可)。タッチでの Pointer D&D 操作感 (forceFallback 相当の長押し閾値は未設定 = 即ドラッグ)。回転下 ghost の向き (<code>.fs-ghost-rot</code> で 90° 補正済だが要実機確認)。</p>
+    <p class="open">Phase 2 候補 (必要なら): ドロップ位置でのクラスタ内挿入順制御 (現状は末尾 append) / aspect-ratio 2:1 厳密化 / タッチ長押し閾値 / landscape ホストが現れた場合の無回転最適化。</p>
   </body>
 </html>

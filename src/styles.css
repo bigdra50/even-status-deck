@@ -747,3 +747,191 @@ textarea {
 .glass-screen .gsec-bot {
   margin-top: auto;
 }
+
+/* Glass セクション見出しの右側アクション (Fullscreen / Edit layout) */
+.cmp-actions {
+  display: flex;
+  gap: var(--space-3);
+}
+
+/* ── Fullscreen WYSIWYG レイアウトエディタ (実験的: CSS 強制横 + 自前 Pointer D&D) ── */
+.fs-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: #000;
+  touch-action: none;
+}
+.fs-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* iOS WKWebView は orientation lock 不可。portrait の間は CSS で 90° 回転して横長表示にする
+   (端末を横に倒すと正立する = 動画フルスクリーンの横持ち体験)。landscape ではそのまま。 */
+@media (orientation: portrait) {
+  .fs-stage {
+    inset: auto;
+    top: 0;
+    left: 0;
+    width: 100vh;
+    height: 100vw;
+    transform-origin: top left;
+    transform: rotate(90deg) translateY(-100vw);
+  }
+}
+.fs-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 10px 16px;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+.fs-done {
+  background: var(--accent);
+  color: #232323;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 8px 18px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.fs-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 16px 16px;
+  min-height: 0;
+}
+/* 実プレビュー (緑/黒)。10 行を等分し、各行 = 左/右ゾーン。 */
+.fs-glass {
+  flex: 1;
+  background: #000;
+  border: 1px solid rgba(60, 250, 68, 0.35);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 12px;
+  min-height: 0;
+}
+.fs-row {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px dashed rgba(60, 250, 68, 0.08);
+  min-height: 0;
+}
+.fs-row:last-child {
+  border-bottom: none;
+}
+.fs-zone {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 100%;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+.fs-zone-r {
+  justify-content: flex-end;
+}
+.fs-zone.fs-hot,
+.fs-tray.fs-hot {
+  background: rgba(60, 250, 68, 0.14);
+  outline: 1px solid var(--glass);
+}
+.fs-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  background: rgba(60, 250, 68, 0.14);
+  color: var(--glass);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  white-space: nowrap;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.fs-chip-label {
+  background: rgba(254, 249, 145, 0.16);
+  color: var(--accent);
+}
+.fs-grp {
+  font-size: 11px;
+  opacity: 0.6;
+}
+.fs-x {
+  background: none;
+  border: none;
+  color: rgba(60, 250, 68, 0.6);
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+}
+.fs-chip-label .fs-x {
+  color: rgba(254, 249, 145, 0.7);
+}
+.fs-over {
+  color: #e0a458;
+  display: inline-flex;
+  align-items: center;
+}
+.fs-tray {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  min-height: 44px;
+}
+.fs-tray-label {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 4px;
+}
+.fs-empty {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+/* ドラッグ中の追従ゴースト (指/カーソル位置に固定。回転下では 90° 回して正立させる)。 */
+.fs-ghost {
+  position: fixed;
+  z-index: 1100;
+  pointer-events: none;
+  opacity: 0.92;
+  transform: translate(-50%, -50%);
+}
+.fs-ghost-rot {
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+.fs-hint {
+  position: absolute;
+  bottom: 8px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+}
+@media (orientation: landscape) {
+  .fs-hint {
+    display: none;
+  }
+}
