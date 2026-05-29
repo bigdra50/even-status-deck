@@ -1,135 +1,228 @@
 # 設計: eveng2-toolbar
 
-Even G2 ツールバー風サブモニタの設計。Mac のメニューバーのように、AI ツール（Claude Code / Codex …）の利用制限などを、デフォルトは最小表示、選択で詳細表示する。
+Even G2 ツールバー風サブモニタの設計。
+Mac のメニューバーのように、AI ツール（Claude Code / Codex …）の利用制限や PC/スマホの状態を、デフォルトは最小表示、選択で詳細表示する。
 
-## 1. 設定の階層モデル
+本書は v4（表示プリセット）を目標設計として記述する。
+実装は現在 v3（全ソース同時集約・単一構成）で、§9 の移行で破壊なく v4 へ上げる。
 
-ユーザーが companion app でカスタマイズする設定は 3 階層。
+## 0. 現状(v3)と本設計(v4)の関係
+
+| | v3（実装済み） | v4（本設計） |
+|---|---|---|
+| データモデル | 全ソースを 1 画面に同時集約 | 同左 + 表示プリセット(profile)で状況別に切替 |
+| 設定単位 | グローバル単一（sources / groups / groupOrder / glassLayout 各1枚） | 素材は共有、可視性・並び・レイアウトは profile 固有 |
+| ソース識別 | builtin/暗黙サーバは固定 ID、ユーザー追加は randomUUID | machineId 派生 ID + 複数経路 urls[]（旧 UUID は alias 保持） |
+| マシン切替 | 無し（登録したソースは常時集約） | profile 切替（"業務 / 私用 / 両方 / 出張"） |
+
+旧 v1/v2 にあった `machines` マップ + `activeMachine` 階層は v3 で廃止済み（`migrate()` が sources 配列へ平坦化）。
+v4 は machine 単位ではなく「状況（どの場面で 10 行に何を出すか）」を単位にする。
+
+## 1. 設計モデル: 素材とレシピ
+
+設定を 2 層に分ける。
 
 ```
-Machine (このマシン)                          ← レベル1: マシン毎
-  ├ id     : hostname ベース (自動生成)
-  ├ label  : hostname を接続先から自動取得 (手動入力しない)
-  └ sources: 有効化するツール (利用可能なものだけ)   ← レベル2: 内容 (ソース)
-       ├ claude-code  { enabled, 並び順 }
-       │    └ metrics: session / weekly / sonnet / opus / cost / msgs   ← レベル3: 表示項目 + 順序
-       └ codex        { enabled, 並び順 }
-            └ metrics: 5h / weekly
+[素材 = 共有資産]                         [レシピ = profile 固有]
+ sources[]   接続先の実体                  profiles[]
+   ├ id / machineId / urls[]                ├ Default { enabledSourceIds, view }
+   └ kind / label                           ├ 業務   { enabledSourceIds, view }
+ groups{}    metric の素性                  ├ 私用   { enabledSourceIds, view }
+   └ 存在 / label / format / 閾値条件        └ 出張   { enabledSourceIds, view }(一時/破棄可)
+                                                      │ activeProfileId で 1 つ選択
+        参照 ────────────────────────────────────────┘
+                                            view = { groups可視性, groupOrder, glassLayout }
 ```
 
-## 2. データモデル（スマホ集約・bridge.setLocalStorage に保存）
+- 素材（`sources` / `groups`）は状況に依らず 1 つの実体。接続先や metric の素性はここに 1 度だけ持つ。
+- レシピ（`profiles[].view`）は「何を出すか・どう並べるか・10 行にどう置くか」を状況ごとに持つ。
+- profile を複製しても素材は共有されるため、設定ドリフト（接続先や metric 定義の食い違い）が起きない。
 
-設定は 1 つの config JSON に全マシン分を `machines` マップで保持し、`bridge.setLocalStorage('toolbar.config', json)` でスマホ（Even アカウント単位）に保存する。companion でマシンを切り替えて複数マシンを 1 つのスマホで管理する。
+## 2. データモデル（v4, setLocalStorage 保存）
+
+`bridge.setLocalStorage('toolbar.config', json)` でスマホ（Even アカウント単位）に 1 つの JSON を保存する。
 
 ```jsonc
 {
-  "version": 1,
-  "activeMachine": "macbook-pro-a1b2",
-  "machines": {
-    "macbook-pro-a1b2": {
-      "label": "MacBook Pro",
-      "mode": "sideload",                 // sideload | cloud
-      "url": "http://192.168.1.5:5173",   // sideload=LAN dev server / cloud=固定ドメイン
-      "sourceOrder": ["claude-code", "codex"],
-      "sources": {
-        "claude-code": {
-          "enabled": true,
-          "metricOrder": ["session", "weekly", "cost"],
-          "metrics": {
-            "session": { "enabled": true },
-            "weekly":  { "enabled": true },
-            "sonnet":  { "enabled": false },
-            "opus":    { "enabled": false },
-            "cost":    { "enabled": true },
-            "msgs":    { "enabled": false }
-          }
-        },
-        "codex": {
-          "enabled": true,
-          "metricOrder": ["5h", "weekly"],
-          "metrics": { "5h": { "enabled": true }, "weekly": { "enabled": true } }
-        }
-      }
+  "version": 4,
+  "activeProfileId": "default",
+
+  // ── 素材（共有資産）──
+  "sources": [
+    { "id": "builtin.local", "kind": "builtin", "label": "Device" },
+    {
+      "id": "host-workmac",            // machineId 派生（§3）。旧 randomUUID は alias で保持
+      "kind": "server",
+      "label": "Work Mac",
+      "machineId": "host-workmac",     // 同一マシン判定キー（/api/machine 由来）
+      "urls": [                         // 複数経路。到達順に試行（先頭優先）
+        "http://192.168.1.5:5173",     // LAN
+        "http://workmac.tailnet:5173"  // VPN/Tailscale
+      ]
     }
-  }
+  ],
+  "groups": {                           // sourceId -> groupId -> 素性（label/format/閾値は profile 非依存）
+    "builtin.local": {
+      "clock": { "segments": [{ "id": "datetime", "format": "HH:mm  MMM d" }] },
+      "g2":    { "segments": [{ "id": "level" }, { "id": "rate" }, { "id": "eta" }] }
+    },
+    "host-workmac": {
+      "claude-code": { "segments": [
+        { "id": "session", "visibility": { "combinator": "and", "conditions": [{ "kind": "threshold", "op": "gte", "value": 50 }] } },
+        { "id": "weekly" }, { "id": "cost" }
+      ] },
+      "codex": { "segments": [{ "id": "5h" }, { "id": "weekly" }] }
+    }
+  },
+
+  // ── レシピ（profile 固有）──
+  "profiles": [
+    {
+      "id": "default",
+      "name": "Default",
+      "enabledSourceIds": ["builtin.local", "host-workmac"],  // fetch/表示する source（fetch 範囲）
+      "view": {
+        "groups": {                      // group/segment の可視性（profile ごと）
+          "builtin.local": { "clock": { "enabled": true, "segments": { "datetime": true } },
+                             "g2":    { "enabled": true, "segments": { "level": true, "rate": true, "eta": false } } },
+          "host-workmac":  { "claude-code": { "enabled": true, "segments": { "session": true, "weekly": true, "cost": false } },
+                             "codex":       { "enabled": true, "segments": { "5h": true, "weekly": true } } }
+        },
+        "groupOrder": [                  // 全ソース横断の表示順（profile ごと）
+          { "sourceId": "builtin.local", "groupId": "clock" },
+          { "sourceId": "host-workmac",  "groupId": "claude-code" }
+        ],
+        "glassLayout": { "rows": [], "customLabels": {} }  // 10 行配置。未設定なら group=1 行の自動描画
+      }
+    },
+    {
+      "id": "prof_work",
+      "name": "業務",
+      "enabledSourceIds": ["host-workmac"],   // 私用 Mac は fetch しない（節電/privacy）
+      "view": { "groups": { /* … */ }, "groupOrder": [ /* … */ ], "glassLayout": { /* … */ } }
+    }
+  ],
+
+  "imu": { /* 方向検出キャリブレーション（profile 非依存のハードウェア設定）*/ }
 }
 ```
 
-- 保存場所は SDK の `setLocalStorage` のみ（ブラウザ localStorage / IndexedDB は Flutter WebView では再起動で消えるため不可、device-features 参照）。
-- バックグラウンド復帰時は `setBackgroundState` / `onBackgroundRestore` で view state（現在のマシン・表示中の画面）を保持する。
+- 保存場所は SDK の `setLocalStorage` のみ。ブラウザ localStorage / IndexedDB は Flutter WebView では再起動で消える（device-features 参照）。
+- `activeProfileId` も同じ config に保存する。背景復帰時はこれを `loadConfig` で読み戻す（SDK 0.0.10 に `setBackgroundState` / `onBackgroundRestore` は無いため、それらには依存しない）。
+- 素材の segment 配列は「存在・順序の基準・format・閾値条件」を持つ。profile 側の `view.groups[src][grp].segments` は `{ segId: boolean }` の可視性だけを持つ。
+- `format`（clock 表示形式）と `visibility`（閾値/onChange）は metric の素性として共有に置く（MVP）。profile ごとに変えたい要望が出たら profile 側へ降ろす。
 
-## 3. マシン識別 & ツール自動検出
+## 3. ソース識別の安定化（machineId + urls[]）
 
-- データソース（dev server=sideload / backend=store）が `/api/machine` を返す:
-  - `machineId`: hostname ベースの安定 ID
-  - `label`: hostname（初期表示名）
-  - `availableSources`: ツール検出結果（`claude` CLI 有無 / `codex` CLI 有無）
-- 未インストールのツールは companion でグレーアウトし、有効化できない（自動検出）。これにより「未インストールを有効化してデータ取得エラー」を防ぐ。
-- glass 表示時は接続中マシンの `machineId` で `config.machines[id]` を引き、`availableSources` ∩ `enabled` の metric を順序通り描画。
+ソース追加時の接続テストで `/api/machine` から取得した `machineId`（hostname ベースの安定 ID）を `SourceDef.id` に採用する。
 
-## 4. companion の画面構成（Home 集約 / design-guidelines トークン）
+- 利点: 削除→同一マシン再追加、出張→帰宅などで同じ source に収束し、profile の可視性・並び・レイアウトが自動復活する。
+- 複数経路 `urls[]`: 同一マシンへ LAN / VPN など別 URL で繋ぐケースを 1 ソースに束ねる。接続は到達順（先頭優先、失敗で次へ）。
+- 移行: 既存の randomUUID ソースは ID を変えず、`machineId` を後から付与して alias 的に紐づける（過去の profile 参照を壊さない）。
+- フォールバック: サーバが `machineId` を返さない場合は url の hash か randomUUID にする（v3 の既存挙動を温存）。
+- 衝突（同一 hostname の別マシン 2 台 / hostname 変更）: `machineId + url fingerprint` で別ソース化、またはユーザー確認で disambiguate する。
 
-Home に集約し、別画面は Machine Edit のみ。
+`availableSources`（`claude` / `codex` CLI 検出結果）も `/api/machine` から取得し、未インストールのツールは companion でグレーアウトして有効化させない（取得エラー防止）。
+
+## 4. プリセット（profile）の意味と切替
+
+profile は「接続先」ではなく「状況セット」。3 ユースケースを 1 つの単位で表現する。
+
+| ユースケース | profile での表現 |
+|---|---|
+| 日替わりで業務/私用マシンを切替 | `業務` / `私用` profile を手動切替（並び・レイアウトも別々に保持） |
+| 業務+私用マシンを同時接続して集約 | 両 source を `enabledSourceIds` に含む profile（例 `両方`） |
+| 出張で一時的に別マシン | profile を複製→一時編集→離れたら破棄、元 profile へ戻す |
+
+- 切替は手動を正とする。勝手にレイアウトが変わるのはグラス UX で危険なため。
+- 自動切替は提案型に留める（§10 Phase 4）。「業務 Mac + iPhone が見つかりました。"出張" に切り替えますか?」のように手動承認を挟む。
+- `enabledSourceIds` に含まれない source は fetch しない（節電・privacy・WKWebView 負荷の軽減）。「非表示だが裏で取得」は将来の明示的な background sync 機能として別途足す。
+- 切替時は再集約・重い再計算・保存を起こさない。表示フィルタと layout 解決だけで描画を差し替える（WKWebView の WebContent jettison 回避。store の毎分再集約を避ける既存方針と同じ）。
+
+## 5. companion の画面構成（design-guidelines トークン）
+
+Home に集約し、別画面は Source Edit と Profile 管理のみ。
 
 ```
 Home (縦並び)
- ├ Machine   : 接続中インジケータ(●) + マシン選択ドロップダウン + ⚙(設定ボタン)
- ├ 表示設定  : Source(Claude Code/Codex)をジャンル折りたたみ(既定=閉) + Metric トグル + 並べ替え grip
- │            + glass 操作ヒント表示トグル
- └ Glass     : プレビュー (最下部)
-      │  ⚙ / 「+ マシンを追加」
+ ├ Profile  : プリセット選択(タブ/ドロップダウン) + 追加/複製/削除/リネーム
+ ├ Sources  : 接続先リスト（● online/stale/offline + label + URL/Last seen + ⚙）  ← 素材（全 profile 共通）
+ ├ 表示設定 : group をジャンル折りたたみ(既定=閉) + segment トグル + 並べ替え grip   ← active profile を編集
+ └ Glass    : プレビュー（最下部、active profile の描画）
+      │  Sources の「+」/ ⚙
       ▼
-Machine Edit : 接続先 URL + 接続テスト + 「ローカルサーバーの設定方法」リンク(Pages, 後日)
-               / マシン名(hostname 自動取得) / machineId(自動) / 利用可能ツール(自動検出) / 削除
+Source Edit : 接続先 URL（複数可） + 接続テスト + 「ローカルサーバーの設定方法」リンク
+              / マシン名(hostname 自動取得) / machineId(自動) / 利用可能ツール(自動検出) / 削除
 ```
 
 | 画面 | 役割 |
 |---|---|
-| Home | 全部入り。Machine 選択(=接続切替) + 表示設定(折りたたみ) + glass プレビュー |
-| Machine Edit | ⚙ / 追加から。接続先 URL のみ入力、マシン名・machineId・利用可能ツールは接続先から自動取得 |
+| Home | Profile 切替 + Sources 管理 + 表示設定(active profile) + プレビュー |
+| Source Edit | 「+」/ ⚙ から。URL 入力（複数経路）と接続テスト。マシン名・machineId・利用可能ツールは接続先から自動取得 |
 
-- マシン選択はドロップダウン（接続切替 = active machine）。「+ マシンを追加」で新規 Machine Edit。
-- マシン名は接続先（`/api/machine` の hostname）を自動取得。手動入力しない。
-- glass: summary(最小・既定) → swipe → Claude/Codex 詳細。操作ヒントは画面最下端、設定で非表示可。
-- 「ローカルサーバーの設定方法」は別途 Pages 等で用意し、Machine Edit からリンク（Phase 2 以降）。
+- Sources は素材なので全 profile 共通。表示設定（可視性・並び）は active profile の `view` を編集する。
+- マシン名は接続先（`/api/machine` の hostname）を自動取得し、手動入力しない。
+- 「Preview」は「設定が glass にどう出るかの確認 + 現値の確認」に限定する。rate limit の深掘り分析は公式アプリ（Claude / ChatGPT）に委ねる。
+- color tokens (light/dark)、FK Grotesk Neue、4/8px グリッド。`#FEF991` は accent のみ、`#3CFA44` は glass 表示のみ（phone UI で使わない）。
 
-- 「Preview」は旧「Usage」を改名。役割は「設定が glass にどう出るかの確認 + 現値の確認」に限定する。rate limit の深掘り分析は公式アプリ (Claude / ChatGPT) に委ね、本アプリは glass 表示と設定に集中する。
-- 接続方式: `sideload` = LAN の Mac dev server URL、`cloud` = 固定ドメイン (Cloudflare Worker 等)。Machine Edit で切替。複数マシン (複数 PC / cloud) を登録し、Machines で接続先を切り替える。
-- color tokens (light/dark)、FK Grotesk Neue、4/8px グリッド。`#FEF991` は accent のみ、`#3CFA44` は glass 表示のみ (phone UI で使わない)。
+## 6. glass 表示（profile 駆動）
 
-## 5. glass 表示（設定駆動）
-
-- summary（最小・デフォルト）: 有効ソース × 有効 metric を圧縮し各ソース 1 行。
-- 詳細（swipe）: ソース毎に全 metric をバー表示。progress bar は `━`(filled)/`─`(empty)。
-- 入力: swipe up/down = `textEvent`（scroll）、single/double click = `sysEvent`（PoC のバグ修正済み設計）。double-tap で `shutDownPageContainer(1)`（系統の戻り/終了）。
+- active profile の `view` を読んで描画する。`groupOrder` で全ソースを横断し、可視 group/segment を集約する。
+- summary（最小・デフォルト）: 有効ソース × 有効 segment を圧縮し各ソース 1 行。
+- 詳細（swipe）: ソース毎に全 segment をバー表示。progress bar は `━`(filled) / `─`(empty)。
+- glassLayout（10 行固定スロット）があれば絶対行に配置、未設定なら group=1 行で自動描画。超過分は `+N more` に畳む（MAX_ROWS=10 = 288px / 27px line-height）。
+- 切断検出: offline ソースは `getRenderableStatuses` が null に置換し、古い値（嘘）を出さない。online/stale は保持値を描画。
+- 入力: swipe up/down = `textEvent`（scroll）、single/double click = `sysEvent`。double-tap で `shutDownPageContainer(1)`（戻り/終了）。
 - レイアウトは `@evenrealities/pretext` でピクセル精度（line height 27px）に算出。
 
-## 6. メトリック定義
+## 7. メトリック定義
 
-| Source | Metric | 取得元 |
-|---|---|---|
-| claude-code | session (5h%/reset) | `/api/oauth/usage` `five_hour` |
-| claude-code | weekly (7d%/reset) | `seven_day` |
-| claude-code | sonnet | `seven_day_sonnet` |
-| claude-code | opus | `seven_day_opus` |
-| claude-code | cost (today) | `~/.claude/projects/**/*.jsonl` 集計 |
-| claude-code | msgs (today) | 同上 |
-| codex | 5h (%/reset) | `codex app-server` `account/rateLimits/read` `primary` |
-| codex | weekly (%/reset) | `secondary` |
+| Source 種別 | Source | Group/Metric | 取得元 |
+|---|---|---|---|
+| builtin（client 算出） | Device | clock: datetime | 端末ロケール（12/24h・日付順を自動判定、glass は英語表記） |
+| builtin | Device | g2: level / rate / eta | SDK 電池（充電中・不足時は rate/eta を出さない） |
+| server | claude-code | session (5h%/reset) | `/api/oauth/usage` `five_hour` |
+| server | claude-code | weekly (7d%/reset) | `seven_day` |
+| server | claude-code | sonnet / opus | `seven_day_sonnet` / `seven_day_opus` |
+| server | claude-code | cost / msgs (today) | `~/.claude/projects/**/*.jsonl` 集計 |
+| server | codex | 5h (%/reset) | `codex app-server` `account/rateLimits/read` `primary` |
+| server | codex | weekly (%/reset) | `secondary` |
 
-将来: Gemini、システムリソース（CPU/メモリ/バッテリー）も同じ Source/Metric 枠で追加。
+- 値の整形はソース（provider）責務、描画は client 責務（status line 型）。新しい group/segment は接続後に自動検出され、各 profile の Unplaced 棚に出る（自動配置はしない）。
+- 将来: Gemini、システムリソース（CPU/メモリ/バッテリー）も同じ Source/Group/Segment 枠で追加。
+- provider プラグイン（`$XDG_CONFIG_HOME/eveng2-toolbar/providers/*.ts` autoload）と server 側 `config.toml` の有効/無効は素材レイヤ。companion の可視性トグルとは別の層（README 参照）。
 
-## 7. データ層（sideload / store の差し替え）
+## 8. データ層 / 取得経路
 
 | モード | データソース | CORS |
 |---|---|---|
 | sideload（自分用） | Mac dev server（Vite middleware + proxy） | Vite proxy で回避 |
 | store（.ehpk 配布） | 固定クラウド（Cloudflare Worker proxy 等） | whitelist + CORS ヘッダ必須 |
 
-フロントは `fetchMachine()` / `fetchMetrics(source)` のデータ取得層を抽象化し、sideload/store でこの層だけ差し替える。
-
-## 8. 取得経路（PoC で実証済み）
-
+- フロントは `fetchStatusFrom(url)` / `fetchMachineFrom(url)` のデータ取得層を抽象化し、sideload/store でこの層だけ差し替える。
 - Claude: macOS keychain `Claude Code-credentials` → `GET /api/oauth/usage`（`anthropic-beta: oauth-2025-04-20`, `User-Agent: claude-code/<ver>`）。120s キャッシュで 429 回避。
 - Codex: `codex app-server` JSON-RPC `initialize` → `initialized` → ~1.5s → `account/rateLimits/read`。`primary` が埋まるまで再取得。
 - トークン/認証はデータソース（Mac/サーバー）内に留め、フロント/glass には使用率（%）だけ渡す。
+
+## 9. 移行（v3 → v4 migration）
+
+`migrate()`（`config.ts`）に v4 ステップを追加する。破壊なし。
+
+1. 既存 v3 の `sources` / `groups` / `groupOrder` / `glassLayout` / 全ソース ON を、丸ごと `Default` profile（`id: 'default'`）の `view` + `enabledSourceIds`（全 source）へ収容する。
+2. `activeProfileId = 'default'` を設定する。起動後の見た目は v3 と同一。
+3. 素材を分離する: `groups[src][grp]` から表示系（enabled / segment enabled / align / showDefaultLabel）を Default profile の `view` へ移し、素材側 `groups` には segment の存在・format・visibility条件だけ残す。
+4. server source に `urls`（旧 `url?` を `urls[0]` へ）と `machineId`（次回接続テストで付与）を補完する。
+5. 既存の additive migration（ensureBuiltin / consolidateClock / normalizeVisibility / normalizeGlassLayout / pruneOrphans）は維持する。`pruneOrphans` は profile の `view` も対象に拡張する。
+
+## 10. Phase ロードマップ
+
+```
+Phase 1 [MVP]  v4 データモデル + Default profile 1個（切替UIは未公開、Default固定）
+                → 手戻り防止。既存の表示設定UIを active profile 編集に配線。見た目不変。
+Phase 2        プリセット切替UI（companion に選択 + 追加/複製/削除/リネーム）
+                → glass は activeProfileId で描画。切替は setLocalStorage 保存で背景復帰も保持。
+Phase 3        source 安定化（machineId 採用 + urls[] 複数経路、旧UUIDは alias）
+                → 削除→再追加 / 出張→帰宅で同一 source に収束しレイアウト自動復活。
+Phase 4        接続検出ベースの提案型自動切替（自動適用はせず手動承認）
+                → 「業務Mac+iPhone が見つかりました。"出張" に切替?」
+```
