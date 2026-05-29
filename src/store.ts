@@ -2,8 +2,8 @@
 // glass / companion は購読して描画する。取得は 1 系統 (二重ポーリングなし)。
 // 失敗ソースは直近成功値を stale 保持。revision + abort で遅延応答を破棄。
 import { localStatus } from './builtins'
-import { type Config, enabledSources, type SourceDef, sourceUrl } from './config'
-import { fetchStatusFrom } from './data'
+import { type Config, enabledSources, type SourceDef, sourceUrls } from './config'
+import { fetchStatusFromUrls } from './data'
 import type { StatusDoc } from './status-types'
 
 type Listener = () => void
@@ -130,8 +130,10 @@ export function setSources(next: SourceDef[]): void {
   }
   for (const def of defs) {
     const p = prev.get(def.id)
-    if (!p || sourceUrl(p) !== sourceUrl(def) || p.kind !== def.kind) {
-      // URL/種別が変わった source は旧エンドポイントの鮮度を引き継がない。
+    if (!p || !sameUrlSet(p, def) || p.kind !== def.kind) {
+      // 経路集合/種別が変わった source は旧エンドポイントの鮮度を引き継がない (urls 追加でも再試行)。
+      // 比較は順序非依存: preferUrl の failover reorder (集合は不変・順序だけ変化) を「経路変更」と
+      // 誤検知して鮮度/failover 学習を破棄する回帰を防ぐ (config [A,B] → in-memory [B,A] は同一集合)。
       if (p) {
         clearRetry(def.id)
         failCount.delete(def.id)
@@ -140,6 +142,25 @@ export function setSources(next: SourceDef[]): void {
       void refreshSource(def)
     }
   }
+}
+
+// 2 source の経路集合が同一か (順序・重複を無視)。setSources の diff 判定に使う。
+// preferUrl は failover で urls の順序だけを変える (集合は不変) ため、順序依存比較だと
+// reorder を「経路変更」と誤検知して鮮度/failover 学習を破棄してしまう。集合で比較する。
+function sameUrlSet(a: SourceDef, b: SourceDef): boolean {
+  const x = [...new Set(sourceUrls(a))].sort()
+  const y = [...new Set(sourceUrls(b))].sort()
+  return x.length === y.length && x.every((u, i) => u === y[i])
+}
+
+// 成功した経路を defs (クローン) の urls 先頭へ寄せる。次 poll で同経路を最初に試すための
+// in-memory ヒント (config の永続 urls 順は変えない = ユーザー指定の到達順を尊重する)。
+function preferUrl(id: string, url: string): void {
+  const def = defs.find((d) => d.id === id)
+  if (!def?.urls?.length || def.urls[0] === url) return
+  const idx = def.urls.indexOf(url)
+  if (idx <= 0) return
+  def.urls = [url, ...def.urls.slice(0, idx), ...def.urls.slice(idx + 1)]
 }
 
 // status の内容シグネチャ (ts 除く)。同一なら notify せず無駄な集約/再描画を起こさない。
@@ -158,15 +179,19 @@ async function refreshSource(def: SourceDef): Promise<void> {
     notify()
     return
   }
-  const url = sourceUrl(def)
-  if (!url) return
+  const urls = sourceUrls(def)
+  if (!urls.length) return
   const rev = (revisions.get(def.id) ?? 0) + 1
   revisions.set(def.id, rev)
   inflight.get(def.id)?.abort()
   const ctl = new AbortController()
   inflight.set(def.id, ctl)
-  const next = await fetchStatusFrom(url, ctl.signal)
+  // 複数経路を到達順に試す (先頭優先・失敗で次)。成功した経路を defs の先頭へ寄せ、次 poll で
+  // 同経路を優先する (永続化はしない: config の urls 順はユーザー指定を尊重する)。
+  const hit = await fetchStatusFromUrls(urls, ctl.signal)
   if (rev !== revisions.get(def.id)) return // 遅延応答は破棄
+  const next = hit?.status ?? null
+  if (hit) preferUrl(def.id, hit.url)
   if (next) {
     const wasUnhealthy = (failCount.get(def.id) ?? 0) > 0
     statuses.set(def.id, next)

@@ -31,6 +31,7 @@ import {
   isRightDivider,
   loadConfig,
   RIGHT_DIVIDER,
+  reconcileSourceMachine,
   removeProfile,
   removeSource,
   renameProfile,
@@ -994,6 +995,9 @@ async function runConnectionTest(): Promise<void> {
   testError = ''
   render()
   const clean = url.replace(/\/+$/, '')
+  // fetchMachineFrom は machineId が非空 string のときだけ object を返す (parseMachineInfo)。
+  // null は「接続失敗」または「接続成功だが machineId 不明」を意味し、後者でも空 machineId を
+  // reconcile に渡さない (空 machineId による別マシン誤合流 = データ破壊を構造的に防ぐ)。
   const m = await fetchMachineFrom(clean)
   if (!m) {
     testState = 'error'
@@ -1004,10 +1008,14 @@ async function runConnectionTest(): Promise<void> {
   editMachine = m
   const src = sourceById(config, editingSourceId)
   if (src) {
-    // MVP は単一経路。urls を正にし、後方互換の url も同期する。
-    src.urls = [clean]
-    src.url = clean
+    // テストした経路を urls に足す (上書きしない = 既存経路を温存し複数経路を束ねる)。
+    if (!src.urls.includes(clean)) src.urls.push(clean)
+    src.url ??= clean // 後方互換の主 url は初回のみ設定
     src.label = m.label
+    // machineId を反映して id を安定化する。同 machineId の既存 source への合流 / 旧 randomUUID の
+    // id 付け替え / tombstone からの view 復元はすべて reconcileSourceMachine が担う。
+    const settled = reconcileSourceMachine(config, editingSourceId, m.machineId, clean)
+    if (settled) editingSourceId = settled.id // 合流/再 key で id が変わったら追従
   }
   await saveConfig(config)
   testState = 'ok'

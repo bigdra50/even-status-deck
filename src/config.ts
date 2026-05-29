@@ -116,7 +116,23 @@ export type Profile = {
   view: ProfileView
 }
 
+// 削除した source の表示レシピ snapshot (machineId 別)。Phase 3: 同一マシン再追加で
+// profile の可視性/並び/glassLayout を復元する tombstone。profileId -> その profile の view 断片 + enabled。
+// machineId をキーにし sourceId はキーにしない (id 生成規則を将来変えても復元できる)。
+export type RemovedSourceView = {
+  enabled: boolean // 削除前に enabledSourceIds に含まれていたか (fetch 範囲の復元)
+  groups: Record<string, ViewGroup> // groupId -> ViewGroup (可視性/展開/寄せ/segment 可視性)
+  groupRefs: string[] // groupOrder に含まれていた groupId 群 (順序復元用)
+  glassRows: Record<string, string[][]> | null // 旧 sourceId|grp|seg を含む glass 行 (再 key 用に旧 sourceId も保持)
+}
+export type RemovedView = {
+  at: number // 削除時刻 (古い tombstone を間引く)
+  oldSourceId: string // 削除時の id (glass row の旧 segKey を新 id へ remap する用)
+  profiles: Record<string, RemovedSourceView> // profileId -> view 断片
+}
+
 // IMU 方向検出は src/imu ライブラリが所有。Config は enable + キャリブの永続先として imu? を持つ。
+// recentlyRemoved: 削除済み source の表示レシピ tombstone (machineId -> snapshot)。additive optional。
 export type Config = {
   version: number
   sources: SourceDef[]
@@ -124,7 +140,11 @@ export type Config = {
   profiles: Profile[]
   activeProfileId: string
   imu?: ImuConfig
+  recentlyRemoved?: Record<string, RemovedView>
 }
+
+// tombstone の保持上限 (古いものから間引く)。無制限に溜めない。
+const MAX_REMOVED_VIEWS = 16
 
 const KEY = 'toolbar.config'
 
@@ -147,6 +167,32 @@ export function genSourceId(): string {
 
 export function genProfileId(): string {
   return `prof_${genSourceId().slice(0, 8)}`
+}
+
+// machineId 派生の source id。hostname ベースの安定 ID を id 名前空間へ正規化する
+// (英数とハイフンのみ・小文字)。これにより削除→同一マシン再追加で同じ id に収束する。
+function deriveSourceId(machineId: string): string {
+  const norm = machineId
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64)
+  return norm ? `host-${norm}` : ''
+}
+
+// 衝突時 (同一 hostname の別マシン等) の disambiguation。machineId 派生 id に url の
+// 短縮 hash を足して別ソース化する。url が無ければ短いランダム接尾辞で代替する。
+function urlHash(url: string): string {
+  let h = 2166136261 >>> 0 // FNV-1a 32bit
+  for (let i = 0; i < url.length; i++) {
+    h ^= url.charCodeAt(i)
+    h = Math.imul(h, 16777619) >>> 0
+  }
+  return h.toString(36).slice(0, 6)
+}
+function disambiguateSourceId(base: string, url?: string): string {
+  const suffix = url ? urlHash(url) : genSourceId().slice(0, 6)
+  return `${base}-${suffix}`
 }
 
 // group の default-label 既定値: builtin clock のみ OFF (時刻に 'Clock' は不要)、他は ON。
@@ -177,9 +223,17 @@ export function enabledSources(cfg: Config): SourceDef[] {
   return cfg.sources.filter((s) => s.id === BUILTIN_SOURCE_ID || enabled.has(s.id))
 }
 
-// source の主 URL (urls 先頭、無ければ後方互換 url)。fetch / 鮮度 diff に使う。
+// source の主 URL (urls 先頭、無ければ後方互換 url)。鮮度 diff / 表示に使う。
 export function sourceUrl(s: SourceDef): string | undefined {
   return s.urls?.[0] ?? s.url
+}
+
+// source の全経路 (到達順)。urls を正とし、後方互換 url が漏れていれば末尾に補う。
+// store の failover fetch はこの順に試す (先頭優先・失敗で次)。
+export function sourceUrls(s: SourceDef): string[] {
+  const list = Array.isArray(s.urls) ? [...s.urls] : []
+  if (s.url && !list.includes(s.url)) list.push(s.url)
+  return list
 }
 
 function emptyProfileView(): ProfileView {
@@ -331,8 +385,23 @@ function migrateV4Same(c: Config): Config {
   normalizeMetaVisibilityAll(c) // 素材 segment の visibility を複合形式へ正規化
   for (const p of c.profiles) normalizeProfileView(p)
   consolidateClock(c)
+  normalizeRemovedViews(c) // tombstone を間引き (壊れていれば破棄)
   pruneOrphans(c)
   return c
+}
+
+// 永続化された recentlyRemoved を検証・間引く。壊れた entry は破棄し、件数上限を超えたら古い順に削る。
+function normalizeRemovedViews(c: Config): void {
+  const rv = c.recentlyRemoved
+  if (!rv || typeof rv !== 'object') {
+    delete c.recentlyRemoved
+    return
+  }
+  for (const [mid, view] of Object.entries(rv)) {
+    if (!view || typeof view !== 'object' || typeof view.oldSourceId !== 'string') delete rv[mid]
+  }
+  if (!Object.keys(rv).length) delete c.recentlyRemoved
+  else pruneRemovedViews(c)
 }
 
 // v3 (素材と表示が混在・単一構成) -> v4。全構成を Default profile の view + enabledSourceIds へ収容する。
@@ -747,7 +816,19 @@ export function ensureDefaultServer(cfg: Config, url: string): boolean {
 }
 
 // ソースを削除する (builtin は不可)。素材 groups と全 profile の view + enabledSourceIds も掃除する。
+// machineId を持つ source は削除前に表示レシピを tombstone (recentlyRemoved) へ退避し、
+// 同一マシン再追加 (machineId 一致) で可視性/並び/glassLayout が復活する経路を残す。
 export function removeSource(cfg: Config, id: string): void {
+  if (id === BUILTIN_SOURCE_ID) return
+  const removed = cfg.sources.find((s) => s.id === id)
+  if (removed?.machineId) captureRemovedView(cfg, removed)
+  discardSource(cfg, id)
+}
+
+// source と全 profile view 参照を物理削除する (tombstone を書かない内部 helper)。
+// glassLayout からも当該 source の segKey を除去する (削除後に幽霊 chip を残さない。
+// 配置の復元は tombstone 経由で行う)。
+function discardSource(cfg: Config, id: string): void {
   if (id === BUILTIN_SOURCE_ID) return
   cfg.sources = cfg.sources.filter((s) => s.id !== id)
   delete cfg.groups[id]
@@ -755,6 +836,250 @@ export function removeSource(cfg: Config, id: string): void {
     p.enabledSourceIds = p.enabledSourceIds.filter((sid) => sid !== id)
     delete p.view.groups[id]
     p.view.groupOrder = p.view.groupOrder.filter((r) => r.sourceId !== id)
+    const lay = p.view.glassLayout
+    if (lay) lay.rows = lay.rows.map((row) => row.filter((k) => k.split('|')[0] !== id))
+  }
+}
+
+// 削除する source の表示レシピを全 profile から集めて tombstone に退避する (machineId キー)。
+// view を一切持たない (どの profile にも配置されていない) なら退避しない。
+function captureRemovedView(cfg: Config, src: SourceDef): void {
+  const machineId = src.machineId
+  if (!machineId) return
+  const profiles: Record<string, RemovedSourceView> = {}
+  for (const p of cfg.profiles) {
+    const groups = p.view.groups[src.id]
+    const groupRefs = p.view.groupOrder.filter((r) => r.sourceId === src.id).map((r) => r.groupId)
+    const glassRows = collectGlassRows(p.view.glassLayout, src.id)
+    const enabled = p.enabledSourceIds.includes(src.id)
+    if (!groups && !groupRefs.length && !glassRows && !enabled) continue
+    profiles[p.id] = {
+      enabled,
+      groups: groups ? structuredCloneGroups(groups) : {},
+      groupRefs,
+      glassRows,
+    }
+  }
+  if (!Object.keys(profiles).length) return
+  cfg.recentlyRemoved ??= {}
+  cfg.recentlyRemoved[machineId] = { at: Date.now(), oldSourceId: src.id, profiles }
+  pruneRemovedViews(cfg)
+}
+
+// glassLayout.rows のうち当該 source の segKey を含む行だけを profileId 用に抜き出す。
+// 行 index を保ってオブジェクト化し、復元時に元の行へ戻す (他 source の chip には触れない)。
+function collectGlassRows(
+  lay: GlassLayout | undefined,
+  sourceId: string,
+): Record<string, string[][]> | null {
+  if (!lay) return null
+  const out: Record<string, string[][]> = {}
+  lay.rows.forEach((row, i) => {
+    const own = row.filter((k) => k.split('|')[0] === sourceId)
+    if (own.length) out[String(i)] = [own]
+  })
+  return Object.keys(out).length ? out : null
+}
+
+function structuredCloneGroups(g: Record<string, ViewGroup>): Record<string, ViewGroup> {
+  const out: Record<string, ViewGroup> = {}
+  for (const [gid, vg] of Object.entries(g)) out[gid] = { ...vg, segments: { ...vg.segments } }
+  return out
+}
+
+// tombstone を MAX_REMOVED_VIEWS 件に間引く (古い at から削除)。
+function pruneRemovedViews(cfg: Config): void {
+  const rv = cfg.recentlyRemoved
+  if (!rv) return
+  const keys = Object.keys(rv)
+  if (keys.length <= MAX_REMOVED_VIEWS) return
+  const stale = keys
+    .sort((a, b) => (rv[a]?.at ?? 0) - (rv[b]?.at ?? 0))
+    .slice(0, keys.length - MAX_REMOVED_VIEWS)
+  for (const k of stale) delete rv[k]
+}
+
+// source の id を newId へ付け替え、素材 groups と全 profile の view 参照
+// (groups / groupOrder / glassLayout.rows / enabledSourceIds) を旧 id から新 id へ remap する。
+// 既存 randomUUID source が machineId を後付けで採用するときに過去の profile 参照を壊さないための要。
+// newId が既に使われていれば何もしない (呼び出し側が衝突解決済みである前提)。
+function reKeySource(cfg: Config, oldId: string, newId: string): void {
+  if (oldId === newId) return
+  if (cfg.sources.some((s) => s.id === newId)) return
+  const src = cfg.sources.find((s) => s.id === oldId)
+  if (!src) return
+  src.id = newId
+  if (cfg.groups[oldId]) {
+    cfg.groups[newId] = cfg.groups[oldId]
+    delete cfg.groups[oldId]
+  }
+  for (const p of cfg.profiles) {
+    p.enabledSourceIds = p.enabledSourceIds.map((sid) => (sid === oldId ? newId : sid))
+    if (p.view.groups[oldId]) {
+      p.view.groups[newId] = p.view.groups[oldId]
+      delete p.view.groups[oldId]
+    }
+    for (const r of p.view.groupOrder) if (r.sourceId === oldId) r.sourceId = newId
+    const lay = p.view.glassLayout
+    if (lay) lay.rows = lay.rows.map((row) => row.map((k) => reKeySegKey(k, oldId, newId)))
+  }
+}
+
+// segKey (sourceId|groupId|segId) の先頭 sourceId を付け替える。custom ラベル / @right 等は素通し。
+function reKeySegKey(key: string, oldId: string, newId: string): string {
+  const parts = key.split('|')
+  if (parts.length < 2 || parts[0] !== oldId) return key
+  parts[0] = newId
+  return parts.join('|')
+}
+
+// fromId の view 断片を toId へ統合する (同一マシンへの合流時。reKeySource と違い toId が
+// 既存なので additive にマージし、toId の現状を優先する = ユーザーの現配置を壊さない)。
+// 統合後も fromId 参照が残るが、呼び出し側の discardSource が物理削除する。
+function mergeSourceViewInto(cfg: Config, fromId: string, toId: string): void {
+  if (fromId === toId) return
+  for (const p of cfg.profiles) {
+    // enabledSourceIds: fromId が有効なら toId も有効化 (fetch 範囲を維持)。
+    if (p.enabledSourceIds.includes(fromId) && !p.enabledSourceIds.includes(toId)) {
+      p.enabledSourceIds.push(toId)
+    }
+    // view.groups: toId に無い groupId だけ移送 (clone)。既存は toId 側を優先。
+    const fromGroups = p.view.groups[fromId]
+    if (fromGroups) {
+      p.view.groups[toId] ??= {}
+      for (const [gid, vg] of Object.entries(fromGroups)) {
+        p.view.groups[toId][gid] ??= { ...vg, segments: { ...vg.segments } }
+      }
+    }
+    // groupOrder: toId に未登録の groupId だけ末尾へ追加 (順序維持)。
+    const present = new Set(
+      p.view.groupOrder.filter((r) => r.sourceId === toId).map((r) => r.groupId),
+    )
+    for (const r of p.view.groupOrder) {
+      if (r.sourceId === fromId && !present.has(r.groupId)) {
+        p.view.groupOrder.push({ sourceId: toId, groupId: r.groupId })
+        present.add(r.groupId)
+      }
+    }
+    mergeGlassRows(p.view.glassLayout, fromId, toId)
+  }
+}
+
+// glassLayout.rows の fromId chip を toId へ remap する。重複は exact segKey 単位で排除する
+// (同一 chip が rows に二重に乗ると同じ表示が 2 回出るため)。既に toId chip が在る位置を尊重し、
+// 衝突しない fromId chip は配置を保ったまま remap する (additive)。
+function mergeGlassRows(lay: GlassLayout | undefined, fromId: string, toId: string): void {
+  if (!lay) return
+  // 既に rows 内に存在する toId segKey 集合 (これと衝突する fromId chip は捨てる)。
+  const present = new Set<string>()
+  for (const row of lay.rows) {
+    for (const k of row) {
+      if (k.split('|')[0] === toId) present.add(k)
+    }
+  }
+  lay.rows = lay.rows.map((row) =>
+    row.flatMap((k) => {
+      if (k.split('|')[0] !== fromId) return [k]
+      const remapped = reKeySegKey(k, fromId, toId)
+      if (present.has(remapped)) return [] // 同一 chip が既配置なら捨てる (重複防止)
+      present.add(remapped)
+      return [remapped]
+    }),
+  )
+}
+
+// 接続テスト成功後、編集中 source に machineId を反映して id を安定化する。返り値は確定した SourceDef。
+//  1. 既に同 machineId の別 source があれば → url を urls に足すだけで合流し、編集 source は削除して合流先を返す。
+//  2. machineId 派生 id が空 (フォールバック) → 既存挙動 (randomUUID 維持) で machineId だけ後付け。
+//  3. それ以外 → 編集 source の id を machineId 派生 id へ reKey (衝突時は url hash で disambiguate)。
+//     さらに tombstone (同 machineId) があれば profile の view を復元する。
+export function reconcileSourceMachine(
+  cfg: Config,
+  editingId: string,
+  machineId: string,
+  url: string,
+): SourceDef | null {
+  const editing = cfg.sources.find((s) => s.id === editingId)
+  if (!editing) return null
+
+  // machineId は同一マシン判定 (合流・id 安定化) の唯一のキー。空/空白のみは identity に
+  // 使えない (空同士・undefined 同士が一致して別マシンを 1 source に潰す誤合流 = データ破壊)。
+  // その場合は machineId を一切代入せず、合流も id 安定化もせず editing をそのまま返す
+  // (randomUUID を維持し、別マシンとの混線を構造的に排除する)。
+  const mid = machineId.trim()
+  if (!mid) return editing
+  editing.machineId = mid
+
+  // (1) 同 machineId の既存 source があれば url を足して合流する。編集中 source は
+  //     物理削除するが、その前に全 profile の view 断片 (可視性/並び/glass 配置/enabled) を
+  //     合流先 id へ統合する。編集中 source は設定済み source を edit-source で開いた実体で
+  //     あり得る (placeholder とは限らない) ため、view を捨てると同一マシンなのに配置が消える。
+  //     合流先の現配置を優先する additive 統合なので tombstone は不要。
+  //     合流条件は s.machineId を truthy ガードする (空 machineId 同士の一致を防ぐ)。
+  const merged = cfg.sources.find((s) => s.id !== editingId && !!s.machineId && s.machineId === mid)
+  if (merged) {
+    if (!merged.urls.includes(url)) merged.urls.push(url)
+    merged.url ??= url
+    mergeSourceViewInto(cfg, editingId, merged.id)
+    discardSource(cfg, editingId)
+    return merged
+  }
+
+  const base = deriveSourceId(mid)
+  // (2) フォールバック: machineId が id 化できない (記号のみ等で deriveSourceId が '' を返す)
+  //     → 既存 id を維持 (machineId のみ alias で付与済み)。合流もキー化もしない。
+  if (!base) return editing
+
+  // (3) 衝突回避: base が editing 以外で既に使われていれば url hash で別 id にする。
+  const taken = cfg.sources.some((s) => s.id !== editingId && s.id === base)
+  const newId = taken ? disambiguateSourceId(base, url) : base
+  reKeySource(cfg, editingId, newId)
+  restoreRemovedView(cfg, mid, newId)
+  return cfg.sources.find((s) => s.id === newId) ?? editing
+}
+
+// tombstone (machineId 一致) があれば各 profile の view を復元する。素材 (cfg.groups) は
+// status sync が再構築するので、ここでは可視性/並び/glassLayout/enabled だけ戻す。
+// 既存 view を上書きしない (additive): 既に配置済みの group/order/行はユーザーの現状を優先する。
+function restoreRemovedView(cfg: Config, machineId: string, newId: string): void {
+  const tomb = cfg.recentlyRemoved?.[machineId]
+  if (!tomb) return
+  for (const p of cfg.profiles) {
+    const snap = tomb.profiles[p.id]
+    if (!snap) continue
+    if (snap.enabled && !p.enabledSourceIds.includes(newId)) p.enabledSourceIds.push(newId)
+    p.view.groups[newId] ??= {}
+    for (const [gid, vg] of Object.entries(snap.groups)) {
+      p.view.groups[newId][gid] ??= { ...vg, segments: { ...vg.segments } }
+    }
+    const present = new Set(
+      p.view.groupOrder.filter((r) => r.sourceId === newId).map((r) => r.groupId),
+    )
+    for (const gid of snap.groupRefs) {
+      if (!present.has(gid)) p.view.groupOrder.push({ sourceId: newId, groupId: gid })
+    }
+    restoreGlassRows(p, snap, tomb.oldSourceId, newId)
+  }
+  delete cfg.recentlyRemoved?.[machineId]
+}
+
+// tombstone の glass 行を現在の glassLayout へ戻す (旧 sourceId|... を newId|... へ remap)。
+// 当該行に既に同 source の chip があれば上書きしない (ユーザーの現配置を尊重)。
+function restoreGlassRows(
+  p: Profile,
+  snap: RemovedSourceView,
+  oldSourceId: string,
+  newId: string,
+): void {
+  const lay = p.view.glassLayout
+  if (!lay || !snap.glassRows) return
+  for (const [idxStr, rows] of Object.entries(snap.glassRows)) {
+    const i = Number(idxStr)
+    if (!Number.isInteger(i) || i < 0 || i >= lay.rows.length) continue
+    const keys = (rows[0] ?? []).map((k) => reKeySegKey(k, oldSourceId, newId))
+    const row = lay.rows[i] ?? []
+    if (row.some((k) => k.split('|')[0] === newId)) continue // 既配置は尊重
+    lay.rows[i] = [...row, ...keys]
   }
 }
 
