@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-// Even Hub への build アップロード自動化。
+// Even Hub への build アップロード自動化 (Web UI の「Upload a build → Add build」相当)。
 // 公式 evenhub CLI に upload コマンドが無いため、Web UI が使う API を呼ぶ:
-//   1) POST /api/v1/versions/draft?package_id=<pkg>   FormData{ehpk:file}     → draft_id
-//   2) POST /api/v1/versions/create?package_id=<pkg>  FormData{draft_id,changelog} → build 登録 (公開)
+//   1) POST /api/v1/versions/draft?package_id=<pkg>   FormData{ehpk:file}            → draft_id
+//   2) POST /api/v1/versions/create?package_id=<pkg>  FormData{draft_id,changelog}   → build を Private で追加
+// ② create は Web UI の「Add build」ボタン相当。追加されるビルドは Private。
+// 公開 (Private→Public 切替) は別 API で、本スクリプトでは扱わない (実行しない)。
 // 認証: ~/.config/evenhub/credentials.yaml の access_token を X-Even-Authorization ヘッダに載せる
-//   (evenhub login で取得・保存される。Bearer 接頭辞なし)。
+//   (evenhub login で取得・保存。Bearer 接頭辞なし)。失効 (10分) 時は refresh_token で自動更新。
 //
 // 使い方:
-//   node scripts/upload.mjs                      # draft のみ (安全。公開しない)
-//   node scripts/upload.mjs --publish -m "説明"   # draft → create (= Add build 公開)
-//   オプション: --file <ehpk> --package <id> -m/--changelog <text>
-//
-// 注意: access_token が失効 (401) したら `evenhub login` を再実行する。
+//   node scripts/upload.mjs -m "changelog"   # draft → create (= Add build, Private 追加)
+//   node scripts/upload.mjs --draft-only      # draft のみ (検証用。ビルドは追加しない)
+//   オプション: --file <ehpk> --package <id> -m/--changelog <text(最大500字)>
 
 import { readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -131,14 +131,14 @@ async function main() {
   const app = JSON.parse(readFileSync('app.json', 'utf8'))
   const pkg = arg('--package') || app.package_id
   const file = arg('--file') || 'eveng2-toolbar.ehpk'
-  const changelog = arg('-m', '--changelog') || ''
-  const doPublish = has('--publish')
+  const changelog = (arg('-m', '--changelog') || '').slice(0, 500)
+  const addBuild = !has('--draft-only') // 既定で Add build (create) まで。--draft-only で draft 止め
   state.creds = readCreds()
   const version = app.version
 
   console.log(`package : ${pkg}`)
   console.log(`file    : ${file} (app.json version ${version})`)
-  console.log(`mode    : ${doPublish ? 'draft → create (公開)' : 'draft のみ (安全)'}`)
+  console.log(`mode    : ${addBuild ? 'draft → create (Add build, Private 追加)' : 'draft のみ (検証)'}`)
 
   // 1) draft upload
   const buf = readFileSync(file)
@@ -159,12 +159,12 @@ async function main() {
     throw new Error('draft_id を取得できませんでした (応答フィールド名を確認してください)')
   }
 
-  if (!doPublish) {
-    console.log('\ndraft のみ完了 (公開していません)。公開するには --publish を付けて再実行してください。')
+  if (!addBuild) {
+    console.log('\ndraft のみ完了 (ビルドは追加していません)。Add build するには --draft-only を外して再実行してください。')
     return
   }
 
-  // 2) create (= Add build 公開)
+  // 2) create (= Add build。Private で追加。公開ではない)
   const created = await api(
     '/api/v1/versions/create',
     () => {
@@ -175,7 +175,8 @@ async function main() {
     },
     pkg,
   )
-  console.log(`✓ build published: ${JSON.stringify(created)}`)
+  console.log(`✓ Add build 完了 (Private で追加): ${JSON.stringify(created)}`)
+  console.log('公開する場合はハブの UI で Private→Public を切り替えてください (本スクリプトは行いません)。')
 }
 
 main().catch((e) => {
