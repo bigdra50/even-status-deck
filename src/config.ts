@@ -403,10 +403,65 @@ function migrateV4Same(c: Config): Config {
   delete (c as Record<string, unknown>).glassHints
   normalizeMetaVisibilityAll(c) // 素材 segment の visibility を複合形式へ正規化
   for (const p of c.profiles) normalizeProfileView(p)
+  migrateMacGroupToSystem(c) // OD-1: server source の system provider group id 'mac' → 'system'
   consolidateClock(c)
   normalizeRemovedViews(c) // tombstone を間引き (壊れていれば破棄)
   pruneOrphans(c)
   return c
+}
+
+// OD-1 移行: 旧 macSystemProvider の group id 'mac' を新クロスプラットフォーム system provider の
+// 'system' に付け替える。server source の素材 (cfg.groups[sid]) と全 profile の view.groups[sid] /
+// view.groupOrder / glassLayout の segKey を、配置/順序を保ったまま remap する。
+// 冪等: 同じ source に既に 'system' group があれば remap しない (現行 system 配置を clobber しない)。
+// builtin source は対象外 ('mac' group を持たない。clock/g2 のみ)。
+const SYSTEM_GROUP_OLD_ID = 'mac'
+const SYSTEM_GROUP_ID = 'system'
+function migrateMacGroupToSystem(c: Config): void {
+  for (const src of c.sources) {
+    if (src.kind !== 'server') continue
+    const sid = src.id
+    // 素材 (GroupMeta): 'mac' があり 'system' が無いときだけ rename (clobber 回避)。
+    const meta = c.groups[sid]
+    if (meta?.[SYSTEM_GROUP_OLD_ID] && !meta[SYSTEM_GROUP_ID]) {
+      meta[SYSTEM_GROUP_ID] = meta[SYSTEM_GROUP_OLD_ID]
+      delete meta[SYSTEM_GROUP_OLD_ID]
+    }
+    for (const p of c.profiles) {
+      // view.groups[sid]: ViewGroup を 'mac' → 'system' へ (可視性/展開/segment 可視性を保つ)。
+      const vgroups = p.view.groups[sid]
+      if (vgroups?.[SYSTEM_GROUP_OLD_ID] && !vgroups[SYSTEM_GROUP_ID]) {
+        vgroups[SYSTEM_GROUP_ID] = vgroups[SYSTEM_GROUP_OLD_ID]
+        delete vgroups[SYSTEM_GROUP_OLD_ID]
+      }
+      // groupOrder: {sourceId:sid, groupId:'mac'} の参照を 'system' へ (順序を保つ)。
+      // 同 source に既に 'system' ref があれば 'mac' ref は捨てる (重複防止。normalizeProfileView と整合)。
+      const hasSystemRef = p.view.groupOrder.some(
+        (r) => r.sourceId === sid && r.groupId === SYSTEM_GROUP_ID,
+      )
+      p.view.groupOrder = p.view.groupOrder.flatMap((r) => {
+        if (r.sourceId !== sid || r.groupId !== SYSTEM_GROUP_OLD_ID) return [r]
+        if (hasSystemRef) return []
+        return [{ sourceId: sid, groupId: SYSTEM_GROUP_ID }]
+      })
+      // glassLayout.rows: segKey (sid|mac|seg) の groupId を 'system' へ (配置を保つ)。
+      const lay = p.view.glassLayout
+      if (lay) {
+        lay.rows = lay.rows.map((row) =>
+          row.map((k) => reKeyGroupId(k, sid, SYSTEM_GROUP_OLD_ID, SYSTEM_GROUP_ID)),
+        )
+      }
+    }
+  }
+}
+
+// segKey (sourceId|groupId|segId) の groupId 部分を付け替える。
+// sourceId が一致しない / 形式が segKey でない (custom ラベル / @right 等) なら素通し。
+function reKeyGroupId(key: string, sourceId: string, fromGid: string, toGid: string): string {
+  const parts = key.split('|')
+  if (parts.length < 3 || parts[0] !== sourceId || parts[1] !== fromGid) return key
+  parts[1] = toGid
+  return parts.join('|')
 }
 
 // 永続化された recentlyRemoved を検証・間引く。壊れた entry は破棄し、件数上限を超えたら古い順に削る。

@@ -2,10 +2,18 @@
   "name": "eveng2-toolbar",
   "private": true,
   "type": "module",
+  "bin": {
+    "eveng2-toolbar-server": "./server/index.ts"
+  },
+  "exports": {
+    ".": "./server/index.ts",
+    "./vite-plugin": "./server/vite-plugin.ts"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "server": "bun run server/index.ts",
     "sim": "evenhub-simulator http://localhost:5173",
     "pack": "npm run build && evenhub pack app.json dist -o eveng2-toolbar.ehpk",
     "upload": "node scripts/upload.mjs",
@@ -21,16 +29,18 @@
     "@evenrealities/even_hub_sdk": "^0.0.10",
     "@evenrealities/pretext": "^0.1.4",
     "lucide-static": "^1.16.0",
-    "sortablejs": "^1.15.7"
+    "smol-toml": "^1.6.1",
+    "sortablejs": "^1.15.7",
+    "systeminformation": "^5.23.5"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.16",
     "@evenrealities/evenhub-cli": "^0.1.11",
     "@evenrealities/evenhub-simulator": "^0.7.3",
     "@playwright/test": "1.60.0",
+    "@types/bun": "latest",
     "@types/sortablejs": "^1.15.9",
     "playwright": "^1.60.0",
-    "smol-toml": "^1.6.1",
     "typescript": "~6.0.2",
     "vite": "^8.0.4"
   }
