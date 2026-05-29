@@ -627,6 +627,17 @@
     <h3>検証 <span class="done">[done]</span> / 未確認 <span class="open">[open]</span></h3>
     <p class="done">ブラウザ E2E (Chrome, landscape): Fullscreen 起動 → 10 行×左右ゾーン + 緑チップ描画 / 自前 D&D で <code>Mac Mem</code> を別行(row4)→row1 右ゾーンへ移動 = 時計左+Mem右 (iOS 型) / トレイへドロップで unplace + <code>@right</code> 自動掃除 / Done で通常プレビューに反映。tsc・biome・build クリーン。</p>
     <p class="open">実機 (iOS portrait) 確認待ち: <code>@media portrait</code> の 90° 回転が viewport を正しく埋めるか (デスクトップ landscape では再現不可)。タッチでの Pointer D&D 操作感 (forceFallback 相当の長押し閾値は未設定 = 即ドラッグ)。回転下 ghost の向き (<code>.fs-ghost-rot</code> で 90° 補正済だが要実機確認)。</p>
-    <p class="open">Phase 2 候補 (必要なら): ドロップ位置でのクラスタ内挿入順制御 (現状は末尾 append) / aspect-ratio 2:1 厳密化 / タッチ長押し閾値 / landscape ホストが現れた場合の無回転最適化。</p>
+
+    <h3>オートレイアウト対応 (実機でのはみ出し修正) <span class="done">[done]</span></h3>
+    <p>実機 (iOS portrait・90° 回転は機能) で「チップがキャンバス枠からはみ出す / 行が崩れる」報告。原因と修正:</p>
+    <table>
+      <tr><th>原因</th><th>修正</th></tr>
+      <tr><td>ゾーンが <code>flex-wrap:wrap</code> で折返し → 行高 (1/10) を縦に超えて隣行と衝突</td><td><code>.fs-zone</code> を <code>flex-wrap:nowrap</code> + <code>overflow:hidden</code>。<code>.fs-row</code> も <code>overflow:hidden</code> で 1 行クリップ (実機グラスと同じ単一行。超過は <code>.fs-over</code> 警告)。</td></tr>
+      <tr><td>キャンバスに 2:1 フィット制約が無く、領域から溢れる</td><td><code>.fs-canvas</code> を <code>container-type:size</code>、<code>.fs-glass</code> を <code>width:min(100cqw,200cqh)</code> + <code>aspect-ratio:2/1</code> で必ず領域内に 2:1 コンテイン (端末非依存)。</td></tr>
+      <tr><td>チップが固定 px でキャンバスに追従しない</td><td><code>.fs-glass</code> を <code>container-type:size</code> にし、内部チップを <code>font-size:clamp(7px,5.4cqh,17px)</code>・padding/×アイコンも cqh + clamp でキャンバス高に追従スケール。トレイ/ghost は固定 px (コンテナ外)。</td></tr>
+    </table>
+    <p class="done">ブラウザ E2E (Chrome landscape): キャンバスが 2:1 でコンテイン / チップがサイズ追従 / 1 行に複数チップ配置でも折返さずクリップ / × 適正サイズ。tsc・biome・build クリーン。</p>
+
+    <p class="open">Phase 2 候補 (必要なら): ドロップ位置でのクラスタ内挿入順制御 (現状は末尾 append) / 行クリップ時の省略表示 (… 付与) / タッチ長押し閾値 / landscape ホストが現れた場合の無回転最適化。</p>
   </body>
 </html>

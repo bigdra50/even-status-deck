@@ -935,7 +935,8 @@ function renderFsBodyHtml(): string {
   const trayHtml = tray.length
     ? tray.map(fsChip).join('')
     : '<span class="fs-empty">Nothing unplaced</span>'
-  return `<div class="fs-glass">${rows.join('')}</div>
+  // .fs-canvas が利用可能領域を埋め、.fs-glass がその中で 2:1 にコンテイン (container query)。
+  return `<div class="fs-canvas"><div class="fs-glass">${rows.join('')}</div></div>
     <div class="fs-tray" data-zone="tray"><span class="fs-tray-label">Unplaced</span>${trayHtml}</div>`
 }
 

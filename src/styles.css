@@ -807,24 +807,38 @@ textarea {
   padding: 0 16px 16px;
   min-height: 0;
 }
-/* 実プレビュー (緑/黒)。10 行を等分し、各行 = 左/右ゾーン。 */
-.fs-glass {
+/* キャンバス領域。利用可能な中央スペースを埋め、その中で .fs-glass を 2:1 にコンテインする。
+   container-type:size により .fs-glass の幅を cqw/cqh で算出する (端末非依存のオートフィット)。 */
+.fs-canvas {
   flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  container-type: size;
+}
+/* 実プレビュー (緑/黒)。常に 2:1 で領域内にコンテイン (はみ出さない)。10 行を等分。
+   width = min(親幅, 親高×2) → aspect 2:1 で高さ = width/2 ≤ 親高。自身も size container にし
+   チップ等を cqh/cqw でスケールさせる。 */
+.fs-glass {
+  width: min(100cqw, 200cqh);
+  aspect-ratio: 2 / 1;
   background: #000;
   border: 1px solid rgba(60, 250, 68, 0.35);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
-  padding: 6px 12px;
-  min-height: 0;
+  padding: 1cqh 1.5cqh;
+  container-type: size;
 }
 .fs-row {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 1cqh;
   border-bottom: 1px dashed rgba(60, 250, 68, 0.08);
   min-height: 0;
+  overflow: hidden; /* 行は 1 行固定。クラスタが広すぎてもはみ出さずクリップ (実機はラベルで警告)。 */
 }
 .fs-row:last-child {
   border-bottom: none;
@@ -832,13 +846,14 @@ textarea {
 .fs-zone {
   flex: 1;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap; /* 折り返さない (折り返すと行高を超えて隣行と衝突する) */
   align-items: center;
-  gap: 6px;
+  gap: 1cqh;
   min-width: 0;
-  min-height: 100%;
-  padding: 2px 4px;
+  height: 100%;
+  padding: 0 0.5cqh;
   border-radius: 6px;
+  overflow: hidden;
 }
 .fs-zone-r {
   justify-content: flex-end;
@@ -848,6 +863,7 @@ textarea {
   background: rgba(60, 250, 68, 0.14);
   outline: 1px solid var(--glass);
 }
+/* チップ基本形 (トレイ / ドラッグ ghost 用。固定 px)。 */
 .fs-chip {
   display: inline-flex;
   align-items: center;
@@ -857,11 +873,23 @@ textarea {
   background: rgba(60, 250, 68, 0.14);
   color: var(--glass);
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 13px;
   white-space: nowrap;
   cursor: grab;
   user-select: none;
   touch-action: none;
+  flex: 0 0 auto;
+}
+/* キャンバス内チップは glass サイズに追従 (cqh)。端末/回転に依らず行に収まる。 */
+.fs-glass .fs-chip {
+  gap: 0.6cqh;
+  padding: 0.7cqh 1.4cqh;
+  border-radius: 3cqh;
+  font-size: clamp(7px, 5.4cqh, 17px);
+}
+.fs-glass .fs-chip svg {
+  width: clamp(9px, 3.4cqh, 15px);
+  height: clamp(9px, 3.4cqh, 15px);
 }
 .fs-chip-label {
   background: rgba(254, 249, 145, 0.16);
@@ -870,6 +898,9 @@ textarea {
 .fs-grp {
   font-size: 11px;
   opacity: 0.6;
+}
+.fs-glass .fs-grp {
+  font-size: clamp(6px, 4.2cqh, 14px);
 }
 .fs-x {
   background: none;
