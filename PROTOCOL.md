@@ -145,3 +145,37 @@ StatusDoc 形で表現し、server ソースと完全に同等に扱う (設定�
 - **Mac dev server**: `vite.config.ts` の provider 群 (claude/codex)。`claude`/`codex` CLI を検出して group を出す。
 - **iPhone bridge**: `eveng2-iphone-bridge` (Swift + Swifter)。`127.0.0.1:8723`。battery/steps/music 等を provider 化。
 - **builtin local**: companion 内で時刻・G2 電池を算出。
+
+## 9. provider 拡張（搬送路）
+
+provider の戻り値型は常に StatusDoc / Group（§3）。搬送路はプラガブルで、本体の実装言語に依存しない。拡張点を JSON 契約一点に集約する。
+
+| 方式 | 形式 | 言語 | 用途 |
+|---|---|---|---|
+| builtin | 同梱関数が Group を返す | 本体言語 | claude / codex / system の標準 provider |
+| (c) subprocess | config に明示登録した command を実行し stdout の StatusDoc JSON を読む | 任意（command 指定） | ローカル拡張の第一級。標準 provider のサンプル |
+| (b) 独立 HTTP server | §2 のエンドポイントを話す常駐サーバーを URL 登録 | 任意 | 常駐 source / cloud 配信時 |
+| (a) JS plugin | `providers/*.mjs` を動的 import（`export default {id,group}`） | TS/JS | 上級者向け（Node/bun ランタイム時のみ） |
+
+### (c) subprocess provider の登録（推奨・第一級）
+
+`providers/` への自動発見・即実行はしない（任意コード実行のため）。config に command を明示登録する:
+
+```toml
+[providers.weather]
+command = "python"
+args = ["~/.config/eveng2-toolbar/providers/weather.py"]
+timeoutMs = 1000
+ttlMs = 30000
+```
+
+- provider は stdout に StatusDoc（または単一 Group）の JSON を print して exit するだけ。言語非依存（`command` 指定なので shebang / Windows PATHEXT に依存しない）。
+- 受信は `parseStatusDoc()`（§6）でサニタイズ。spawn は timeout + kill、結果は `ttlMs` キャッシュ、同時実行は抑止、出力サイズ上限あり。
+- 子プロセスの env は最小 allowlist（token / API key を渡さない）。`ctx.options`（`[providers.<id>]`）は限定的に env/argv で渡す。
+- 標準 provider をこの形式で書けば、そのまま他言語ユーザーのコピペサンプルになる（JS の `export default` 形式と違い翻訳不要）。
+- v1 は単発モード（毎 poll spawn → stdout 全体を `JSON.parse`）。高頻度向けの NDJSON 常駐モードは必要が出たら追加。
+
+### セキュリティ
+
+- provider は信頼コードのみ実行（config 明示登録 = ユーザーの意図）。
+- token / refreshToken を provider・レスポンス・ログに出さない（§7）。サーバー内に留め `value` には集計済みの値だけ載せる。

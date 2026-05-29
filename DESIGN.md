@@ -204,6 +204,37 @@ Source Edit : 接続先 URL（複数可） + 接続テスト + 「ローカル�
 - Codex: `codex app-server` JSON-RPC `initialize` → `initialized` → ~1.5s → `account/rateLimits/read`。`primary` が埋まるまで再取得。
 - トークン/認証はデータソース（Mac/サーバー）内に留め、フロント/glass には使用率（%）だけ渡す。
 
+## 9. ローカルサーバーのリリース整備（クロスプラットフォーム・配布・拡張）
+
+companion が叩く `/api/status`・`/api/machine` を返すローカルサーバーを、clone 不要・ワンライナー・クロスプラットフォームで配布する設計（Claude 多角調査 + gpt-5.5 で確定、2026-05-30）。拡張の搬送路は PROTOCOL §9。
+
+### 言語・配布
+
+- 実装は TS のまま。**Bun compile**（`bun build --compile --target=bun-{darwin,linux,windows}-{x64,arm64}`）でランタイム不要の単一バイナリ化。本プロジェクトは Bun 製なので書き換えゼロ。
+- 配布: `bunx eveng2-toolbar-server`（一次・最短）+ Bun compile 単一バイナリを GitHub Releases（`curl|sh` / `irm|iex`、便利配布）。`child_process`/systeminformation が compile 後も解決するかは実機検証する。
+- Rust 不採用: 単一バイナリとネイティブ計測は Bun compile + systeminformation で代替でき、TS 資産と「任意言語で provider を書ける」拡張の汎用性を失うため。ネイティブ計測が決定的に要る箇所のみ将来 Go/Rust サイドカーへ疎結合に切り出す（YAGNI）。
+
+### 標準 provider の境界
+
+| provider | 標準同梱 | 備考 |
+|---|---|---|
+| claude-code / codex | 必須 | token をサーバー内に留める信頼境界。アプリの中核 |
+| system info (CPU/mem/battery/disk) | 同梱 | OS 差は systeminformation に委譲。ただし provider 層に分離し将来 subprocess 化できる構造にする |
+| 天気 / CI / 自作 | ユーザー拡張 | PROTOCOL §9 の subprocess provider / 独立 server |
+
+### クロスプラットフォーム（macOS/Linux 同時 → Windows 後追い）
+
+- Claude token: `CLAUDE_CONFIG_DIR` か `~/.claude/.credentials.json`（Linux/Windows は平文・`fs` read のみ、mac も SSH 用に存在しうる）を優先し、無ければ macOS だけ `security`(keychain) にフォールバック。**分岐は1箇所**、パース後は `parsed?.claudeAiOauth?.accessToken` に統一。
+- system info: 手書き `vm_stat`/`pmset`/`df`/`loadavg` を `systeminformation`（npm・依存ゼロ・全OS・wmic 廃止対応済み）へ置換。`loadavg/cores` 概算は Windows で常に 0% になるため `currentLoad()` に置換。
+- codex: `codex app-server` 自体は OS 非依存。Windows の `spawn('codex')` は `.cmd` シムで ENOENT になりうるため `process.platform==='win32'` で `shell:true` か `codex.cmd`（後追い・実機検証）。失敗しても codex セグメントが n/a になるだけでクラッシュしない。
+- credential の平文ファイルには refreshToken（長命）が含まれる。**token/refreshToken はレスポンス・ログ・subprocess に出さない**（集計値 % だけ glass へ）。WSL は Windows 側ファイルの 0777 継承に注意し Linux ネイティブの `~/.claude/.credentials.json` を読む。
+
+### 段階
+
+- Phase 1: server を vite から切り出し + credential file 前置 + systeminformation + subprocess provider(MVP) + bunx/Bun compile + help.html。macOS/Linux 同時。
+- Phase 2: Windows 対応（codex spawn）+ 必要なら NDJSON 常駐 provider。
+- 本番 `.ehpk` 配信時は固定クラウド差し替え（§7）で subprocess 不可。その場合の拡張は独立 HTTP server（PROTOCOL §9 b）。
+
 ## 9. 移行（v3 → v4 migration）
 
 `migrate()`（`config.ts`）に v4 ステップを追加する。破壊なし。
