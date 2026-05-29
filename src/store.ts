@@ -63,6 +63,16 @@ export function getLastSuccessAt(id: string): number | null {
   return lastSuccessAt.get(id) ?? null
 }
 
+// 現在オンラインな server source の id 集合 (Phase 4: プリセット提案の入力)。
+// builtin は常に online だが状況識別の材料にならないため除外し、server だけを返す。
+export function getOnlineServerIds(): Set<string> {
+  const out = new Set<string>()
+  for (const d of defs) {
+    if (d.kind === 'server' && getSourceHealth(d.id) === 'online') out.add(d.id)
+  }
+  return out
+}
+
 // 描画用 status: offline の server source は除外 (null) し、glass/preview に古い値=嘘を出さない。
 // online/stale は保持値をそのまま返す (stale は瞬断中の表示維持)。
 export function getRenderableStatuses(): Record<string, StatusDoc | null> {

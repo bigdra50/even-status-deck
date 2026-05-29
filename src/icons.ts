@@ -12,6 +12,7 @@ import {
   Pencil,
   Plus,
   Settings,
+  Sparkles,
   Tag,
   Trash2,
   TriangleAlert,
@@ -38,6 +39,7 @@ export type IconName =
   | 'pencil'
   | 'copy'
   | 'trash'
+  | 'sparkles'
 
 const SVGS: Record<IconName, string> = {
   settings: Settings,
@@ -57,6 +59,7 @@ const SVGS: Record<IconName, string> = {
   pencil: Pencil,
   copy: Copy,
   trash: Trash2,
+  sparkles: Sparkles,
 }
 
 type IconOpts = { size?: number; stroke?: number; cls?: string }

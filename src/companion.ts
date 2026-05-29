@@ -57,6 +57,7 @@ import type { Group, Segment } from './status-types'
 import {
   getAllStatuses,
   getLastSuccessAt,
+  getOnlineServerIds,
   getRenderableStatuses,
   getSourceHealth,
   getSourceStatus,
@@ -64,6 +65,7 @@ import {
   startPolling,
   subscribe,
 } from './store'
+import { type ProfileSuggestion, suggestProfile } from './suggest'
 import { computeVisible, segKey, type VisibilityLeaf } from './visibility'
 
 // 1 segment が持てる条件 leaf の上限 (UI が破綻しない緩い上限)。
@@ -83,6 +85,12 @@ let testUrl = ''
 
 // glass layout の編集モード (GLASS PREVIEW を WYSIWYG 編集面にする / 普段は view)。
 let layoutEditing = false
+
+// ── Phase 4: プリセット切替の提案 (接続検出ベース。自動適用はしない) ──
+// このセッション中に却下した提案 profileId。一度 dismiss した profile は同セッションで再提示しない。
+const dismissedSuggestions = new Set<string>()
+// 現在表示中の提案 (無ければ null)。store の health 変化で再計算し、変化したときだけ Home を再描画する。
+let currentSuggestion: ProfileSuggestion | null = null
 
 // builtin (clock/g2) は config の format/widthChars を反映した live 値で上書きする
 // (store の builtin は config 非依存の既定値なので、プレビュー/Items を選択に追従させる)。
@@ -460,6 +468,39 @@ function renderGlassSection(): string {
     <div class="cmp-sub">Glass gestures: tap = summary / swipe = switch view / double-tap = exit</div>`
 }
 
+// ── Phase 4: プリセット切替の提案 (バナー) ──
+// オンラインな server source 集合から最適 profile を求める純粋関数 (suggestProfile) を呼び、
+// このセッションで却下済み (dismissedSuggestions) の提案は除外する。currentSuggestion を更新し、
+// 提示すべき内容が変わったか (profileId の差分) を返す (変化時のみ Home を再描画するため)。
+function recomputeSuggestion(): boolean {
+  const next = suggestProfile(config, getOnlineServerIds())
+  const shown = next && !dismissedSuggestions.has(next.profileId) ? next : null
+  const changed = (currentSuggestion?.profileId ?? null) !== (shown?.profileId ?? null)
+  currentSuggestion = shown
+  return changed
+}
+
+// 提案バナー: 非モーダルで dismiss 可能 (Switch / × の 2 アクション)。glass は勝手に変えない。
+// 提案が無ければ空文字 (Home から消える)。承認で Phase 2 の切替 (onSuggestAccept) を呼ぶ。
+function renderSuggestionBanner(): string {
+  const s = currentSuggestion
+  if (!s) return ''
+  const detail =
+    s.matchCount === 1
+      ? 'A connected source matches this preset.'
+      : `${s.matchCount} connected sources match this preset.`
+  return `
+    <div class="suggest-banner" role="status">
+      <span class="suggest-icon">${icon('sparkles', { size: 16 })}</span>
+      <div class="suggest-text">
+        <div class="suggest-title">Switch to <strong>${esc(s.profileName)}</strong>?</div>
+        <div class="suggest-sub">${detail}</div>
+      </div>
+      <button class="suggest-accept" data-action="suggest-accept">Switch</button>
+      <button class="suggest-dismiss" data-action="suggest-dismiss" title="Dismiss" aria-label="Dismiss">${icon('x', { size: 16 })}</button>
+    </div>`
+}
+
 // ── Profile (プリセット) ──
 // Home 最上部の状況セット切替。select で active を切替え、隣のボタンで追加/複製/リネーム/削除。
 // Default (id 'default') は削除不可なので、active が Default のときは削除ボタンを無効化する。
@@ -492,6 +533,7 @@ function renderHome(): string {
     .map((s) => sourceRow(s))
     .join('')
   return `
+    ${renderSuggestionBanner()}
     ${renderProfileBar()}
 
     <div class="cmp-label cmp-label-row">Sources<button class="add-btn" data-action="add-source" title="Add source" aria-label="Add source">${icon('plus', { size: 16 })}</button></div>
@@ -544,6 +586,10 @@ function renderSourceEdit(): string {
 
 function render(): void {
   if (!root) return
+  // Home を出す直前に提案を最新化する。store の health 変化は Home 以外 (source-edit) でも
+  // 起こり得る (接続テストで追加した source が即 offline になる等) が、その間の notify は
+  // onStoreUpdate が握り潰すため、Home へ戻った描画時に必ず計算し直してバナーを正す。
+  if (view === 'home') recomputeSuggestion()
   root.innerHTML = view === 'source-edit' ? renderSourceEdit() : renderHome()
   if (view === 'home') {
     lastVisibleSig = visibleSig()
@@ -686,7 +732,7 @@ function applyProfileChange(): void {
   void saveConfig(config)
   syncAll() // 切替先 view を cached status から補充 (変化あれば内部で保存)
   setSourcesFromConfig(config)
-  render()
+  render() // render() が Home 描画前に recomputeSuggestion する (active 変更で提案が変わる)
 }
 
 // ── イベント ──
@@ -696,6 +742,15 @@ async function onClick(e: MouseEvent): Promise<void> {
   switch (t.dataset.action) {
     case 'home':
       view = 'home'
+      render()
+      break
+    case 'suggest-accept':
+      onSuggestAccept()
+      break
+    case 'suggest-dismiss':
+      // このセッション中は同じ提案 (同 profile) を再表示しない。glass はそのまま (手動操作を妨げない)。
+      if (currentSuggestion) dismissedSuggestions.add(currentSuggestion.profileId)
+      currentSuggestion = null
       render()
       break
     case 'profile-add':
@@ -925,6 +980,16 @@ function onProfileSwitch(e: Event): void {
   applyProfileChange()
 }
 
+// 提案バナーの承認: Phase 2 の切替を呼ぶ (自動適用ではなくユーザー操作を起点にする)。
+// 提案先が存在しなければ何もしない (取り違え防止)。切替後は applyProfileChange が提案を再計算する。
+function onSuggestAccept(): void {
+  const s = currentSuggestion
+  if (!s || s.profileId === config.activeProfileId) return
+  if (!config.profiles.some((p) => p.id === s.profileId)) return
+  setActiveProfile(config, s.profileId)
+  applyProfileChange()
+}
+
 // clock の Time/Date/順序 select 変更を合成して素材 SegMeta.format に保存。
 // saveConfig が config-changed を dispatch → glass が loadConfig して実機描画にも反映。
 function onClockFormatChange(e: Event): void {
@@ -1026,10 +1091,13 @@ async function runConnectionTest(): Promise<void> {
 function onStoreUpdate(): void {
   syncAll() // 新 group を config に取り込み (永続)
   if (view !== 'home') return
+  // 接続状態 (online/stale/offline) の変化で提案を再計算する。提案の出現/消滅/差し替えが
+  // あれば Home を再描画する (バナーの表示更新)。dismiss 済みは recomputeSuggestion 内で除外。
+  const suggestionChanged = recomputeSuggestion()
   // 表示項目の構成 (status の有無で変わる) が変化したときだけ項目リストを再描画。
   // 値だけの更新では再描画しない (毎 poll の innerHTML churn が iOS WebContent jettison を招くため。
   // プレビューはモックなので値追従はユーザー編集/構成変化/並べ替えで十分。issue #4)。
-  if (visibleSig() !== lastVisibleSig) render()
+  if (suggestionChanged || visibleSig() !== lastVisibleSig) render()
 }
 
 // ── Fullscreen WYSIWYG レイアウトエディタ (実験的) ──
