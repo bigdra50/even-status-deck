@@ -2,6 +2,11 @@
 // サーバーが provider 群を集約して segment を提供し、クライアントは汎用に描画する
 // (status line 型のモジュラー構成)。
 
+// ソース報告の鮮度/障害状態 (PROTOCOL §3)。transport 鮮度 (§6, client が status doc を取得できているか)
+// とは別軸で、「ソースは生きているが upstream が degraded」を表す。未指定は 'ok'。
+// 'stale' = value は最後の既知値 (最新ではない)、'error' = upstream 取得失敗 (value は n/a 等)。
+export type SourceState = 'ok' | 'stale' | 'error'
+
 export type Segment = {
   id: string
   label: string
@@ -17,12 +22,20 @@ export type Segment = {
   widthChars?: number
   /** true なら数値系として右寄せ pad。builtin のみ設定 (server は false 相当=左寄せ)。 */
   isNumeric?: boolean
+  /** segment 単位の状態 (PROTOCOL §3)。group.state を上書きする。 */
+  state?: SourceState
+  /** state の補助メッセージ (companion の tooltip 等。glass には出さない)。 */
+  message?: string
 }
 
 export type Group = {
   id: string
   label: string
   segments: Segment[]
+  /** group 単位の状態 (PROTOCOL §3)。segment.state が無い segment はこれを継承する。 */
+  state?: SourceState
+  /** state の補助メッセージ。 */
+  message?: string
 }
 
 export type StatusDoc = {
@@ -40,9 +53,14 @@ const MAX_ID_LEN = 64 // 異常に長い id はキーを汚すため破棄 (trun
 const MAX_LABEL_LEN = 48 // 表示ラベル (1 行に収まる範囲)
 const MAX_VALUE_LEN = 128 // 表示値 (server は widthChars 無しで raw 長が幅計算に乗る)
 const MAX_RESET_LEN = 32
+const MAX_MESSAGE_LEN = 120 // state の補助メッセージ (companion tooltip 1 行に収まる範囲)
 
 function clip(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) : s
+}
+
+function asState(v: unknown): SourceState | undefined {
+  return v === 'ok' || v === 'stale' || v === 'error' ? v : undefined
 }
 
 // 受信 JSON を検証・サニタイズして StatusDoc を返す。3rd party サーバーの不正データで
@@ -83,9 +101,16 @@ export function parseStatusDoc(x: unknown): StatusDoc | null {
       if (typeof ss.percent === 'number') seg.percent = ss.percent
       if (typeof ss.reset === 'string') seg.reset = clip(ss.reset, MAX_RESET_LEN)
       if (typeof ss.defaultEnabled === 'boolean') seg.defaultEnabled = ss.defaultEnabled
+      const segState = asState(ss.state)
+      if (segState) seg.state = segState
+      if (typeof ss.message === 'string') seg.message = clip(ss.message, MAX_MESSAGE_LEN)
       segments.push(seg)
     }
-    groups.push({ id: gg.id, label: clip(gg.label, MAX_LABEL_LEN), segments })
+    const group: Group = { id: gg.id, label: clip(gg.label, MAX_LABEL_LEN), segments }
+    const grpState = asState(gg.state)
+    if (grpState) group.state = grpState
+    if (typeof gg.message === 'string') group.message = clip(gg.message, MAX_MESSAGE_LEN)
+    groups.push(group)
   }
   return { version: d.version, ts: typeof d.ts === 'number' ? d.ts : Date.now(), groups }
 }

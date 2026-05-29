@@ -55,7 +55,7 @@ import {
   summarySections,
 } from './glass-render'
 import { icon } from './icons'
-import type { Group, Segment } from './status-types'
+import type { Group, Segment, SourceState } from './status-types'
 import {
   getAllStatuses,
   getLastSuccessAt,
@@ -158,7 +158,7 @@ function visibleSig(): string {
     .join('|')
   const health = config.sources
     .filter((s) => s.kind === 'server')
-    .map((s) => `${s.id}=${getSourceHealth(s.id)}`)
+    .map((s) => `${s.id}=${getSourceHealth(s.id)}/${worstReportedState(s.id).state}`)
     .join(',')
   return `${refs}#${health}`
 }
@@ -288,12 +288,42 @@ function renderItems(): string {
 }
 
 // ── source 行 (3 文脈: Home=preset 内 / Sources 一覧 / preset へ追加) ──
+// ソースが報告する最悪状態 (PROTOCOL §3, transport 鮮度とは別軸)。segment.state は group.state を上書き。
+const STATE_RANK: Record<SourceState, number> = { ok: 0, stale: 1, error: 2 }
+function worstReportedState(sourceId: string): { state: SourceState; message?: string } {
+  const doc = getSourceStatus(sourceId)
+  let worst: SourceState = 'ok'
+  let message: string | undefined
+  for (const g of doc?.groups ?? []) {
+    const gs = g.state ?? 'ok'
+    if (STATE_RANK[gs] > STATE_RANK[worst]) {
+      worst = gs
+      message = g.message
+    }
+    for (const seg of g.segments) {
+      const ss = seg.state ?? g.state ?? 'ok'
+      if (STATE_RANK[ss] > STATE_RANK[worst]) {
+        worst = ss
+        message = seg.message ?? g.message
+      }
+    }
+  }
+  return { state: worst, message }
+}
+
 // 接続状態 dot と note (online=緑 / stale=琥珀 / offline=灰+"Last seen…")。
+// transport が online でもソースが degraded を報告していれば琥珀 + message を出す (2 軸)。
 function sourceDotNote(s: SourceDef): { dotCls: string; note: string } {
   const health = getSourceHealth(s.id)
-  const dotCls = health === 'online' ? '' : health === 'stale' ? 'stale' : 'off'
-  const note = health === 'offline' ? lastSeenText(s.id) : (sourceUrl(s) ?? 'Not set')
-  return { dotCls, note }
+  if (health === 'offline') return { dotCls: 'off', note: lastSeenText(s.id) }
+  if (health === 'online') {
+    const reported = worstReportedState(s.id)
+    if (reported.state !== 'ok') {
+      return { dotCls: 'stale', note: reported.message ?? `Source ${reported.state}` }
+    }
+  }
+  const dotCls = health === 'stale' ? 'stale' : ''
+  return { dotCls, note: sourceUrl(s) ?? 'Not set' }
 }
 
 // Home: この preset に追加済みの source。preset から外す操作のみ (非破壊)。編集は Sources 一覧へ。

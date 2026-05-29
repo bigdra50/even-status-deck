@@ -273,6 +273,10 @@ async function claudeProvider(): Promise<Group | null> {
     seven_day_opus?: PctWin
   }
   const U = usage as { estCostUsd?: number; messages?: number }
+  // upstream 取得失敗を segment 単位の state="error" で表す (PROTOCOL §3)。
+  // rate limit (usage API) と cost/msgs (ローカル jsonl) は別系統なので部分的に error になりうる。
+  const limitsErr = Boolean((limits as { error?: unknown }).error)
+  const usageErr = Boolean((usage as { error?: unknown }).error)
   const segments: Segment[] = [
     pctSegment('session', '5h', L.five_hour?.utilization, L.five_hour?.resets_at, true),
     pctSegment('weekly', 'Weekly', L.seven_day?.utilization, L.seven_day?.resets_at, true),
@@ -291,16 +295,31 @@ async function claudeProvider(): Promise<Group | null> {
       defaultEnabled: false,
     },
   ]
+  if (limitsErr) markError(segments, ['session', 'weekly', 'sonnet', 'opus'], 'usage API unavailable')
+  if (usageErr) markError(segments, ['cost', 'msgs'], 'usage log unavailable')
   return { id: 'claude-code', label: 'Claude', segments }
+}
+
+// 指定 id の segment に state="error" + message を付ける (upstream 取得失敗時)。
+function markError(segments: Segment[], ids: string[], message: string): void {
+  for (const id of ids) {
+    const s = segments.find((x) => x.id === id)
+    if (s) {
+      s.state = 'error'
+      s.message = message
+    }
+  }
 }
 
 async function codexProvider(): Promise<Group | null> {
   if (!(await hasCli('codex'))) return null
   const x = (await fetchCodexLimits()) as {
+    error?: unknown
     primary?: { usedPercent?: number; resetsAt?: number }
     secondary?: { usedPercent?: number; resetsAt?: number }
   }
-  return {
+  // codex は rate limit を一括取得するので、失敗時は group 単位の state="error" (両 segment が継承)。
+  const group: Group = {
     id: 'codex',
     label: 'Codex',
     segments: [
@@ -308,6 +327,11 @@ async function codexProvider(): Promise<Group | null> {
       pctSegment('weekly', 'Weekly', x.secondary?.usedPercent, x.secondary?.resetsAt, true),
     ],
   }
+  if (x.error != null || x.primary == null) {
+    group.state = 'error'
+    group.message = 'rate limit unavailable'
+  }
+  return group
 }
 
 // --- (5) Mac システム状態 provider (CPU / メモリ / バッテリー / ディスク) ----------

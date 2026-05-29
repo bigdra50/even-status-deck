@@ -175,10 +175,11 @@ function preferUrl(id: string, url: string): void {
 
 // status の内容シグネチャ (ts 除く)。同一なら notify せず無駄な集約/再描画を起こさない。
 function statusSig(d: StatusDoc): string {
+  // state も含める: 値据え置きで state だけ変化 (例 ok→stale) しても再描画が要る (PROTOCOL §3)。
   return d.groups
     .map(
       (g) =>
-        `${g.id}:${g.segments.map((s) => `${s.id}=${s.value}|${s.percent ?? ''}|${s.reset ?? ''}`).join(',')}`,
+        `${g.id}${g.state ?? ''}:${g.segments.map((s) => `${s.id}=${s.value}|${s.percent ?? ''}|${s.reset ?? ''}|${s.state ?? ''}`).join(',')}`,
     )
     .join(';')
 }
