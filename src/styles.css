@@ -598,12 +598,19 @@ textarea {
 }
 .wys-add .lay-add-input {
   flex: 1;
+  min-width: 0;
   padding: var(--space-2) var(--space-3);
   background: var(--input-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   color: var(--text);
   font-size: var(--fs-sm);
+}
+/* Add label ボタンは内容幅に (入力欄を主役にする)。.save-btn の width:100% を打ち消す */
+.wys-add .save-btn {
+  flex: 0 0 auto;
+  width: auto;
+  white-space: nowrap;
 }
 .wys-x {
   background: none;
