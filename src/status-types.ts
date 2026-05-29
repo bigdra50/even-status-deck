@@ -13,6 +13,10 @@ export type Segment = {
   reset?: string
   /** 初回設定時の既定 ON/OFF。未指定は true 扱い。 */
   defaultEnabled?: boolean
+  /** glass 表示枠の最大桁数。短ければ pad で枠確保、超えれば … で省略。builtin のみ設定 (server は undefined=無加工)。 */
+  widthChars?: number
+  /** true なら数値系として右寄せ pad。builtin のみ設定 (server は false 相当=左寄せ)。 */
+  isNumeric?: boolean
 }
 
 export type Group = {

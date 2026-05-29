@@ -1,4 +1,5 @@
 import Sortable from 'sortablejs'
+import { clockPresetsForSeg, defaultClockFormat, localStatus } from './builtins'
 import {
   addServer,
   BUILTIN_GROUP_LABELS,
@@ -45,12 +46,15 @@ let testUrl = ''
 // glass layout の編集モード (GLASS PREVIEW を WYSIWYG 編集面にする / 普段は view)。
 let layoutEditing = false
 
+// builtin (clock/g2) は config の format/widthChars を反映した live 値で上書きする
+// (store の builtin は config 非依存の既定値なので、プレビュー/Items を選択に追従させる)。
 function glassData(): GlassData {
-  return { config, statuses: getAllStatuses() }
+  return { config, statuses: { ...getAllStatuses(), [BUILTIN_SOURCE_ID]: localStatus(config) } }
 }
 
 function statusGroup(sourceId: string, groupId: string): Group | undefined {
-  return getSourceStatus(sourceId)?.groups.find((g) => g.id === groupId)
+  const doc = sourceId === BUILTIN_SOURCE_ID ? localStatus(config) : getSourceStatus(sourceId)
+  return doc?.groups.find((g) => g.id === groupId)
 }
 
 // 全ソースの status を config に取り込み、追加があれば保存する。追加があれば true。
@@ -158,9 +162,20 @@ function groupRow(ref: GroupRef): string {
         .map((sc) => {
           const seg = segById.get(sc.id)
           if (!seg) return ''
+          // clock segment (time/date/datetime) は表示フォーマット dropdown を出す。
+          const presets = isBuiltin && ref.groupId === 'clock' ? clockPresetsForSeg(sc.id) : []
+          const fmtSel = presets.length
+            ? `<select class="format-select" data-action="seg-format" data-key="${key}" data-seg="${esc(sc.id)}">${presets
+                .map((p) => {
+                  const cur = sc.format ?? defaultClockFormat(sc.id)
+                  return `<option value="${esc(p.format)}" ${p.format === cur ? 'selected' : ''}>${esc(p.label)}</option>`
+                })
+                .join('')}</select>`
+            : ''
           return `<div class="metric"><div class="metric-row"><span class="mgrip">${icon('grip', { size: 16 })}</span>
               <span class="mname">${esc(isBuiltin ? (BUILTIN_SEG_LABELS[seg.id] ?? seg.id) : seg.label || seg.id)}</span>
               <span class="mval">${esc(seg.value)}</span>
+              ${fmtSel}
               <button class="tg sm ${sc.enabled ? 'on' : ''}" data-action="toggle-seg" data-key="${key}" data-seg="${esc(sc.id)}"></button></div>
             ${segVisEditor(key, sc, seg)}</div>`
         })
@@ -238,18 +253,42 @@ function allPlaceableKeys(): string[] {
   return keys
 }
 
-// 行 (segKey 配列) が glass 1 行に収まらなさそうか (proportional のため概算文字数 40 を目安)。
+// 行 (key 配列) が glass 1 行 (等幅近似で ~50 桁) に収まらなさそうか。
+// segment は widthChars (確保枠) 優先、無ければ value 長。custom ラベルはテキスト長。
+// group default-label の前置分も run 先頭で加算 (rowText の dedup と合わせる)。
+const ROW_MAX_CHARS = 50
 function rowOverflow(items: string[]): boolean {
-  let len = 0
+  let total = 0
   let n = 0
+  let prevGroup: string | null = null
   for (const key of items) {
+    if (isCustomLabelKey(key)) {
+      const text = config.glassLayout?.customLabels[customLabelId(key)]?.text ?? ''
+      if (!text) continue
+      total += text.length
+      prevGroup = null
+      n++
+      continue
+    }
     const [sourceId, groupId, segId] = key.split('|')
     const seg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
     if (!seg) continue
-    len += (seg.label ? seg.label.length + 1 : 0) + seg.value.length
+    const gc = config.groups[sourceId]?.[groupId]
+    // 無効化された segment は glass(rowText) で描画されないので幅計算からも除外 (過大評価防止)。
+    if (!gc?.segments.find((s) => s.id === segId)?.enabled) continue
+    const labelLen = seg.label ? seg.label.length + 1 : 0
+    const valLen = seg.widthChars ?? seg.value.length
+    let w = labelLen + valLen
+    const showsLabel = gc?.showDefaultLabel ?? groupId !== 'clock'
+    if (showsLabel && groupId !== prevGroup) {
+      const { group } = segLabelParts(key)
+      if (group) w += group.length + 1 // run 先頭の group 名前置
+    }
+    total += w
+    prevGroup = groupId
     n++
   }
-  return len + Math.max(0, n - 1) * 2 > 40
+  return total + Math.max(0, n - 1) * 2 > ROW_MAX_CHARS
 }
 
 // WYSIWYG の chip。custom ラベル (自由テキスト) と segment 値 chip の 2 種。
@@ -686,6 +725,28 @@ async function onClick(e: MouseEvent): Promise<void> {
 
 // segment 条件エディタ (combinator select / leaf の kind・op・value・hold) の変更を
 // config.groups[*][*].segments[*].visibility に反映する。leaf は data-idx で特定する。
+// change イベントの振り分け: clock フォーマット選択 → onSegFormatChange、それ以外 → onSegVisChange。
+async function onChange(e: Event): Promise<void> {
+  const action = (e.target as HTMLElement).dataset.action
+  if (action === 'seg-format') await onSegFormatChange(e)
+  else await onSegVisChange(e)
+}
+
+// clock segment の表示フォーマット (SegCfg.format) を更新。saveConfig が config-changed を
+// dispatch → glass が loadConfig して実機描画にも反映。
+async function onSegFormatChange(e: Event): Promise<void> {
+  const t = e.target as HTMLSelectElement
+  const key = t.dataset.key
+  const segId = t.dataset.seg
+  if (!key || !segId) return
+  const ref = parseKey(key)
+  const sc = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find((s) => s.id === segId)
+  if (!sc) return
+  sc.format = t.value || undefined
+  await saveConfig(config)
+  render()
+}
+
 async function onSegVisChange(e: Event): Promise<void> {
   const t = e.target as HTMLInputElement | HTMLSelectElement
   const action = t.dataset.action
@@ -768,7 +829,7 @@ function onStoreUpdate(): void {
 export async function mountCompanion(el: HTMLElement): Promise<void> {
   root = el
   el.addEventListener('click', (e) => void onClick(e))
-  el.addEventListener('change', (e) => void onSegVisChange(e)) // segment 条件エディタの select/number
+  el.addEventListener('change', (e) => void onChange(e)) // segment 条件 / clock フォーマットの select/number
   subscribe(onStoreUpdate)
 
   config = await loadConfig()

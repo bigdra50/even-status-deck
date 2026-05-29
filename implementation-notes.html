@@ -522,6 +522,29 @@
       <tr><td>migrate</td><td>既存 group に <code>showDefaultLabel ??= defaultShowGroupLabel</code> を補完 (additive, bump 不要)</td></tr>
     </table>
     <p class="done">検証 (ブラウザ): 棚に @label chip 無し / label-btn 既定 clock=OFF・他=ON / preview dedup (<code>Claude 5h 1% Weekly 2% Cost $797</code>, <code>Mac CPU 28% Mem 79%</code>, 時刻に Clock 前置なし) / Mac トグル OFF で <code>CPU 28% Mem 79%</code> に。drag は実機。</p>
-    <p class="open">次段階: <strong>Phase 2</strong> = segment の <code>widthChars</code> (枠確保 pad + 超過 … + editor の折返し判定)。<strong>Phase 3</strong> = clock の format preset dropdown + 結合用 <code>datetime</code> segment 追加 (time/date は維持・migration 不要)。gpt 助言: 統合(削除)せず datetime 追加、固定プリセット、幅 override UI は後回し。</p>
+    <hr>
+    <h2 class="done">Phase 2 widthChars + Phase 3 clock format (5-agent blueprint + gpt-5.5 で確定)</h2>
+    <p>段階設計を 5 エージェント並列ワークフローで実コード根拠の blueprint 化 → 統合。矛盾 (clock-engine『builtins 再整形→実機反映』 vs clock-ui『preview のみ』) は <strong>builtins 再整形を採用</strong>。循環依存リスクは『<code>SegCfg.format</code> 未設定→builtins がロケール既定を適用 (migrate backfill しない)』で回避 (config→builtins import 不要)。</p>
+    <h3 class="done">Phase 3: clock フォーマット指定 + datetime 統合</h3>
+    <table>
+      <tr><th>項目</th><th>実装</th></tr>
+      <tr><td>プリセット</td><td>builtins <code>CLOCK_PRESETS</code> (kind=time/date/datetime, format 文字列, label, width)。time <code>HH:mm</code>/<code>h:mm A</code>、date <code>MM-DD</code>/<code>ddd MM-DD</code>/<code>YYYY-MM-DD</code>、datetime <code>HH:mm ddd MM-DD</code>/<code>h:mm A ddd MM-DD</code>。</td></tr>
+      <tr><td>統合 (datetime)</td><td>time/date は<strong>維持</strong>し結合用 <code>datetime</code> segment を新設 (defaultEnabled=false の opt-in)。別行配置の自由を失わない・migration 不要。</td></tr>
+      <tr><td>フォーマッタ</td><td><code>formatClock(date, fmt)</code> トークン置換 (YYYY/HH=24h/MM/DD/mm/A=AM-PM/<strong>h=常に12h</strong>/ddd は最後)。外部 lib なし。</td></tr>
+      <tr><td>永続/既定</td><td><code>SegCfg.format?: string</code> (フォーマット文字列を直接保存)。未設定は <code>defaultClockFormat(segId)</code> がロケール (formatProfile の 12/24h・日付順) から導出。</td></tr>
+      <tr><td>実機反映</td><td><code>localStatus(config?)</code> が各 clock SegCfg.format で value 整形。<code>glass.ts</code> は 3 箇所 <code>localStatus(data.config)</code> 化 = 実機描画に効く。store は config なし=既定。</td></tr>
+      <tr><td>UI</td><td>Items の clock group 配下 time/date/datetime 行に <code>.format-select</code> dropdown。<code>onChange</code> が <code>seg-format</code>→<code>onSegFormatChange</code> と <code>seg-vis-</code>→<code>onSegVisChange</code> を振り分け。companion は <code>statusGroup/glassData</code> で builtin を <code>localStatus(config)</code> live 上書き → プレビュー/Items が選択に追従。</td></tr>
+    </table>
+    <h3 class="done">Phase 2: widthChars (表示枠)</h3>
+    <table>
+      <tr><th>項目</th><th>実装</th></tr>
+      <tr><td>モデル</td><td><code>Segment.widthChars?</code> + <code>isNumeric?</code> (status-types)。builtin のみ設定、server は undefined=無加工。SegCfg には持たせない。</td></tr>
+      <tr><td>整形</td><td>glass-render <code>formatSegmentValue(value, widthChars?, isNumeric)</code>: 短ければ pad (数値=右寄せ padStart / 文字列=左寄せ)、超えれば末尾 <code>…</code> で省略 (合計 widthChars)。rowText/detailBody から呼ぶ。</td></tr>
+      <tr><td>既定幅</td><td>clock=プリセット幅、level=5(<code>100%+</code>,右寄せ)、rate=7(<code>↓100%/h</code>)、eta=6(<code>23h59m</code>)。blueprint の rate=2/eta=7 は実 formatRate/formatEta と不一致のため補正。</td></tr>
+      <tr><td>editor 折返し判定</td><td>companion <code>rowOverflow</code> を概算40字→<strong>widthChars 合計 + default-label 前置桁 (run 先頭) + custom label 長</strong>で算出、閾値 50。既存 <code>.wys-over</code> 警告を再利用。</td></tr>
+    </table>
+    <p class="done">検証 (ブラウザ): clock dropdown (time/date/datetime・正しいプリセット) / format 変更→Items 値+preview 即追従 / <strong>12h バグ修正</strong> (h トークンが h24 を使っていた→常に h12 に) / datetime 行追加 / Customize で全 chip が整形済値表示 / overflow 誤検知なし / lint・build クリーン。</p>
+    <p class="done">敵対的レビュー (26 エージェント, 23 指摘→検証で 1 件のみ確定): <code>rowOverflow</code> が無効 segment (SegCfg.enabled=false) をスキップせず幅を過大評価 (rowText は除外)。行に置いた後トグル OFF で再現。修正済 (gc から SegCfg を引き enabled チェック)。他 22 件は誤検知 (formatClock トークン順序・循環依存・統合経路の健全性を確認)。</p>
+    <p class="open">実機確認待ち: widthChars プリセット値が SDK 等幅フォント (27px) の実枠と整合するか / pad 右寄せ・<code>…</code> 省略の見た目 / overflow 閾値 50 の妥当性 / format 選択後 glass-local タイマー次 tick で実機反映。ブラウザは bridge 無しで reload すると選択リセット (memory のみ) = dev 想定挙動。</p>
   </body>
 </html>

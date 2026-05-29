@@ -353,6 +353,17 @@ textarea {
   font-size: var(--fs-sm);
   padding: var(--space-1) var(--space-2);
 }
+/* clock segment のフォーマット選択 (metric 行内、toggle の左) */
+.format-select {
+  flex: 0 0 auto;
+  max-width: 44%;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  padding: var(--space-1) var(--space-2);
+}
 .vis-num {
   width: 52px;
   background: var(--input-bg);

@@ -35,6 +35,17 @@ function pad(s: string, n: number): string {
   return s.length >= n ? s : s + ' '.repeat(n - s.length)
 }
 
+// segment 値を widthChars 枠に合わせる。短ければ pad (数値=右寄せ / 文字列=左寄せ) で枠確保、
+// 超えれば末尾 … で省略 (合計 widthChars)。widthChars 未設定 (server 等) は無加工。
+export function formatSegmentValue(value: string, widthChars?: number, isNumeric = false): string {
+  if (!widthChars) return value
+  if (value.length <= widthChars) {
+    return isNumeric ? value.padStart(widthChars, ' ') : pad(value, widthChars)
+  }
+  const head = Math.max(1, widthChars - 1)
+  return `${value.slice(0, head)}…`
+}
+
 function findGroup(d: GlassData, ref: GroupRef): Group | undefined {
   return d.statuses[ref.sourceId]?.groups.find((g) => g.id === ref.groupId)
 }
@@ -94,7 +105,8 @@ function rowText(items: string[], d: GlassData, visible?: VisibleMap): string {
     if (!isVisible(visible, key)) continue // 表示タイミング条件
     const seg = findGroup(d, { sourceId, groupId })?.segments.find((s) => s.id === segId)
     if (!seg) continue // status 欠落 (missing) → 描画時 skip (rows からは消さない)
-    const body = seg.label ? `${seg.label} ${seg.value}` : seg.value
+    const v = formatSegmentValue(seg.value, seg.widthChars, seg.isNumeric ?? false)
+    const body = seg.label ? `${seg.label} ${v}` : v
     // default-label: ON かつ run の先頭 (直前と group が変わった) なら group 名を前置
     if (showsGroupLabel(gcfg, groupId) && groupId !== prevGroup) {
       const gl = groupLabelText(d, sourceId, groupId)
@@ -155,13 +167,12 @@ function detailBody(d: GlassData, ref: GroupRef, visible?: VisibleMap): string[]
   const lines: string[] = g.label ? [g.label] : []
   for (const seg of g.segments) {
     if (!isVisible(visible, segKey(ref.sourceId, ref.groupId, seg.id))) continue
+    const v = formatSegmentValue(seg.value, seg.widthChars, seg.isNumeric ?? false)
     if (typeof seg.percent === 'number') {
       const name = seg.label ? pad(seg.label, 8) : ''
-      lines.push(
-        `${name} ${bar(seg.percent)} ${seg.value}${seg.reset ? ` ${seg.reset}` : ''}`.trim(),
-      )
+      lines.push(`${name} ${bar(seg.percent)} ${v}${seg.reset ? ` ${seg.reset}` : ''}`.trim())
     } else {
-      lines.push(seg.label ? `${pad(seg.label, 8)} ${seg.value}` : seg.value)
+      lines.push(seg.label ? `${pad(seg.label, 8)} ${v}` : v)
     }
   }
   return lines

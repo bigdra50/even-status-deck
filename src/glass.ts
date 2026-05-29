@@ -92,7 +92,7 @@ function cycle(dir: number): void {
 // 毎分走らせない)。時刻変化では構成・可視は変わらないので views/visible はキャッシュのまま。
 // refresh は content-diff 済みなので同分の再 arm では BLE 送信は起きない。
 function glassTick(): void {
-  data.statuses[BUILTIN_SOURCE_ID] = localStatus()
+  data.statuses[BUILTIN_SOURCE_ID] = localStatus(data.config)
   refresh()
   scheduleGlassClock()
 }
@@ -210,7 +210,7 @@ function syncAll(): void {
 
 function onStoreUpdate(): void {
   data.statuses = getAllStatuses()
-  data.statuses[BUILTIN_SOURCE_ID] = localStatus() // poll/電池 notify 時も時刻を最新に保つ
+  data.statuses[BUILTIN_SOURCE_ID] = localStatus(data.config) // poll/電池 notify 時も時刻を最新に保つ
   syncAll()
   visible = computeVisible(data.config, data.statuses)
   views = buildViews(data, visible)
@@ -234,7 +234,7 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   setBatteryBridge(bridge)
   await loadBatteryLog() // 消耗レートの永続ログを復元
   data.statuses = getAllStatuses() // store が既に取得済みなら反映 (companion が setSources 済み)
-  data.statuses[BUILTIN_SOURCE_ID] = localStatus() // 時刻 HUD を初期表示
+  data.statuses[BUILTIN_SOURCE_ID] = localStatus(data.config) // 時刻 HUD を初期表示
   syncAll()
   visible = computeVisible(data.config, data.statuses)
   views = buildViews(data, visible)

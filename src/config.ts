@@ -39,6 +39,7 @@ export const BUILTIN_GROUP_LABELS: Record<string, string> = {
 export const BUILTIN_SEG_LABELS: Record<string, string> = {
   time: 'Time',
   date: 'Date',
+  datetime: 'Date & Time',
   level: 'Battery level',
   rate: 'Rate',
   eta: 'Estimated time left',
@@ -46,7 +47,9 @@ export const BUILTIN_SEG_LABELS: Record<string, string> = {
 
 export type SourceKind = 'builtin' | 'server'
 export type SourceDef = { id: string; kind: SourceKind; label: string; url?: string }
-export type SegCfg = { id: string; enabled: boolean; visibility?: VisibilityCond }
+// format: clock segment (time/date/datetime) の表示フォーマット文字列 (例 'HH:mm')。
+//   未設定はロケール既定 (builtins.defaultClockFormat)。clock 以外では未使用。
+export type SegCfg = { id: string; enabled: boolean; visibility?: VisibilityCond; format?: string }
 export type GAlign = 'top' | 'bottom'
 // align: glass summary での縦寄せ。未指定は 'top' (上から詰める従来挙動)。
 // showDefaultLabel: glass で各 segment の前に group ラベル (G2/Claude 等) を出すか。
