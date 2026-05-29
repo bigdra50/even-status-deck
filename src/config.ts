@@ -223,6 +223,25 @@ export function enabledSources(cfg: Config): SourceDef[] {
   return cfg.sources.filter((s) => s.id === BUILTIN_SOURCE_ID || enabled.has(s.id))
 }
 
+// active profile で source が有効か (fetch/表示対象か)。builtin は常に true (fetch 範囲に必須)。
+export function isSourceEnabled(cfg: Config, sourceId: string): boolean {
+  if (sourceId === BUILTIN_SOURCE_ID) return true
+  return activeProfile(cfg).enabledSourceIds.includes(sourceId)
+}
+
+// active profile での source の有効/無効を切り替える。builtin は常に有効 (変更不可)。
+// OFF にした source は fetch されず glass/Items から消えるが、view (並び/可視性) は保持する
+// (再 ON や profile 切替で復元)。これが「業務 profile は私用 Mac を fetch しない」を実現する。
+export function setSourceEnabled(cfg: Config, sourceId: string, enabled: boolean): void {
+  if (sourceId === BUILTIN_SOURCE_ID) return
+  const prof = activeProfile(cfg)
+  const has = prof.enabledSourceIds.includes(sourceId)
+  if (enabled && !has) prof.enabledSourceIds.push(sourceId)
+  else if (!enabled && has) {
+    prof.enabledSourceIds = prof.enabledSourceIds.filter((id) => id !== sourceId)
+  }
+}
+
 // source の主 URL (urls 先頭、無ければ後方互換 url)。鮮度 diff / 表示に使う。
 export function sourceUrl(s: SourceDef): string | undefined {
   return s.urls?.[0] ?? s.url

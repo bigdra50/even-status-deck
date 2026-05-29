@@ -29,6 +29,7 @@ import {
   genLabelId,
   isCustomLabelKey,
   isRightDivider,
+  isSourceEnabled,
   loadConfig,
   RIGHT_DIVIDER,
   reconcileSourceMachine,
@@ -39,6 +40,7 @@ import {
   type SourceDef,
   saveConfig,
   setActiveProfile,
+  setSourceEnabled,
   sourceById,
   sourceUrl,
   syncSourceWithStatus,
@@ -289,13 +291,21 @@ function sourceRow(s: SourceDef): string {
     return `<div class="src"><div class="src-head"><span class="conn-dot"></span>
       <span class="src-name">${esc(s.label)}</span><span class="src-note">Built-in</span></div></div>`
   }
-  // 切断検出を反映: online=緑 / stale=琥珀 (瞬断中) / offline=灰 + "Last seen…"。
+  // この preset で source を fetch/表示するか (enabledSourceIds)。OFF は fetch せず glass/Items から消す。
+  const enabled = isSourceEnabled(config, s.id)
+  // 切断検出を反映: online=緑 / stale=琥珀 (瞬断中) / offline=灰 + "Last seen…"。OFF は dot を消す。
   const health = getSourceHealth(s.id)
-  const dotCls = health === 'online' ? '' : health === 'stale' ? 'stale' : 'off'
-  const note = health === 'offline' ? lastSeenText(s.id) : (sourceUrl(s) ?? 'Not set')
-  return `<div class="src"><div class="src-head"><span class="conn-dot ${dotCls}"></span>
+  const dotCls = !enabled ? 'off' : health === 'online' ? '' : health === 'stale' ? 'stale' : 'off'
+  const note = !enabled
+    ? 'Off in this preset'
+    : health === 'offline'
+      ? lastSeenText(s.id)
+      : (sourceUrl(s) ?? 'Not set')
+  const toggle = `<button class="tg ${enabled ? 'on' : ''}" data-action="toggle-source" data-src="${esc(s.id)}" title="${enabled ? 'Shown in this preset' : 'Hidden in this preset'}" aria-label="Toggle source in this preset"></button>`
+  return `<div class="src${enabled ? '' : ' dim'}"><div class="src-head"><span class="conn-dot ${dotCls}"></span>
     <span class="src-name">${esc(s.label)}</span>
     <span class="src-note">${esc(note)}</span>
+    ${toggle}
     <button class="gear-btn" data-action="edit-source" data-src="${esc(s.id)}" title="Edit" aria-label="Edit">${icon('settings', { size: 18 })}</button></div></div>`
 }
 
@@ -823,6 +833,17 @@ async function onClick(e: MouseEvent): Promise<void> {
       if (vg) {
         vg.enabled = !vg.enabled
         void saveConfig(config)
+        render()
+      }
+      break
+    }
+    case 'toggle-source': {
+      // この preset で source を fetch/表示するか。OFF は fetch 停止 + glass/Items から除外。
+      const id = t.dataset.src
+      if (id) {
+        setSourceEnabled(config, id, !isSourceEnabled(config, id))
+        void saveConfig(config)
+        setSourcesFromConfig(config) // fetch 範囲を更新 (OFF=停止/status 破棄, ON=取得開始)
         render()
       }
       break
