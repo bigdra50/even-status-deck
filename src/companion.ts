@@ -1482,8 +1482,9 @@ export async function mountCompanion(el: HTMLElement): Promise<void> {
   subscribe(onStoreUpdate)
 
   config = await loadConfig()
-  // 初回 (server ソース無し) は同一オリジンを既定の server として登録 (dev-URL / ブラウザ dev)
-  if (ensureDefaultServer(config, location.origin)) await saveConfig(config)
+  // OD-4: dev (ブラウザ / 同一オリジン) のみ自動登録。prod (.ehpk) は location.origin が
+  // glasses 側ループバックを指し Mac に届かないため登録せず、help.html の手順で LAN IP を入力させる。
+  if (import.meta.env.DEV && ensureDefaultServer(config, location.origin)) await saveConfig(config)
   setSourcesFromConfig(config)
   startPolling()
   render() // 時刻 (clock) は glass-local タイマーが所有。companion は周期再描画しない
@@ -1492,7 +1493,8 @@ export async function mountCompanion(el: HTMLElement): Promise<void> {
 // bridge 接続後: 永続 config を読み直して store に反映する。
 export async function onCompanionBridgeReady(): Promise<void> {
   config = await loadConfig()
-  if (ensureDefaultServer(config, location.origin)) await saveConfig(config)
+  // OD-4: 自動登録は dev のみ (prod は help.html の手順で LAN IP を入力させる)。
+  if (import.meta.env.DEV && ensureDefaultServer(config, location.origin)) await saveConfig(config)
   setSourcesFromConfig(config)
   render()
 }
