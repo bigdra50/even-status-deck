@@ -67,6 +67,16 @@ body {
   overscroll-behavior: none;
   /* ピンチズーム / ダブルタップズームを無効化 (縦スクロールのみ許可)。companion はズーム不要。 */
   touch-action: pan-x pan-y;
+  /* スクロール/ドラッグ時に文字が選択されるのを防ぐ (長押しメニューも抑制)。入力欄は下で除外。 */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+/* 入力欄だけはテキスト選択・編集を許可する。 */
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
 }
 #app {
   max-width: 480px;

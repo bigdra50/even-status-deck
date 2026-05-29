@@ -407,6 +407,8 @@ function attachSortables(): void {
       Sortable.create(list, {
         handle: '.src-grip',
         animation: 150,
+        delay: 200,
+        delayOnTouchOnly: true, // タッチは長押しでドラッグ開始 (素早いスワイプはスクロール)
         onEnd: (e) => onGroupReorder(e.oldIndex, e.newIndex),
       }),
     )
@@ -417,20 +419,25 @@ function attachSortables(): void {
       Sortable.create(el, {
         handle: '.mgrip',
         animation: 150,
+        delay: 200,
+        delayOnTouchOnly: true,
         onEnd: (e) => onSegReorder(key, e.oldIndex, e.newIndex),
       }),
     )
   }
   // WYSIWYG: 固定行セル + 棚を跨いで segment chip をドラッグ (共有 group)。
   // forceFallback: iOS WKWebView では HTML5 DnD が touch で動かないため必須。
-  // reserved 行 (hint 用) は put:false で drop 不可。drag 中はドロップ先セルをハイライト。
+  // delayOnTouchOnly: タッチは長押しでドラッグ開始 (素早いスワイプはスクロールに通す)。
+  // drag 中はドロップ先セルをハイライト。
   if (layoutEditing) {
     for (const el of document.querySelectorAll<HTMLElement>('.wys-cell')) {
       sortables.push(
         Sortable.create(el, {
-          group: { name: 'wys', put: !el.dataset.reserved },
+          group: 'wys',
           handle: '.wys-grip',
           animation: 150,
+          delay: 200,
+          delayOnTouchOnly: true,
           forceFallback: true,
           onMove: (evt) => {
             for (const c of document.querySelectorAll('.wys-cell.drop-hot')) {
