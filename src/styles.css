@@ -830,6 +830,7 @@ textarea {
   flex-direction: column;
   padding: 1cqh 1.5cqh;
   container-type: size;
+  overflow: hidden; /* はみ出しはキャンバス端でのみクリップ (実機グラスの見切れに対応) */
 }
 .fs-row {
   flex: 1;
@@ -838,11 +839,13 @@ textarea {
   gap: 1cqh;
   border-bottom: 1px dashed rgba(60, 250, 68, 0.08);
   min-height: 0;
-  overflow: hidden; /* 行は 1 行固定。クラスタが広すぎてもはみ出さずクリップ (実機はラベルで警告)。 */
 }
 .fs-row:last-child {
   border-bottom: none;
 }
+/* 左ゾーンは右半分にはみ出しても描画する (クリップしない)。折返しは禁止 (縦衝突を防ぐ)。
+   右ゾーンは DOM 上で後 = 左のはみ出しの上に重なって右端に表示される。ドロップ判定は
+   要素ベース (data-zone) なので、左がはみ出していても右半分のドロップは右ゾーンに解決される。 */
 .fs-zone {
   flex: 1;
   display: flex;
@@ -853,7 +856,6 @@ textarea {
   height: 100%;
   padding: 0 0.5cqh;
   border-radius: 6px;
-  overflow: hidden;
 }
 .fs-zone-r {
   justify-content: flex-end;
@@ -890,6 +892,11 @@ textarea {
 .fs-glass .fs-chip svg {
   width: clamp(9px, 3.4cqh, 15px);
   height: clamp(9px, 3.4cqh, 15px);
+}
+/* 右クラスタは左 (緑) と色を変えて配置側を識別可能にする (ティール)。重なっても見分けられる。 */
+.fs-glass .fs-chip-r {
+  background: rgba(64, 224, 196, 0.18);
+  color: #69e6c6;
 }
 .fs-chip-label {
   background: rgba(254, 249, 145, 0.16);

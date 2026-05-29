@@ -903,16 +903,39 @@ function fsChipText(key: string): string {
   return sg ? (sg.label ? `${sg.label} ${sg.value}` : sg.value) : seg
 }
 
-// glass 風チップ (緑/黒)。default-label ON の group は group 名を薄く前置。× で未配置へ。
-function fsChip(key: string): string {
-  const [sourceId, groupId] = key.split('|')
+// glass 風チップ (緑/黒)。showGroup=true のときだけ group 名を薄く前置 (run dedup は呼び出し側)。
+// rightSide=true は右クラスタ用に色を変える (左=緑 / 右=ティール) ことで配置側を識別可能にする。
+function fsChip(key: string, showGroup: boolean, rightSide: boolean): string {
+  const label = isCustomLabelKey(key)
   const { group } = segLabelParts(key)
-  const gc = config.groups[sourceId]?.[groupId]
-  const showsLabel = !isCustomLabelKey(key) && (gc?.showDefaultLabel ?? groupId !== 'clock')
-  const grp = showsLabel && group ? `<span class="fs-grp">${esc(group)}</span>` : ''
-  const cls = isCustomLabelKey(key) ? 'fs-chip fs-chip-label' : 'fs-chip'
+  const grp = !label && showGroup && group ? `<span class="fs-grp">${esc(group)}</span>` : ''
+  const cls = `fs-chip${label ? ' fs-chip-label' : rightSide ? ' fs-chip-r' : ''}`
   const x = `<button class="fs-x" data-action="fs-unplace" data-segkey="${esc(key)}" aria-label="Unplace">${icon('x', { size: 12 })}</button>`
   return `<span class="${cls}" data-segkey="${esc(key)}">${grp}<span class="fs-txt">${esc(fsChipText(key))}</span>${x}</span>`
+}
+
+// グループ前置の判定 (showDefaultLabel。未設定は clock=false / 他=true)。
+function showsGroupLabel(key: string): boolean {
+  const [sourceId, groupId] = key.split('|')
+  return config.groups[sourceId]?.[groupId]?.showDefaultLabel ?? groupId !== 'clock'
+}
+
+// 1 クラスタ (左 or 右) を描画。実機グラスと同じ run dedup: 直前と同じ group の連続では
+// group 名を 1 回だけ前置 (例「Mac CPU 46% / Mem 80%」)。custom ラベルは run を切る。
+function renderFsCluster(keys: string[], rightSide: boolean): string {
+  let prevGroup: string | null = null
+  return keys
+    .map((key) => {
+      if (isCustomLabelKey(key)) {
+        prevGroup = null
+        return fsChip(key, false, rightSide)
+      }
+      const groupId = key.split('|')[1] ?? ''
+      const showGroup = showsGroupLabel(key) && groupId !== prevGroup
+      prevGroup = groupId
+      return fsChip(key, showGroup, rightSide)
+    })
+    .join('')
 }
 
 // プレビュー本体 (10 行 × 左/右ゾーン) + Unplaced トレイの HTML。
@@ -926,14 +949,15 @@ function renderFsBodyHtml(): string {
       ? `<span class="fs-over" title="May be too long for one line">${icon('alert', { size: 12 })}</span>`
       : ''
     rows.push(
-      `<div class="fs-row"><div class="fs-zone" data-row="${i}" data-zone="left">${left.map(fsChip).join('')}</div>` +
-        `<div class="fs-zone fs-zone-r" data-row="${i}" data-zone="right">${right.map(fsChip).join('')}${over}</div></div>`,
+      `<div class="fs-row"><div class="fs-zone" data-row="${i}" data-zone="left">${renderFsCluster(left, false)}</div>` +
+        `<div class="fs-zone fs-zone-r" data-row="${i}" data-zone="right">${renderFsCluster(right, true)}${over}</div></div>`,
     )
   }
   const placed = new Set(lay.rows.flat().filter((k) => !isRightDivider(k)))
   const tray = allPlaceableKeys().filter((k) => !placed.has(k))
+  // トレイは run の文脈が無いので各チップ単独でグループ名を出す (dedup なし)。
   const trayHtml = tray.length
-    ? tray.map(fsChip).join('')
+    ? tray.map((k) => fsChip(k, showsGroupLabel(k), false)).join('')
     : '<span class="fs-empty">Nothing unplaced</span>'
   // .fs-canvas が利用可能領域を埋め、.fs-glass がその中で 2:1 にコンテイン (container query)。
   return `<div class="fs-canvas"><div class="fs-glass">${rows.join('')}</div></div>

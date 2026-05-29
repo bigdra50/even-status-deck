@@ -638,6 +638,18 @@
     </table>
     <p class="done">ブラウザ E2E (Chrome landscape): キャンバスが 2:1 でコンテイン / チップがサイズ追従 / 1 行に複数チップ配置でも折返さずクリップ / × 適正サイズ。tsc・biome・build クリーン。</p>
 
-    <p class="open">Phase 2 候補 (必要なら): ドロップ位置でのクラスタ内挿入順制御 (現状は末尾 append) / 行クリップ時の省略表示 (… 付与) / タッチ長押し閾値 / landscape ホストが現れた場合の無回転最適化。</p>
+    <h3>左右の色分け + はみ出しそのまま描画 + グループ run dedup <span class="done">[done]</span></h3>
+    <p>実機で左詰めが収まらない件への対応 (ユーザー要望)。実機グラスは長い行も見えているため、エディタでも
+      「左は右半分にはみ出してもそのまま描画」し、左右クラスタを色分けして識別可能にし、実機グラスと同じ
+      グループ名の省略 (run dedup) をエディタにも適用する。</p>
+    <table>
+      <tr><th>要望</th><th>実装</th></tr>
+      <tr><td>左/右クラスタを識別</td><td>右クラスタチップに <code>.fs-chip-r</code> (ティール <code>#69e6c6</code>) を付与。左は緑 (glass)。重なっても色で判別可。custom ラベルは従来どおり黄。</td></tr>
+      <tr><td>左のはみ出しをそのまま描画</td><td><code>.fs-row</code>/<code>.fs-zone</code> の <code>overflow:hidden</code> を撤去 (折返し禁止 <code>nowrap</code> は維持し縦衝突は防ぐ)。クリップは <code>.fs-glass</code> 端のみ (実機グラスの見切れに対応)。右ゾーンは DOM 上で後 = 左のはみ出しの上に重なり右端表示。ドロップ判定は要素ベース (<code>data-zone</code>) なので左がはみ出しても右半分は右に解決 (回転下でも安全)。</td></tr>
+      <tr><td>省略表示 (同一グループ連続)</td><td><code>renderFsCluster(keys, rightSide)</code> が左右クラスタ独立に run dedup。直前と同 <code>groupId</code> の連続ではグループ名を 1 回だけ前置 (例「Mac CPU 36% / Mem 76%」)。custom ラベルは run を切る。<code>fsChip(key, showGroup, rightSide)</code> に変更。実機 <code>renderKeys</code> と同じ規則。</td></tr>
+    </table>
+    <p class="done">ブラウザ E2E: 左 7 チップが中央線を越え右端手前まで描画 (クリップ無し) / 右チップはティールで右端維持 + ⚠ / run dedup が長い混在列 (clock→Claude→Cost dedup→Codex→Mac→Claude→Codex) で正しく動作。tsc・biome・build クリーン。</p>
+
+    <p class="open">Phase 2 候補 (必要なら): 通常 Edit Layout (<code>wysChip</code>) にも同じ色分け/dedup を適用 / ドロップ位置でのクラスタ内挿入順制御 (現状は末尾 append) / 左のはみ出しと右チップが完全に重なる極端ケースの視認性 / タッチ長押し閾値。</p>
   </body>
 </html>
