@@ -216,6 +216,10 @@ textarea {
   display: inline-flex;
   align-items: center;
   cursor: grab;
+  /* grip 上で始まる縦フリックはブラウザにスクロールを優先させる (body の pan-x pan-y は
+     非継承で grip に届かないため明示)。200ms 静止長押し時のみ SortableJS が drag を arm する
+     ので、リスト並べ替えは保持しつつ、grip に指が乗ったままのスクロールを殺さない。 */
+  touch-action: pan-y;
 }
 .src-caret {
   color: var(--text-dim);
@@ -251,6 +255,8 @@ textarea {
   display: inline-flex;
   align-items: center;
   cursor: grab;
+  /* segment grip も同様に縦スクロールを優先させる (ITEMS 展開時に最下部まで届かない不具合)。 */
+  touch-action: pan-y;
 }
 .metric-row .mname {
   flex: 1;
