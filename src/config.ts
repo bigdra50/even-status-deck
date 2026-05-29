@@ -585,6 +585,17 @@ function normalizeProfileView(p: Profile): void {
   p.view ??= emptyProfileView()
   p.view.groups ??= {}
   if (!Array.isArray(p.view.groupOrder)) p.view.groupOrder = []
+  // groupOrder は (sourceId,groupId) で一意。machineId remap や旧バージョン移行で混入した
+  // 重複を除去する (重複すると同じ group が Items / glass に二重表示される)。最初の出現を残す。
+  const seenRef = new Set<string>()
+  p.view.groupOrder = p.view.groupOrder.filter((r) => {
+    const k = `${r.sourceId} ${r.groupId}`
+    if (seenRef.has(k)) return false
+    seenRef.add(k)
+    return true
+  })
+  // enabledSourceIds も重複除去 (合流/復元で二重 push されうる)。
+  p.enabledSourceIds = [...new Set(p.enabledSourceIds)]
   p.view.glassLayout = normalizeGlassLayout(p.view.glassLayout)
   for (const [, groups] of Object.entries(p.view.groups)) {
     for (const [gid, vg] of Object.entries(groups)) {
@@ -1138,7 +1149,10 @@ export function syncSourceWithStatus(cfg: Config, sourceId: string, status: Stat
     if (!vg) {
       vg = { enabled: true, showDefaultLabel: defaultShowGroupLabel(g.id), segments: {} }
       vgroups[g.id] = vg
-      view.groupOrder.push({ sourceId, groupId: g.id })
+      // groupOrder に同 ref が既にあれば push しない (groups と groupOrder の一時的不整合での二重登録防止)。
+      if (!view.groupOrder.some((r) => r.sourceId === sourceId && r.groupId === g.id)) {
+        view.groupOrder.push({ sourceId, groupId: g.id })
+      }
       changed = true
     }
     for (const seg of g.segments) {
