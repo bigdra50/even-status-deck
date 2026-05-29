@@ -17,6 +17,7 @@ import {
   customLabelId,
   customLabelKey,
   emptyConfig,
+  ensureDefaultServer,
   type GroupRef,
   generateGlassLayout,
   genLabelId,
@@ -1117,10 +1118,7 @@ export async function mountCompanion(el: HTMLElement): Promise<void> {
 
   config = await loadConfig()
   // 初回 (server ソース無し) は同一オリジンを既定の server として登録 (dev-URL / ブラウザ dev)
-  if (!config.sources.some((s) => s.kind === 'server')) {
-    addServer(config, 'Local', location.origin)
-    await saveConfig(config)
-  }
+  if (ensureDefaultServer(config, location.origin)) await saveConfig(config)
   setSources(config.sources)
   startPolling()
   render() // 時刻 (clock) は glass-local タイマーが所有。companion は周期再描画しない
@@ -1129,10 +1127,7 @@ export async function mountCompanion(el: HTMLElement): Promise<void> {
 // bridge 接続後: 永続 config を読み直して store に反映する。
 export async function onCompanionBridgeReady(): Promise<void> {
   config = await loadConfig()
-  if (!config.sources.some((s) => s.kind === 'server')) {
-    addServer(config, 'Local', location.origin)
-    await saveConfig(config)
-  }
+  if (ensureDefaultServer(config, location.origin)) await saveConfig(config)
   setSources(config.sources)
   render()
 }

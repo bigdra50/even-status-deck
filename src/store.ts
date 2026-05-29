@@ -49,7 +49,18 @@ export function setSources(next: SourceDef[]): void {
   // config.sources と同一参照にすると後続の push/mutation で diff が壊れるためクローンする。
   defs = next.map((d) => ({ ...d }))
   const ids = new Set(defs.map((d) => d.id))
+  // 消えたソースは status を捨て、in-flight fetch を abort + revision を進めて遅延応答を無効化する。
+  // (mountCompanion の暫定既定ソースのように、bridge 準備前に開始した fetch が後から
+  //  statuses[id] を zombie 書き込みし、幽霊ソースとして重複描画されるのを防ぐ。)
   for (const id of [...statuses.keys()]) if (!ids.has(id)) statuses.delete(id)
+  const tracked = new Set([...revisions.keys(), ...inflight.keys()])
+  for (const id of tracked) {
+    if (ids.has(id)) continue
+    inflight.get(id)?.abort()
+    inflight.delete(id)
+    revisions.set(id, (revisions.get(id) ?? 0) + 1) // 進行中 fetch の遅延応答を破棄させる
+    sigs.delete(id)
+  }
   for (const def of defs) {
     const p = prev.get(def.id)
     if (!p || p.url !== def.url || p.kind !== def.kind) void refreshSource(def)

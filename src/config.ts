@@ -8,6 +8,9 @@ import { segKey, type VisibilityCond, type VisibilityLeaf } from './visibility'
 // group/segment トグルと並び順を source 名前空間付きで保持する (codex 指摘: 不変ID + structured key)。
 export const CONFIG_VERSION = 3
 export const BUILTIN_SOURCE_ID = 'builtin.local'
+// 暗黙の既定サーバ (同一オリジン) の決定的 ID。起動毎にランダム ID で再追加すると groupOrder が
+// 孤立蓄積するため、固定 ID にして二重 init / 再起動でも同一ソースに収束させる。
+export const LOCAL_SOURCE_ID = 'server.local'
 
 // glass layout の「ラベル chip」を表す予約 segId。items の key が `src|grp|@label` のとき、
 // その group のラベルテキスト (Claude 等) を glass に出す (自動接頭辞は廃止、配置式)。
@@ -214,6 +217,7 @@ function migrate(parsed: Record<string, unknown>): Config {
     // glassLayout を新形式に正規化 (旧 anchor 形式は移行、壊れていれば undefined=自動描画)
     c.glassLayout = normalizeGlassLayout((c as Record<string, unknown>).glassLayout)
     consolidateClock(c) // clock を単一 datetime segment に統合 (旧 time/date を remap、additive)
+    pruneOrphans(c) // sources に無い孤立 groupOrder/groups を掃除 (暗黙サーバ旧ランダム ID の蓄積を修復)
     return c
   }
   const old = parsed as {
@@ -397,12 +401,22 @@ function consolidateClock(c: Config): void {
   )
 }
 
-// 新規 server ソースを不変 ID で追加する。
+// 新規 server ソースを不変 ID で追加する (ユーザー追加。ランダム ID)。
 export function addServer(cfg: Config, label: string, url?: string): SourceDef {
   const def: SourceDef = { id: genSourceId(), kind: 'server', label, url }
   cfg.sources.push(def)
   cfg.groups[def.id] = {}
   return def
+}
+
+// 暗黙の既定サーバ (同一オリジン) を決定的 ID で保証する。server が 1 つも無いときだけ追加する。
+// addServer (ランダム ID) と違い固定 ID なので、bridge 準備前後の二重 init や再起動で再追加されても
+// 同一ソースに収束し、groupOrder/groups が孤立蓄積しない。追加したら true。
+export function ensureDefaultServer(cfg: Config, url: string): boolean {
+  if (cfg.sources.some((s) => s.kind === 'server')) return false
+  cfg.sources.push({ id: LOCAL_SOURCE_ID, kind: 'server', label: 'Local', url })
+  cfg.groups[LOCAL_SOURCE_ID] ??= {}
+  return true
 }
 
 // ソースを削除する (builtin は不可)。group 設定と groupOrder も掃除する。
@@ -411,6 +425,16 @@ export function removeSource(cfg: Config, id: string): void {
   cfg.sources = cfg.sources.filter((s) => s.id !== id)
   delete cfg.groups[id]
   cfg.groupOrder = cfg.groupOrder.filter((r) => r.sourceId !== id)
+}
+
+// sources に存在しない sourceId の groupOrder / groups を掃除する (孤立エントリ除去)。
+// 暗黙サーバの旧ランダム ID 等が groupOrder に孤立蓄積した不整合を、読み込み時に修復する。
+function pruneOrphans(cfg: Config): void {
+  const ids = new Set(cfg.sources.map((s) => s.id))
+  cfg.groupOrder = cfg.groupOrder.filter((r) => ids.has(r.sourceId))
+  for (const sid of Object.keys(cfg.groups)) {
+    if (!ids.has(sid)) delete cfg.groups[sid]
+  }
 }
 
 // status を該当ソースの設定に反映する。新規 group/segment は既定追加 + groupOrder 末尾へ。
