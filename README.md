@@ -44,7 +44,7 @@ companion の「+ サーバーを追加」で URL（loopback / LAN IP）を登�
 ### 標準 provider の取得経路（`server/providers/`）
 
 - Claude: `~/.claude/projects/**/*.jsonl` をローカル集計し cost / msgs を算出（認証不要）。
-  rate-limit %（5h/Weekly 等）は OAuth の非公式エンドポイントに依存するため標準から外し、opt-in の外部 provider に委ねた（[provider を拡張する](#provider-を拡張する) (3)）。
+  rate-limit %（5h/Weekly 等）は OAuth の非公式エンドポイントに依存するため標準から外し、opt-in の外部 provider に委ねた（[provider を拡張する](#provider-を拡張する) (4)）。
 - Codex: `codex app-server` の JSON-RPC `account/rateLimits/read`（`initialize` → `initialized` → ~1.5s 待ち → read）。
 - system: `systeminformation` で CPU / メモリ / バッテリー / ディスク（全 OS）。
 - トークン/認証はサーバー内に留め、`value` には %/集計済みの値だけ載せる。
@@ -105,7 +105,7 @@ print(json.dumps({
 
 `/api/status` と `/api/machine`（§2）を話す常駐サーバーを自分で立て、companion の「+ サーバーを追加」に URL を登録する。(2) との違いは「立ち上げっぱなしの HTTP サーバー」である点。常駐させたい・別マシンに置きたい・既存サービスに生やしたいときに向く。
 
-例: [`eveng2-claude-usage-provider`](https://github.com/bigdra50/eveng2-claude-usage-provider)（Claude の rate-limit % を返す。非公式 API を使うため本体から切り出した opt-in の別 repo）。iPhone bridge（`eveng2-iphone-bridge`）も (3)。
+例: iPhone bridge（`eveng2-iphone-bridge`、別マシン/常駐の source）。Claude の rate-limit % のように本体と同一マシンで「API を叩くだけ」のものは (4) JS plugin の方が軽い。
 
 ### (4) JS plugin（autoload, Vim 流）
 
@@ -125,6 +125,8 @@ export default {
   },
 }
 ```
+
+実例: [`eveng2-claude-usage-provider`](https://github.com/bigdra50/eveng2-claude-usage-provider)（Claude の rate-limit % を返す drop-in プラグイン。非公式 API のため本体から切り出した opt-in の別 repo。`providers/` に 1 ファイル置くだけ）。`group()` がハングしても `/api/status` を止めないよう、fetch には必ずタイムアウトを入れる。
 
 ### サーバー側 config（有効/無効・オプション）
 
