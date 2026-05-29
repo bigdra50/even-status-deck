@@ -159,17 +159,21 @@ export function layoutRowClusters(
 }
 
 // 左右クラスタを 1 行文字列に justify する。実機は単一 TextContainer (content) しか持たないため
-// 中央を space で充填して右クラスタを右端へ寄せる近似 (誤差 ≒ SPACE_W/2)。pretext で px 計測。
+// 中央を space で充填して右クラスタを右端へ寄せる近似。pretext で px 計測。
+// space 数は floor + 安全マージン (space 1 個) で決める。round 切り上げや pretext/実機 LVGL の
+// per-glyph 丸め差で合計が INNER_W を数 px でも超えると、最後の単語が word wrap して行が増え、
+// 10 行を超えた分が 2 ページ目に溢れるため (実機で確認)。floor なら合計 < INNER_W を保証する。
 // - 右が空: 左だけ (従来の左寄せ)。- 左が空: 行頭 space で右寄せ。- 両方: 中央 space は最低 1 個。
 function justifyClusters({ left, right }: RowClusters): string {
   if (!right) return left
   const rightW = getTextWidth(right)
+  const safe = INNER_W - SPACE_W // 右端に space 1 個分の余白を残し、丸め/フォント差での超過を防ぐ
   if (!left) {
-    const pad = Math.max(0, Math.round((INNER_W - rightW) / SPACE_W))
+    const pad = Math.max(0, Math.floor((safe - rightW) / SPACE_W))
     return ' '.repeat(pad) + right
   }
-  const gap = Math.round((INNER_W - getTextWidth(left) - rightW) / SPACE_W)
-  return left + ' '.repeat(Math.max(1, gap)) + right
+  const gap = Math.max(1, Math.floor((safe - getTextWidth(left) - rightW) / SPACE_W))
+  return left + ' '.repeat(gap) + right
 }
 
 // custom layout (固定行) の絶対行レンダー。budget 行ぶん (空行は '' で保持) を返す。
