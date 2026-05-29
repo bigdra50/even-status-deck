@@ -1,4 +1,3 @@
-import { devDiagPlugin } from './dev-diag' // [DIAG] 一時: 停止/白画面の計測。特定後に dev-diag.ts ごと削除。
 import { execFile, spawn } from 'node:child_process'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { cpus, hostname, homedir, loadavg, totalmem } from 'node:os'
@@ -511,5 +510,5 @@ function devApiPlugin() {
 
 export default defineConfig({
   server: { host: true },
-  plugins: [devApiPlugin(), devDiagPlugin()],
+  plugins: [devApiPlugin()],
 })
