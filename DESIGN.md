@@ -146,7 +146,7 @@ Home に集約し、別画面は Source Edit と Profile 管理のみ。
 ```
 Home (縦並び)
  ├ Profile  : プリセット選択(タブ/ドロップダウン) + 追加/複製/削除/リネーム
- ├ Sources  : 接続先リスト（● online/stale/offline + label + URL/Last seen + ⚙）  ← 素材（全 profile 共通）
+ ├ Sources  : 接続先リスト（● + label + URL/Last seen + preset内 ON/OFF + ⚙）  ← 実体は共通 / ON-OFF は profile 固有
  ├ 表示設定 : group をジャンル折りたたみ(既定=閉) + segment トグル + 並べ替え grip   ← active profile を編集
  └ Glass    : プレビュー（最下部、active profile の描画）
       │  Sources の「+」/ ⚙
@@ -160,7 +160,7 @@ Source Edit : 接続先 URL（複数可） + 接続テスト + 「ローカル�
 | Home | Profile 切替 + Sources 管理 + 表示設定(active profile) + プレビュー |
 | Source Edit | 「+」/ ⚙ から。URL 入力（複数経路）と接続テスト。マシン名・machineId・利用可能ツールは接続先から自動取得 |
 
-- Sources は素材なので全 profile 共通。表示設定（可視性・並び）は active profile の `view` を編集する。
+- Sources の接続先実体（URL/machineId）は全 profile 共通。各 source の ON/OFF（fetch 範囲 = `enabledSourceIds`）と表示設定（可視性・並び）は active profile 固有として編集する。OFF の source は fetch せず glass/表示設定から消え、view（並び・可視性）は保持して再 ON / preset 切替で復元する。これが「業務 preset は私用 Mac を fetch しない」を実現する。
 - マシン名は接続先（`/api/machine` の hostname）を自動取得し、手動入力しない。
 - 「Preview」は「設定が glass にどう出るかの確認 + 現値の確認」に限定する。rate limit の深掘り分析は公式アプリ（Claude / ChatGPT）に委ねる。
 - color tokens (light/dark)、FK Grotesk Neue、4/8px グリッド。`#FEF991` は accent のみ、`#3CFA44` は glass 表示のみ（phone UI で使わない）。
