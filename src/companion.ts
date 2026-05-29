@@ -1,5 +1,13 @@
 import Sortable from 'sortablejs'
-import { clockPresetsForSeg, defaultClockFormat, localStatus } from './builtins'
+import {
+  CLOCK_DATE_OPTS,
+  CLOCK_SEG,
+  CLOCK_TIME_OPTS,
+  composeClockFormat,
+  defaultClockFormat,
+  localStatus,
+  parseClockFormat,
+} from './builtins'
 import {
   addServer,
   BUILTIN_GROUP_LABELS,
@@ -144,6 +152,25 @@ function segVisEditor(key: string, sc: SegCfg, seg: Segment): string {
     <div class="vis-conds">${rows}${add}</div>`
 }
 
+// clock (datetime) segment の合成フォーマット UI: Time / Date / 順序 の 3 select。
+// 現在の SegCfg.format (無ければロケール既定) を逆解析して選択状態を復元する。
+function clockFormatControls(key: string, sc: SegCfg): string {
+  const cur = parseClockFormat(sc.format ?? defaultClockFormat())
+  const opt = (o: { format: string; label: string }, selected: string) =>
+    `<option value="${esc(o.format)}" ${o.format === selected ? 'selected' : ''}>${esc(o.label)}</option>`
+  const time = CLOCK_TIME_OPTS.map((o) => opt(o, cur.time)).join('')
+  const date = CLOCK_DATE_OPTS.map((o) => opt(o, cur.date)).join('')
+  const a = `data-key="${key}" data-seg="${esc(sc.id)}"`
+  return `<div class="clock-ctl">
+    <label class="clock-fld">Time<select class="format-select" data-action="clock-time" ${a}>${time}</select></label>
+    <label class="clock-fld">Date<select class="format-select" data-action="clock-date" ${a}>${date}</select></label>
+    <label class="clock-fld">Order<select class="format-select" data-action="clock-order" ${a}>
+      <option value="time" ${cur.order === 'time' ? 'selected' : ''}>Time → Date</option>
+      <option value="date" ${cur.order === 'date' ? 'selected' : ''}>Date → Time</option>
+    </select></label>
+  </div>`
+}
+
 function groupRow(ref: GroupRef): string {
   const g = statusGroup(ref.sourceId, ref.groupId)
   const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
@@ -162,21 +189,13 @@ function groupRow(ref: GroupRef): string {
         .map((sc) => {
           const seg = segById.get(sc.id)
           if (!seg) return ''
-          // clock segment (time/date/datetime) は表示フォーマット dropdown を出す。
-          const presets = isBuiltin && ref.groupId === 'clock' ? clockPresetsForSeg(sc.id) : []
-          const fmtSel = presets.length
-            ? `<select class="format-select" data-action="seg-format" data-key="${key}" data-seg="${esc(sc.id)}">${presets
-                .map((p) => {
-                  const cur = sc.format ?? defaultClockFormat(sc.id)
-                  return `<option value="${esc(p.format)}" ${p.format === cur ? 'selected' : ''}>${esc(p.label)}</option>`
-                })
-                .join('')}</select>`
-            : ''
+          // clock の datetime segment は Time/Date/順序 の合成フォーマット UI を出す。
+          const isClock = isBuiltin && ref.groupId === 'clock' && sc.id === CLOCK_SEG
           return `<div class="metric"><div class="metric-row"><span class="mgrip">${icon('grip', { size: 16 })}</span>
               <span class="mname">${esc(isBuiltin ? (BUILTIN_SEG_LABELS[seg.id] ?? seg.id) : seg.label || seg.id)}</span>
               <span class="mval">${esc(seg.value)}</span>
-              ${fmtSel}
               <button class="tg sm ${sc.enabled ? 'on' : ''}" data-action="toggle-seg" data-key="${key}" data-seg="${esc(sc.id)}"></button></div>
+            ${isClock ? clockFormatControls(key, sc) : ''}
             ${segVisEditor(key, sc, seg)}</div>`
         })
         .join('')}</div>`
@@ -725,16 +744,16 @@ async function onClick(e: MouseEvent): Promise<void> {
 
 // segment 条件エディタ (combinator select / leaf の kind・op・value・hold) の変更を
 // config.groups[*][*].segments[*].visibility に反映する。leaf は data-idx で特定する。
-// change イベントの振り分け: clock フォーマット選択 → onSegFormatChange、それ以外 → onSegVisChange。
+// change イベントの振り分け: clock フォーマット (Time/Date/順序) → onClockFormatChange、それ以外 → onSegVisChange。
 async function onChange(e: Event): Promise<void> {
-  const action = (e.target as HTMLElement).dataset.action
-  if (action === 'seg-format') await onSegFormatChange(e)
+  const action = (e.target as HTMLElement).dataset.action ?? ''
+  if (action.startsWith('clock-')) await onClockFormatChange(e)
   else await onSegVisChange(e)
 }
 
-// clock segment の表示フォーマット (SegCfg.format) を更新。saveConfig が config-changed を
-// dispatch → glass が loadConfig して実機描画にも反映。
-async function onSegFormatChange(e: Event): Promise<void> {
+// clock の Time/Date/順序 select 変更を合成して SegCfg.format に保存。
+// saveConfig が config-changed を dispatch → glass が loadConfig して実機描画にも反映。
+async function onClockFormatChange(e: Event): Promise<void> {
   const t = e.target as HTMLSelectElement
   const key = t.dataset.key
   const segId = t.dataset.seg
@@ -742,7 +761,11 @@ async function onSegFormatChange(e: Event): Promise<void> {
   const ref = parseKey(key)
   const sc = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find((s) => s.id === segId)
   if (!sc) return
-  sc.format = t.value || undefined
+  const cur = parseClockFormat(sc.format ?? defaultClockFormat())
+  if (t.dataset.action === 'clock-time') cur.time = t.value
+  else if (t.dataset.action === 'clock-date') cur.date = t.value
+  else if (t.dataset.action === 'clock-order') cur.order = t.value === 'date' ? 'date' : 'time'
+  sc.format = composeClockFormat(cur.time, cur.date, cur.order) || undefined
   await saveConfig(config)
   render()
 }

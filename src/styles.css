@@ -353,16 +353,30 @@ textarea {
   font-size: var(--fs-sm);
   padding: var(--space-1) var(--space-2);
 }
-/* clock segment のフォーマット選択 (metric 行内、toggle の左) */
+/* clock の合成フォーマット UI (Time/Date/順序) */
+.clock-ctl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+.clock-fld {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .format-select {
-  flex: 0 0 auto;
-  max-width: 44%;
   background: var(--input-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text);
   font-size: var(--fs-sm);
   padding: var(--space-1) var(--space-2);
+  max-width: 100%;
 }
 .vis-num {
   width: 52px;

@@ -8,28 +8,54 @@ import type { Group, Segment, StatusDoc } from './status-types'
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 type DateOrder = 'mdy' | 'dmy' | 'ymd'
 
-// clock segment (time/date/datetime) の表示フォーマットプリセット。
-// format = トークン文字列 (SegCfg.format に直接保存)。width = glass 表示枠 (最大桁数)。
-// kind = どの segment 用か。label = dropdown 表示例。
-export type ClockKind = 'time' | 'date' | 'datetime'
-export type ClockPreset = { kind: ClockKind; format: string; label: string; width: number }
-export const CLOCK_PRESETS: ClockPreset[] = [
-  { kind: 'time', format: 'HH:mm', label: '14:25', width: 5 },
-  { kind: 'time', format: 'h:mm A', label: '2:25 PM', width: 8 },
-  { kind: 'date', format: 'MM-DD', label: '05-29', width: 5 },
-  { kind: 'date', format: 'ddd MM-DD', label: 'Thu 05-29', width: 9 },
-  { kind: 'date', format: 'YYYY-MM-DD', label: '2026-05-29', width: 10 },
-  { kind: 'datetime', format: 'HH:mm ddd MM-DD', label: '14:25 Thu 05-29', width: 15 },
-  { kind: 'datetime', format: 'h:mm A ddd MM-DD', label: '2:25 PM Thu 05-29', width: 18 },
+// clock は単一 segment (id='datetime')。表示は Time 部 + Date 部を合成した 1 つのフォーマット
+// 文字列で表現し SegCfg.format に保存する。Time/Date それぞれ独立に選択 (none で片方のみ)。
+// 例: composeClockFormat('h:mm A','ddd MM-DD','time') = 'h:mm A  ddd MM-DD'。
+export const CLOCK_SEG = 'datetime'
+const CLOCK_SEP = '  ' // Time 部と Date 部の区切り (2 スペース。各部内は単一スペース)
+export type ClockOrder = 'time' | 'date' // どちらを先に出すか
+export type ClockOpt = { format: string; label: string }
+// Time プリセット (秒は glass が分更新のため出さない)。
+export const CLOCK_TIME_OPTS: ClockOpt[] = [
+  { format: '', label: 'Off' },
+  { format: 'HH:mm', label: '14:25 (24h)' },
+  { format: 'h:mm A', label: '2:25 PM (12h)' },
 ]
-const CLOCK_KIND: Record<string, ClockKind> = { time: 'time', date: 'date', datetime: 'datetime' }
+// Date プリセット (区切り / 年 / 月名 / 曜日 / 順序のバリエーション)。
+export const CLOCK_DATE_OPTS: ClockOpt[] = [
+  { format: '', label: 'Off' },
+  { format: 'MM-DD', label: '05-29' },
+  { format: 'MM/DD', label: '05/29' },
+  { format: 'DD-MM', label: '29-05' },
+  { format: 'DD/MM', label: '29/05' },
+  { format: 'ddd MM-DD', label: 'Thu 05-29' },
+  { format: 'MMM DD', label: 'May 29' },
+  { format: 'ddd MMM DD', label: 'Thu May 29' },
+  { format: 'YYYY-MM-DD', label: '2026-05-29' },
+  { format: 'YY/MM/DD', label: '26/05/29' },
+  { format: 'MM/DD/YYYY', label: '05/29/2026' },
+  { format: 'DD/MM/YYYY', label: '29/05/2026' },
+]
 
-export function clockPresetsForSeg(segId: string): ClockPreset[] {
-  const k = CLOCK_KIND[segId]
-  return k ? CLOCK_PRESETS.filter((p) => p.kind === k) : []
+// Time 部 + Date 部 + 順序 → 単一フォーマット文字列。空の部分は省く。
+export function composeClockFormat(time: string, date: string, order: ClockOrder): string {
+  const parts = order === 'date' ? [date, time] : [time, date]
+  return parts.filter(Boolean).join(CLOCK_SEP)
 }
-function clockPreset(format: string): ClockPreset | undefined {
-  return CLOCK_PRESETS.find((p) => p.format === format)
+// 合成フォーマットを Time/Date/順序 に逆解析する (UI 復元用)。':' を含む部分が Time。
+export function parseClockFormat(fmt: string): { time: string; date: string; order: ClockOrder } {
+  const parts = fmt
+    .split(CLOCK_SEP)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  let time = ''
+  let date = ''
+  for (const p of parts) {
+    if (p.includes(':')) time = p
+    else date = p
+  }
+  const order: ClockOrder = parts.length === 2 && !parts[0]?.includes(':') ? 'date' : 'time'
+  return { time, date, order }
 }
 
 // 端末ロケールから 12/24h と日付順を判定する純粋関数 (テスト可能)。
@@ -65,23 +91,26 @@ function pad2(n: number): string {
   return String(n).padStart(2, '0')
 }
 
-// segId のロケール既定フォーマット (SegCfg.format 未設定時)。
-export function defaultClockFormat(segId: string): string {
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+// ロケール既定の合成フォーマット (SegCfg.format 未設定時)。
+export function defaultClockFormat(): string {
   const { hour12, order } = profile()
-  if (segId === 'time') return hour12 ? 'h:mm A' : 'HH:mm'
-  if (segId === 'date') return order === 'ymd' ? 'YYYY-MM-DD' : 'ddd MM-DD'
-  if (segId === 'datetime') return hour12 ? 'h:mm A ddd MM-DD' : 'HH:mm ddd MM-DD'
-  return 'HH:mm'
+  const t = hour12 ? 'h:mm A' : 'HH:mm'
+  const d = order === 'ymd' ? 'YYYY-MM-DD' : 'ddd MM-DD'
+  return composeClockFormat(t, d, 'time')
 }
 
-// フォーマット文字列を現在時刻で展開する。トークン: YYYY/HH(24h)/MM/DD/mm/A(AM-PM)/h(12h)/ddd。
+// フォーマット文字列を現在時刻で展開する。トークン: YYYY/YY/MMM/HH(24h)/MM/DD/mm/A(AM-PM)/h(12h)/ddd。
 // 'h' は常に 12 時間制 (1-12)、'HH' は常に 24 時間制。12/24h はフォーマット側で決まる (ロケール非依存)。
-// ddd (曜日名) は最後に置換する (出力に h/d 等を含むため、単独トークン置換より後)。
+// 接頭辞衝突を避ける順: YYYY→YY, MMM→MM, HH→h, ddd は出力に h/d を含むため最後。
 function formatClock(d: Date, fmt: string): string {
   const h24 = d.getHours()
   const h12 = h24 % 12 || 12
   let s = fmt
   s = s.replaceAll('YYYY', String(d.getFullYear()))
+  s = s.replaceAll('YY', pad2(d.getFullYear() % 100))
+  s = s.replaceAll('MMM', MONTHS[d.getMonth()] ?? '')
   s = s.replaceAll('HH', pad2(h24))
   s = s.replaceAll('MM', pad2(d.getMonth() + 1))
   s = s.replaceAll('DD', pad2(d.getDate()))
@@ -92,17 +121,25 @@ function formatClock(d: Date, fmt: string): string {
   return s
 }
 
-// clock segment を生成する。SegCfg.format があればそれ、無ければロケール既定で整形。
-// widthChars はプリセット幅 (枠確保/省略用)。clock は左寄せ (isNumeric=false)。
-function clockSegment(id: string, now: Date, cfg?: Config): Segment {
-  const fmt = cfg?.groups[BUILTIN_SOURCE_ID]?.clock?.segments.find((s) => s.id === id)?.format
-  const effective = fmt && clockPreset(fmt) ? fmt : defaultClockFormat(id)
+// フォーマットの表示幅 (最大桁数)。等幅近似の枠確保/省略用。2 桁時刻・月名 3 字を含む広めの
+// サンプルで測る (h は 22 時で 2 桁、MMM/ddd は 3 字固定)。
+const WIDE_SAMPLE = new Date(2026, 11, 24, 22, 38)
+function clockFormatWidth(fmt: string): number {
+  return formatClock(WIDE_SAMPLE, fmt).length
+}
+
+// clock segment (単一)。SegCfg.format があればそれ、無ければロケール既定で整形。
+function clockSegment(cfg?: Config): Segment {
+  const stored = cfg?.groups[BUILTIN_SOURCE_ID]?.clock?.segments.find(
+    (s) => s.id === CLOCK_SEG,
+  )?.format
+  const fmt = stored?.length ? stored : defaultClockFormat()
   return {
-    id,
+    id: CLOCK_SEG,
     label: '',
-    value: formatClock(now, effective),
-    defaultEnabled: id !== 'datetime', // datetime は opt-in
-    widthChars: clockPreset(effective)?.width,
+    value: formatClock(new Date(), fmt),
+    defaultEnabled: true,
+    widthChars: clockFormatWidth(fmt),
     isNumeric: false,
   }
 }
@@ -114,15 +151,9 @@ function clockSegment(id: string, now: Date, cfg?: Config): Segment {
 // BUILTIN_GROUP_LABELS / BUILTIN_SEG_LABELS で説明的なラベルに置き換えて表示する
 // (glass は狭いので compact、companion は分かりやすく、を両立する)。
 export function localStatus(config?: Config): StatusDoc {
-  const now = new Date()
   const { level, charging } = getGlassBattery()
-  // clock group: time/date は既定 ON、datetime (結合) は opt-in。各 segment は SegCfg.format に従う。
-  const clock: Segment[] = [
-    clockSegment('time', now, config),
-    clockSegment('date', now, config),
-    clockSegment('datetime', now, config),
-  ]
-  const groups: Group[] = [{ id: 'clock', label: '', segments: clock }]
+  // clock group は単一 segment (Time/Date を合成した 1 つ)。SegCfg.format で表示を制御。
+  const groups: Group[] = [{ id: 'clock', label: '', segments: [clockSegment(config)] }]
   if (level != null) {
     const battery: Segment[] = [
       {

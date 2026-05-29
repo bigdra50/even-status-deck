@@ -204,6 +204,7 @@ function migrate(parsed: Record<string, unknown>): Config {
     normalizeVisibilityAll(c) // 旧 single-cond 形式の visibility を複合形式へ正規化 (additive、bump 不要)
     // glassLayout を新形式に正規化 (旧 anchor 形式は移行、壊れていれば undefined=自動描画)
     c.glassLayout = normalizeGlassLayout((c as Record<string, unknown>).glassLayout)
+    consolidateClock(c) // clock を単一 datetime segment に統合 (旧 time/date を remap、additive)
     return c
   }
   const old = parsed as {
@@ -339,6 +340,42 @@ function normalizeGlassLayout(x: unknown): GlassLayout | undefined {
   let j = MAX_ROWS - 1
   for (let k = bottom.length - 1; k >= 0 && j >= i; k--) rows[j--] = bottom[k]
   return { rows, customLabels }
+}
+
+// clock を単一 datetime segment に統合する (旧 time/date を廃止)。同バージョン additive 移行:
+// SegCfg から time/date を除去し datetime を有効化、glassLayout の旧キーを datetime へ remap (重複は1つに)。
+function consolidateClock(c: Config): void {
+  const clock = c.groups[BUILTIN_SOURCE_ID]?.clock
+  if (clock) {
+    const timeSeg = clock.segments.find((s) => s.id === 'time')
+    const dateSeg = clock.segments.find((s) => s.id === 'date')
+    const dt = clock.segments.find((s) => s.id === 'datetime')
+    if (!dt) {
+      // 旧 time/date を 1 つの datetime に統合: format を合成 (区切り 2 スペース)、enabled を継承。
+      const fmt = [timeSeg?.format ?? '', dateSeg?.format ?? ''].filter(Boolean).join('  ')
+      const enabled = timeSeg || dateSeg ? !!(timeSeg?.enabled || dateSeg?.enabled) : true
+      const seg: SegCfg = { id: 'datetime', enabled }
+      if (fmt) seg.format = fmt
+      clock.segments.push(seg)
+    }
+    // 既存 datetime は format/enabled をそのまま保持 (上書きしない)
+    clock.segments = clock.segments.filter((s) => s.id !== 'time' && s.id !== 'date')
+  }
+  const lay = c.glassLayout
+  if (!lay) return
+  const oldKeys = new Set([`${BUILTIN_SOURCE_ID}|clock|time`, `${BUILTIN_SOURCE_ID}|clock|date`])
+  const dtKey = `${BUILTIN_SOURCE_ID}|clock|datetime`
+  let seen = false // datetime は 1 箇所のみ (旧 time/date が別行にあっても先頭へ集約)
+  lay.rows = lay.rows.map((row) =>
+    row.flatMap((k) => {
+      if (oldKeys.has(k) || k === dtKey) {
+        if (seen) return []
+        seen = true
+        return [dtKey]
+      }
+      return [k]
+    }),
+  )
 }
 
 // 新規 server ソースを不変 ID で追加する。

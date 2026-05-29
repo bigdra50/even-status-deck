@@ -546,5 +546,20 @@
     <p class="done">検証 (ブラウザ): clock dropdown (time/date/datetime・正しいプリセット) / format 変更→Items 値+preview 即追従 / <strong>12h バグ修正</strong> (h トークンが h24 を使っていた→常に h12 に) / datetime 行追加 / Customize で全 chip が整形済値表示 / overflow 誤検知なし / lint・build クリーン。</p>
     <p class="done">敵対的レビュー (26 エージェント, 23 指摘→検証で 1 件のみ確定): <code>rowOverflow</code> が無効 segment (SegCfg.enabled=false) をスキップせず幅を過大評価 (rowText は除外)。行に置いた後トグル OFF で再現。修正済 (gc から SegCfg を引き enabled チェック)。他 22 件は誤検知 (formatClock トークン順序・循環依存・統合経路の健全性を確認)。</p>
     <p class="open">実機確認待ち: widthChars プリセット値が SDK 等幅フォント (27px) の実枠と整合するか / pad 右寄せ・<code>…</code> 省略の見た目 / overflow 閾値 50 の妥当性 / format 選択後 glass-local タイマー次 tick で実機反映。ブラウザは bridge 無しで reload すると選択リセット (memory のみ) = dev 想定挙動。</p>
+    <hr>
+    <h2 class="done">clock 完全統合 (Time/Date → 単一 datetime segment, 合成フォーマット) [ユーザー選択]</h2>
+    <p>ユーザー要望: 日付/時刻形式を自由に選べるようにし time/date を 1 segment に統合 (IBM 形式リファレンス参照)。AskUserQuestion で『完全統合 (Time/Date 廃止)』を選択。gpt-5.5 は『2-dropdown 合成 UX』を支持しつつ time/date 完全削除には慎重 (別行配置喪失・移行データ損失) だったが、ユーザー判断を優先。</p>
+    <table>
+      <tr><th>項目</th><th>実装</th></tr>
+      <tr><td>モデル</td><td>clock group は<strong>単一 segment</strong> (<code>CLOCK_SEG='datetime'</code>)。表示 = Time 部 + Date 部を合成した 1 フォーマット文字列 (<code>SegCfg.format</code>, 区切り 2 スペース)。</td></tr>
+      <tr><td>合成/逆解析</td><td><code>composeClockFormat(time,date,order)</code> / <code>parseClockFormat(fmt)</code> (':' を含む部分=Time)。Time/Date 各 Off で片方のみ。順序トグル。</td></tr>
+      <tr><td>プリセット</td><td>Time: Off/<code>HH:mm</code>/<code>h:mm A</code> (秒は分更新 glass のため非対応)。Date: Off/<code>MM-DD</code>/<code>MM/DD</code>/<code>DD-MM</code>/<code>DD/MM</code>/<code>ddd MM-DD</code>/<code>MMM DD</code>/<code>ddd MMM DD</code>/<code>YYYY-MM-DD</code>/<code>YY/MM/DD</code>/<code>MM/DD/YYYY</code>/<code>DD/MM/YYYY</code>。</td></tr>
+      <tr><td>トークン拡張</td><td><code>formatClock</code> に <code>YY</code>(2桁年)/<code>MMM</code>(月名) を追加。置換順で接頭辞衝突回避 (YYYY→YY, MMM→MM, HH→h, ddd 最後)。</td></tr>
+      <tr><td>UI</td><td>companion <code>clockFormatControls</code>: Time/Date/Order の 3 select。<code>onChange</code> が <code>clock-*</code>→<code>onClockFormatChange</code> で再合成して保存。</td></tr>
+      <tr><td>移行</td><td><code>consolidateClock(c)</code> (同 v3 additive, bump 無): SegCfg の time/date を除去し datetime 有効化。glassLayout の <code>|clock|time</code>/<code>|date</code>/旧 datetime を単一 dtKey へ remap (全行通じ 1 つに集約)。別行配置は喪失 (ユーザー承知)。</td></tr>
+      <tr><td>widthChars</td><td>選択フォーマットの最大長を <code>clockFormatWidth(WIDE_SAMPLE)</code> で算出。</td></tr>
+    </table>
+    <p class="done">検証 (ブラウザ): clock 1 segment 化 / Time-Date-Order の合成 (<code>1:32 PM  Fri May 29</code>) / 順序入替 / Time Off→日付のみ / Date Off→時刻のみ / MMM 月名 / 12h / parse 往復 / preview 追従 / lint・build クリーン。</p>
+    <p class="done">敵対的レビュー (30 エージェント, 確定 15 = 実バグ 2 + 健全確認 12 + 設計指摘 1): (1) <code>consolidateClock</code> が旧 time/date の format を datetime に引き継がず黙って消える → 旧 format を合成 (区切り 2 スペース) して継承。(2) else 分岐が datetime.enabled を毎ロード true に上書きし OFF 選択を破棄 → 上書き廃止、新規作成時のみ enabled を旧 time/date から継承 (両 OFF は OFF 維持)。round-trip/UI 復元/onChange routing/esc/CSS/widthChars 等 12 件は健全と確認。</p>
   </body>
 </html>
