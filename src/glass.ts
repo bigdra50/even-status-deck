@@ -7,7 +7,7 @@ import {
   TextContainerUpgrade,
 } from '@evenrealities/even_hub_sdk'
 import { loadBatteryLog, recordBatteryLevel, setBatteryBridge } from './battery'
-import { localStatus } from './builtins'
+import { clockShowsSeconds, localStatus } from './builtins'
 import { BUILTIN_SOURCE_ID, emptyConfig, loadConfig, syncSourceWithStatus } from './config'
 import { getGlassBattery, setGlassBattery } from './device-state'
 import {
@@ -42,6 +42,7 @@ let idx = 0
 let lastClickAt = 0
 let deviceUnsub: (() => void) | null = null
 let storeUnsub: (() => void) | null = null
+let eventUnsub: (() => void) | null = null // onEvenHubEvent の解除関数 (cleanup で確実に外す)
 let glassesSn = '' // getDeviceInfo の sn。status 更新が他デバイス(ring 等)か判別する
 let refreshBusy = false // bridge 書き込みを直列化 (BLE 飽和でグラス切断するのを防ぐ)
 let refreshPending = false
@@ -108,11 +109,18 @@ function glassTick(): void {
 function scheduleGlassClock(): void {
   if (glassClock) clearTimeout(glassClock)
   const now = new Date()
-  const ms = (60 - now.getSeconds()) * 1000 - now.getMilliseconds()
+  // 秒表示フォーマットなら次の秒境界、そうでなければ次の分境界に合わせる。
+  // 秒表示時のみ毎秒 tick (それ以外は従来の毎分)。同分/同秒の再 arm は refresh の
+  // content-diff が BLE 送信を抑制するので、無駄な textContainerUpgrade は起きない。
+  const ms = clockShowsSeconds(data.config)
+    ? 1000 - now.getMilliseconds()
+    : (60 - now.getSeconds()) * 1000 - now.getMilliseconds()
   glassClock = setTimeout(glassTick, ms)
 }
 
 function cleanup(): void {
+  eventUnsub?.()
+  eventUnsub = null
   deviceUnsub?.()
   deviceUnsub = null
   storeUnsub?.()
@@ -121,9 +129,15 @@ function cleanup(): void {
     clearTimeout(glassClock)
     glassClock = null
   }
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('toolbar:config-changed', onConfigChangedEvent)
+    window.removeEventListener('beforeunload', cleanup)
+  }
   if (gbridge) void stopImu(gbridge)
   resetVisibility() // transient 状態 + wake タイマーを破棄
   deactivateKeepAlive()
+  // exit 後に onStoreUpdate/onConfigChanged/refresh が bridge 書込を復活させないよう無効化。
+  gbridge = null
 }
 
 // config.imu に従い IMU を起動/停止する (enable アダプタ)。初期化時と config 変更時の両方から呼ぶ。
@@ -235,6 +249,9 @@ async function onConfigChanged(): Promise<void> {
   refresh()
 }
 
+// window listener は名前付き参照で登録し、cleanup で確実に removeEventListener する。
+const onConfigChangedEvent = (): void => void onConfigChanged()
+
 export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   gbridge = bridge
   activateKeepAlive() // phone ロック / バックグラウンドでも WebView を生かす
@@ -265,10 +282,10 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
     new CreateStartUpPageContainer({ containerTotalNum: 1, textObject: [text] }),
   )
 
-  bridge.onEvenHubEvent(onEvent)
+  eventUnsub = bridge.onEvenHubEvent(onEvent)
   storeUnsub = subscribe(onStoreUpdate)
   if (typeof window !== 'undefined') {
-    window.addEventListener('toolbar:config-changed', () => void onConfigChanged())
+    window.addEventListener('toolbar:config-changed', onConfigChangedEvent)
     window.addEventListener('beforeunload', cleanup)
   }
 

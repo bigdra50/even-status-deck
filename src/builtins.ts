@@ -15,11 +15,14 @@ export const CLOCK_SEG = 'datetime'
 const CLOCK_SEP = '  ' // Time 部と Date 部の区切り (2 スペース。各部内は単一スペース)
 export type ClockOrder = 'time' | 'date' // どちらを先に出すか
 export type ClockOpt = { format: string; label: string }
-// Time プリセット (秒は glass が分更新のため出さない)。
+// Time プリセット。秒付き (HH:mm:ss) を選ぶと glass tick が毎秒になる
+// (scheduleGlassClock が clockShowsSeconds で粒度を切替。content-diff/store 非経由は維持)。
 export const CLOCK_TIME_OPTS: ClockOpt[] = [
   { format: '', label: 'Off' },
   { format: 'HH:mm', label: '14:25 (24h)' },
+  { format: 'HH:mm:ss', label: '14:25:03 (24h, sec)' },
   { format: 'h:mm A', label: '2:25 PM (12h)' },
+  { format: 'h:mm:ss A', label: '2:25:03 PM (12h, sec)' },
 ]
 // Date プリセット (区切り / 年 / 月名 / 曜日 / 順序のバリエーション)。
 export const CLOCK_DATE_OPTS: ClockOpt[] = [
@@ -101,9 +104,10 @@ export function defaultClockFormat(): string {
   return composeClockFormat(t, d, 'time')
 }
 
-// フォーマット文字列を現在時刻で展開する。トークン: YYYY/YY/MMM/HH(24h)/MM/DD/mm/A(AM-PM)/h(12h)/ddd。
+// フォーマット文字列を現在時刻で展開する。トークン: YYYY/YY/MMM/HH(24h)/MM/DD/mm/ss/A(AM-PM)/h(12h)/ddd。
 // 'h' は常に 12 時間制 (1-12)、'HH' は常に 24 時間制。12/24h はフォーマット側で決まる (ロケール非依存)。
 // 接頭辞衝突を避ける順: YYYY→YY, MMM→MM, HH→h, ddd は出力に h/d を含むため最後。
+// ss は小文字 s のみで他トークンの出力 (月名/曜日/AM-PM) に現れないため位置は自由 (mm の後)。
 function formatClock(d: Date, fmt: string): string {
   const h24 = d.getHours()
   const h12 = h24 % 12 || 12
@@ -115,6 +119,7 @@ function formatClock(d: Date, fmt: string): string {
   s = s.replaceAll('MM', pad2(d.getMonth() + 1))
   s = s.replaceAll('DD', pad2(d.getDate()))
   s = s.replaceAll('mm', pad2(d.getMinutes()))
+  s = s.replaceAll('ss', pad2(d.getSeconds()))
   s = s.replaceAll('A', h24 < 12 ? 'AM' : 'PM')
   s = s.replaceAll('h', String(h12))
   s = s.replaceAll('ddd', WEEKDAYS[d.getDay()] ?? '')
@@ -126,6 +131,16 @@ function formatClock(d: Date, fmt: string): string {
 const WIDE_SAMPLE = new Date(2026, 11, 24, 22, 38)
 function clockFormatWidth(fmt: string): number {
   return formatClock(WIDE_SAMPLE, fmt).length
+}
+
+// clock segment が秒トークン (ss) を含むか。glass tick の粒度判定に使う (glass.ts)。
+// format 未設定はロケール既定 (秒なし) を見るので false。
+export function clockShowsSeconds(cfg?: Config): boolean {
+  const stored = cfg?.groups[BUILTIN_SOURCE_ID]?.clock?.segments.find(
+    (s) => s.id === CLOCK_SEG,
+  )?.format
+  const fmt = stored?.length ? stored : defaultClockFormat()
+  return fmt.includes('ss')
 }
 
 // clock segment (単一)。SegCfg.format があればそれ、無ければロケール既定で整形。
