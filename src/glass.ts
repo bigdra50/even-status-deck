@@ -21,7 +21,12 @@ import {
 } from './glass-render'
 import { feedImuSample, isImuStarted, setImuConfig, startImu, stopImu } from './imu'
 import { activateKeepAlive, deactivateKeepAlive } from './keep-alive'
-import { getAllStatuses, refreshBuiltins, refreshAll as storeRefresh, subscribe } from './store'
+import {
+  getRenderableStatuses,
+  refreshBuiltins,
+  refreshAll as storeRefresh,
+  subscribe,
+} from './store'
 import { computeVisible, resetVisibility, type VisibleMap } from './visibility'
 
 // glass (G2 576×288) の描画。複数ソースの status は共有 store が保持し、glass は購読して
@@ -231,7 +236,7 @@ function syncAll(): void {
 }
 
 function onStoreUpdate(): void {
-  data.statuses = getAllStatuses()
+  data.statuses = getRenderableStatuses() // offline の server source は除外 (古い値=嘘を出さない)
   data.statuses[BUILTIN_SOURCE_ID] = localStatus(data.config) // poll/電池 notify 時も時刻を最新に保つ
   syncAll()
   visible = computeVisible(data.config, data.statuses)
@@ -258,7 +263,7 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   data.config = await loadConfig()
   setBatteryBridge(bridge)
   await loadBatteryLog() // 消耗レートの永続ログを復元
-  data.statuses = getAllStatuses() // store が既に取得済みなら反映 (companion が setSources 済み)
+  data.statuses = getRenderableStatuses() // store が既に取得済みなら反映 (offline は除外)
   data.statuses[BUILTIN_SOURCE_ID] = localStatus(data.config) // 時刻 HUD を初期表示
   syncAll()
   visible = computeVisible(data.config, data.statuses)

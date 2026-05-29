@@ -42,7 +42,16 @@ import {
 } from './glass-render'
 import { icon } from './icons'
 import type { Group, Segment } from './status-types'
-import { getAllStatuses, getSourceStatus, setSources, startPolling, subscribe } from './store'
+import {
+  getAllStatuses,
+  getLastSuccessAt,
+  getRenderableStatuses,
+  getSourceHealth,
+  getSourceStatus,
+  setSources,
+  startPolling,
+  subscribe,
+} from './store'
 import { computeVisible, segKey, type VisibilityLeaf } from './visibility'
 
 // 1 segment が持てる条件 leaf の上限 (UI が破綻しない緩い上限)。
@@ -66,7 +75,11 @@ let layoutEditing = false
 // builtin (clock/g2) は config の format/widthChars を反映した live 値で上書きする
 // (store の builtin は config 非依存の既定値なので、プレビュー/Items を選択に追従させる)。
 function glassData(): GlassData {
-  return { config, statuses: { ...getAllStatuses(), [BUILTIN_SOURCE_ID]: localStatus(config) } }
+  // glass/preview は offline source を除いた renderable を使う (実機同様に古い値=嘘を出さない)。
+  return {
+    config,
+    statuses: { ...getRenderableStatuses(), [BUILTIN_SOURCE_ID]: localStatus(config) },
+  }
 }
 
 function statusGroup(sourceId: string, groupId: string): Group | undefined {
@@ -88,7 +101,7 @@ function syncAll(): boolean {
 // custom (glassLayout あり): 固定行を絶対位置で描画 (空行も保持。上詰め/下詰めは無い)。
 // auto (未カスタマイズ): 従来の group=1行 + top/bottom 詰め。glass には操作ヒントを出さない。
 function glassPreviewHtml(): string {
-  const visible = computeVisible(config, getAllStatuses())
+  const visible = computeVisible(config, getRenderableStatuses())
   const d = glassData()
   const grow = (l: string) => `<span class="grow">${l ? esc(l) : '&nbsp;'}</span>`
   if (config.glassLayout) {
@@ -114,9 +127,16 @@ function visibleRefs(): GroupRef[] {
 // 表示項目リストの構成シグネチャ (順序込み)。変化したら項目リストを再描画する。
 let lastVisibleSig = ''
 function visibleSig(): string {
-  return visibleRefs()
+  // group 構成に加え source の鮮度も含める。health 遷移 (online/stale/offline) でも
+  // conn-dot と glass preview を再描画するため (offline で preview から group が消える)。
+  const refs = visibleRefs()
     .map((r) => `${r.sourceId}:${r.groupId}`)
     .join('|')
+  const health = config.sources
+    .filter((s) => s.kind === 'server')
+    .map((s) => `${s.id}=${getSourceHealth(s.id)}`)
+    .join(',')
+  return `${refs}#${health}`
 }
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -245,11 +265,24 @@ function sourceRow(s: { id: string; kind: string; label: string; url?: string })
     return `<div class="src"><div class="src-head"><span class="conn-dot"></span>
       <span class="src-name">${esc(s.label)}</span><span class="src-note">Built-in</span></div></div>`
   }
-  const online = getSourceStatus(s.id) != null
-  return `<div class="src"><div class="src-head"><span class="conn-dot ${online ? '' : 'off'}"></span>
+  // 切断検出を反映: online=緑 / stale=琥珀 (瞬断中) / offline=灰 + "Last seen…"。
+  const health = getSourceHealth(s.id)
+  const dotCls = health === 'online' ? '' : health === 'stale' ? 'stale' : 'off'
+  const note = health === 'offline' ? lastSeenText(s.id) : (s.url ?? 'Not set')
+  return `<div class="src"><div class="src-head"><span class="conn-dot ${dotCls}"></span>
     <span class="src-name">${esc(s.label)}</span>
-    <span class="src-note">${esc(s.url ?? 'Not set')}</span>
+    <span class="src-note">${esc(note)}</span>
     <button class="gear-btn" data-action="edit-source" data-src="${esc(s.id)}" title="Edit" aria-label="Edit">${icon('settings', { size: 18 })}</button></div></div>`
+}
+
+// offline source の最終接続時刻を相対表記する ("Last seen 3m ago")。未接続は "Not connected"。
+function lastSeenText(id: string): string {
+  const at = getLastSuccessAt(id)
+  if (at == null) return 'Not connected'
+  const m = Math.floor((Date.now() - at) / 60_000)
+  if (m < 1) return 'Last seen just now'
+  if (m < 60) return `Last seen ${m}m ago`
+  return `Last seen ${Math.floor(m / 60)}h ago`
 }
 
 // ── Glass layout (表示レシピ。group=素材 とは独立した行配置) ──

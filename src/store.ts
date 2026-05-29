@@ -15,6 +15,12 @@ const inflight = new Map<string, AbortController>()
 const listeners = new Set<Listener>()
 let pollTimer: ReturnType<typeof setInterval> | null = null
 const sigs = new Map<string, string>() // sourceId -> 直近 status の内容シグネチャ (無変化 poll の notify 抑制)
+const lastSuccessAt = new Map<string, number>() // sourceId -> 直近成功時刻 (Last seen 表示 + 鮮度)
+const failCount = new Map<string, number>() // sourceId -> 連続失敗回数 (0=健全 / 1..RETRY_MAX=stale / >RETRY_MAX=offline)
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>() // 失敗時の短期 retry
+// 失敗時の短期 retry backoff。瞬断は retry で吸収し、全滅 (~70s) で offline 確定。
+const RETRY_BACKOFF_MS = [10_000, 20_000, 40_000]
+const RETRY_MAX = RETRY_BACKOFF_MS.length
 
 function notify(): void {
   for (const l of listeners) l()
@@ -42,6 +48,54 @@ export function getAllStatuses(): Record<string, StatusDoc | null> {
   return out
 }
 
+// source の鮮度。server のみ判定し builtin は常に online。
+// online=直近成功 / stale=失敗中だが retry 継続 (瞬断吸収) / offline=retry 尽きた (切断確定)。
+export function getSourceHealth(id: string): 'online' | 'stale' | 'offline' {
+  if (defs.find((d) => d.id === id)?.kind === 'builtin') return 'online'
+  const n = failCount.get(id) ?? 0
+  if (n > RETRY_MAX) return 'offline'
+  if (n > 0) return 'stale'
+  return statuses.get(id) ? 'online' : 'offline'
+}
+
+// 直近成功時刻 (companion の "Last seen Xm ago" 表示用)。未成功は null。
+export function getLastSuccessAt(id: string): number | null {
+  return lastSuccessAt.get(id) ?? null
+}
+
+// 描画用 status: offline の server source は除外 (null) し、glass/preview に古い値=嘘を出さない。
+// online/stale は保持値をそのまま返す (stale は瞬断中の表示維持)。
+export function getRenderableStatuses(): Record<string, StatusDoc | null> {
+  const out: Record<string, StatusDoc | null> = {}
+  for (const [id, s] of statuses) out[id] = getSourceHealth(id) === 'offline' ? null : s
+  return out
+}
+
+function clearRetry(id: string): void {
+  const t = retryTimers.get(id)
+  if (t) {
+    clearTimeout(t)
+    retryTimers.delete(id)
+  }
+}
+
+// 失敗回数に応じた backoff で retry を 1 回仕込む (stale 窓 1..RETRY_MAX の間のみ)。
+function scheduleRetry(def: SourceDef): void {
+  const n = failCount.get(def.id) ?? 0
+  if (n < 1 || n > RETRY_MAX) return
+  clearRetry(def.id)
+  retryTimers.set(
+    def.id,
+    setTimeout(
+      () => {
+        retryTimers.delete(def.id)
+        void refreshSource(def)
+      },
+      RETRY_BACKOFF_MS[n - 1],
+    ),
+  )
+}
+
 // ソース一覧を設定する (companion が config から渡す)。
 // 変更/新規ソースだけ取得し、未変更は再 fetch しない (無駄な abort/取得を防ぐ)。消えたソースは掃除。
 export function setSources(next: SourceDef[]): void {
@@ -61,9 +115,24 @@ export function setSources(next: SourceDef[]): void {
     revisions.set(id, (revisions.get(id) ?? 0) + 1) // 進行中 fetch の遅延応答を破棄させる
     sigs.delete(id)
   }
+  // 消えた source の鮮度状態 + retry を掃除する。
+  for (const id of [...failCount.keys(), ...retryTimers.keys(), ...lastSuccessAt.keys()]) {
+    if (ids.has(id)) continue
+    clearRetry(id)
+    failCount.delete(id)
+    lastSuccessAt.delete(id)
+  }
   for (const def of defs) {
     const p = prev.get(def.id)
-    if (!p || p.url !== def.url || p.kind !== def.kind) void refreshSource(def)
+    if (!p || p.url !== def.url || p.kind !== def.kind) {
+      // URL/種別が変わった source は旧エンドポイントの鮮度を引き継がない。
+      if (p) {
+        clearRetry(def.id)
+        failCount.delete(def.id)
+        lastSuccessAt.delete(def.id)
+      }
+      void refreshSource(def)
+    }
   }
 }
 
@@ -92,12 +161,25 @@ async function refreshSource(def: SourceDef): Promise<void> {
   const next = await fetchStatusFrom(def.url, ctl.signal)
   if (rev !== revisions.get(def.id)) return // 遅延応答は破棄
   if (next) {
-    statuses.set(def.id, next) // 失敗 (null) 時は直近成功を stale 保持
+    const wasUnhealthy = (failCount.get(def.id) ?? 0) > 0
+    statuses.set(def.id, next)
+    lastSuccessAt.set(def.id, Date.now())
+    failCount.set(def.id, 0)
+    clearRetry(def.id)
     const sig = statusSig(next)
-    if (sigs.get(def.id) === sig) return // 内容同一: 値は更新したが notify しない (毎 poll の集約 churn 抑制)
+    const sigChanged = sigs.get(def.id) !== sig
     sigs.set(def.id, sig)
-    notify()
+    // 値変化 or offline/stale からの復帰で再描画 (それ以外の同値 poll は churn 抑制で無通知)。
+    if (sigChanged || wasUnhealthy) notify()
+    return
   }
+  // 失敗: 直近成功を stale 保持。retry を重ね、尽きたら offline 確定。
+  const n = (failCount.get(def.id) ?? 0) + 1
+  failCount.set(def.id, n)
+  if (n <= RETRY_MAX) scheduleRetry(def)
+  // health 遷移時のみ notify: online->stale (n=1) / stale->offline (n=RETRY_MAX+1)。
+  // 中間 retry 失敗 (n=2..RETRY_MAX) は health 不変なので無通知で churn 抑制。
+  if (n === 1 || n === RETRY_MAX + 1) notify()
 }
 
 export async function refreshAll(): Promise<void> {
@@ -129,4 +211,5 @@ export function startPolling(intervalMs = 60_000): void {
 export function stop(): void {
   if (pollTimer) clearInterval(pollTimer)
   pollTimer = null
+  for (const id of [...retryTimers.keys()]) clearRetry(id)
 }

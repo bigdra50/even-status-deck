@@ -158,6 +158,11 @@ textarea {
   background: var(--text-dim);
   box-shadow: none;
 }
+/* stale: 瞬断中 (retry 継続)。琥珀で「古い値かも」を示す。offline=灰 とも online=緑 とも区別。 */
+.conn-dot.stale {
+  background: #e0a458;
+  box-shadow: 0 0 6px rgba(224, 164, 88, 0.75);
+}
 .machine-select {
   flex: 1;
   background: var(--input-bg);
