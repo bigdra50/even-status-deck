@@ -34,7 +34,7 @@ export function genLabelId(): string {
 // フォールバックしない。glass は builtins.ts の短縮ラベルを使う。
 export const BUILTIN_GROUP_LABELS: Record<string, string> = {
   clock: 'Clock',
-  g2: 'G2 Battery',
+  g2: 'G2', // segment 'Bat' と重複しないよう短縮 ("G2 Bat 82%")
 }
 export const BUILTIN_SEG_LABELS: Record<string, string> = {
   time: 'Time',
