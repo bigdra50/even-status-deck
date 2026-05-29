@@ -1,18 +1,28 @@
 # $XDG_CONFIG_HOME/eveng2-toolbar/config.toml にコピー
 # (既定 ~/.config/eveng2-toolbar/config.toml)。config.json でも可。
 #
-# provider の有効/無効とオプションを指定する。
+# server が「どの provider を計算・送信するか」と provider オプションを指定する。
 # - 既定はすべて有効。ここに書いた provider だけ設定が上書きされる。
-# - 毎 poll 再読込されるのでトグルは dev server 再起動なしで反映される。
+# - 毎 poll 再読込されるので変更は再起動なしで反映される (config は 3s キャッシュ)。
 # - enabled = false にすると、その provider は計算も送信もされない (グラスにも出ない)。
+# - port は省略可 (既定 8723 / 環境変数 EVENG2_PORT)。
 
+# --- 標準 provider (builtin) の有効/無効 ---
 [providers.codex]
-enabled = false          # codex を止める (app-server 起動の ~3s を省ける)
+enabled = false          # codex を止める (app-server 起動の ~数秒を省ける)
 
-[providers.mac]
-enabled = true
+[providers.system]
+enabled = true           # CPU / メモリ / バッテリー / ディスク (systeminformation)
 
-# プラグイン provider にオプションを渡せる (group(ctx) で ctx.options として受け取る)
+# --- (4) JS plugin provider にオプションを渡す (group(ctx) で ctx.options として受け取る) ---
 [providers.example]
 enabled = true
-label = "My Example"     # 上の examples/provider.example.ts が ctx.options.label を読む
+label = "My Example"     # examples/provider.example.ts が ctx.options.label を読む
+
+# --- (2) subprocess provider を登録する (任意言語の外部コマンド) ---
+# command を書いた時点で有効。args は ${configDir} 展開のみ・絶対パス必須。
+[providers.weather]
+command = "python3"
+args = ["${configDir}/providers/weather.py"]   # examples/subprocess-provider.example.py
+timeoutMs = 1000
+ttlMs = 30000
