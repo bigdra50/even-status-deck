@@ -3,6 +3,7 @@ import {
   BUILTIN_SOURCE_ID,
   type Config,
   customLabelId,
+  defaultShowGroupLabel,
   type GroupCfg,
   type GroupRef,
   isCustomLabelKey,
@@ -63,22 +64,29 @@ function groupLabelText(d: GlassData, sourceId: string, groupId: string): string
   )
 }
 
-// items を解決して行文字列を連結する。glass に出るのは置いた要素だけ (自動接頭辞は無い)。
-// LABEL_SEG の要素は group ラベルテキスト、それ以外は segment 値 (enabled/表示条件/status でフィルタ)。
+// group が default-label (group 名の前置) を出すか。未設定は groupId 既定 (clock=false/他=true)。
+function showsGroupLabel(gcfg: GroupCfg, groupId: string): boolean {
+  return gcfg.showDefaultLabel ?? defaultShowGroupLabel(groupId)
+}
+
+// items を解決して行文字列を連結する。各 segment は値 (segLabel value) を出し、group の
+// default-label が ON なら group 名を前置する。隣接する同 group の run では先頭 1 回だけ
+// (dedup)。custom テキストラベルは独立要素で run を切る。enabled/表示条件/status でフィルタ。
 function rowText(items: string[], d: GlassData, visible?: VisibleMap): string {
   const parts: string[] = []
+  let prevGroup: string | null = null // 直前に出力した segment の groupId (custom label / 行頭で null)
   for (const key of items) {
     if (isCustomLabelKey(key)) {
       const text = d.config.glassLayout?.customLabels[customLabelId(key)]?.text
-      if (text) parts.push(text) // ユーザー定義の自由テキストラベル
+      if (text) {
+        parts.push(text) // ユーザー定義の自由テキストラベル
+        prevGroup = null // run を切る (後続の同 group はラベル再表示)
+      }
       continue
     }
     const [sourceId, groupId, segId] = key.split('|')
     if (!sourceId || !groupId || !segId) continue
-    if (segId === LABEL_SEG) {
-      parts.push(groupLabelText(d, sourceId, groupId)) // 配置式 group ラベル
-      continue
-    }
+    if (segId === LABEL_SEG) continue // 旧 @label 配置 chip は廃止 (migration で除去済)
     const gcfg = d.config.groups[sourceId]?.[groupId]
     if (!gcfg?.enabled) continue // group 無効
     const sc = gcfg.segments.find((s) => s.id === segId)
@@ -86,7 +94,15 @@ function rowText(items: string[], d: GlassData, visible?: VisibleMap): string {
     if (!isVisible(visible, key)) continue // 表示タイミング条件
     const seg = findGroup(d, { sourceId, groupId })?.segments.find((s) => s.id === segId)
     if (!seg) continue // status 欠落 (missing) → 描画時 skip (rows からは消さない)
-    parts.push(seg.label ? `${seg.label} ${seg.value}` : seg.value)
+    const body = seg.label ? `${seg.label} ${seg.value}` : seg.value
+    // default-label: ON かつ run の先頭 (直前と group が変わった) なら group 名を前置
+    if (showsGroupLabel(gcfg, groupId) && groupId !== prevGroup) {
+      const gl = groupLabelText(d, sourceId, groupId)
+      parts.push(gl ? `${gl} ${body}` : body)
+    } else {
+      parts.push(body)
+    }
+    prevGroup = groupId
   }
   return parts.length ? parts.join('  ') : ''
 }

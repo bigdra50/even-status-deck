@@ -12,7 +12,6 @@ import {
   generateGlassLayout,
   genLabelId,
   isCustomLabelKey,
-  LABEL_SEG,
   loadConfig,
   removeSource,
   type SegCfg,
@@ -174,11 +173,14 @@ function groupRow(ref: GroupRef): string {
       : src
         ? `<span class="src-note">${esc(src.label)}</span>`
         : ''
-  // 上詰め/下詰め (align) トグルは廃止。位置は Glass layout エディタの固定行で決める。
+  // default-label トグル (glass で group 名を前置するか)。位置/上詰めは Glass layout で決める。
+  const showsLabel = gcfg.showDefaultLabel ?? ref.groupId !== 'clock'
+  const labelBtn = `<button class="label-btn ${showsLabel ? 'on' : ''}" data-action="toggle-grouplabel" data-key="${key}" title="${showsLabel ? 'Group label shown on glass' : 'Group label hidden'}">${icon('tag', { size: 15 })}</button>`
   return `<div class="src" data-key="${key}"><div class="src-head"><span class="src-grip">${icon('grip', { size: 16 })}</span>
     <span class="src-caret" data-action="expand" data-key="${key}">${caret}</span>
     <span class="src-name" data-action="expand" data-key="${key}">${esc(title)}</span>
     ${srcTag}
+    ${labelBtn}
     <button class="tg ${gcfg.enabled ? 'on' : ''}" data-action="toggle-group" data-key="${key}"></button></div>${metrics}</div>`
 }
 
@@ -220,13 +222,12 @@ function segLabelParts(key: string): { group: string; seg: string } {
 }
 
 // 配置可能な全 key (groupOrder 順)。未配置リストの母集合。
-// 各 group につき「ラベル chip」(LABEL_SEG) + enabled な segment chip。
+// group ラベルは default-label (group 単位トグル) が自動で出すので chip にはしない。
 function allPlaceableKeys(): string[] {
   const keys: string[] = []
   for (const ref of config.groupOrder) {
     const gc = config.groups[ref.sourceId]?.[ref.groupId]
     if (!gc) continue
-    keys.push(segKey(ref.sourceId, ref.groupId, LABEL_SEG)) // 配置式 group ラベル chip
     for (const sc of gc.segments) {
       if (sc.enabled) keys.push(segKey(ref.sourceId, ref.groupId, sc.id))
     }
@@ -251,11 +252,12 @@ function rowOverflow(items: string[]): boolean {
   return len + Math.max(0, n - 1) * 2 > 40
 }
 
-// WYSIWYG の chip。LABEL_SEG はラベル chip (group 名を出す配置式ヘッダ)、それ以外は値 chip。
-// 値 chip は実機の表示文字列 (label value / value) + group 名を小さく添える (重複名の判別)。
+// WYSIWYG の chip。custom ラベル (自由テキスト) と segment 値 chip の 2 種。
+// 値 chip は実機の表示文字列 (label value / value)。group の default-label が ON なら
+// group 名を小さく添える (実機で前置されるラベルを editor で可視化。OFF なら出さない)。
 function wysChip(key: string): string {
   const grip = `<span class="wys-grip">${icon('grip', { size: 11 })}</span>`
-  // custom ラベル: × は削除 (customLabels から除去)。group ラベル/値 chip の × は unplace。
+  // custom ラベル: × は削除 (customLabels から除去)。値 chip の × は unplace。
   if (isCustomLabelKey(key)) {
     const id = customLabelId(key)
     const text = config.glassLayout?.customLabels[id]?.text ?? ''
@@ -265,13 +267,12 @@ function wysChip(key: string): string {
   const [sourceId, groupId, segId] = key.split('|')
   const { group, seg } = segLabelParts(key)
   const x = `<button class="wys-x" data-action="layout-item-remove" data-segkey="${esc(key)}" aria-label="Unplace">${icon('x', { size: 10 })}</button>`
-  if (segId === LABEL_SEG) {
-    // group ラベル chip: group 名そのもの (glass に出すヘッダ)。
-    return `<span class="wys-chip wys-label-chip" data-segkey="${esc(key)}" title="${esc(group)} label">${grip}<span class="wys-txt">${esc(group)}</span>${x}</span>`
-  }
   const sg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
   const text = sg ? (sg.label ? `${sg.label} ${sg.value}` : sg.value) : seg
-  const grp = group ? `<span class="wys-grp">${esc(group)}</span>` : '' // 判別用 (glass には出ない)
+  // default-label ON の group のみ group 名を薄く前置表示 (実機の前置ラベルに対応)
+  const gc = config.groups[sourceId]?.[groupId]
+  const showsLabel = gc?.showDefaultLabel ?? groupId !== 'clock'
+  const grp = group && showsLabel ? `<span class="wys-grp">${esc(group)}</span>` : ''
   return `<span class="wys-chip" data-segkey="${esc(key)}" title="${esc(group ? `${group} ${seg}` : seg)}">${grip}${grp}<span class="wys-txt">${esc(text)}</span>${x}</span>`
 }
 
@@ -557,6 +558,17 @@ async function onClick(e: MouseEvent): Promise<void> {
       const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
       if (gcfg) {
         gcfg.enabled = !gcfg.enabled
+        await saveConfig(config)
+        render()
+      }
+      break
+    }
+    case 'toggle-grouplabel': {
+      // glass で group 名を前置するか (default-label)。
+      const ref = parseKey(t.dataset.key ?? '')
+      const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
+      if (gcfg) {
+        gcfg.showDefaultLabel = !(gcfg.showDefaultLabel ?? ref.groupId !== 'clock')
         await saveConfig(config)
         render()
       }

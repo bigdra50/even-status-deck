@@ -49,7 +49,20 @@ export type SourceDef = { id: string; kind: SourceKind; label: string; url?: str
 export type SegCfg = { id: string; enabled: boolean; visibility?: VisibilityCond }
 export type GAlign = 'top' | 'bottom'
 // align: glass summary での縦寄せ。未指定は 'top' (上から詰める従来挙動)。
-export type GroupCfg = { enabled: boolean; expanded: boolean; align?: GAlign; segments: SegCfg[] }
+// showDefaultLabel: glass で各 segment の前に group ラベル (G2/Claude 等) を出すか。
+//   隣接する同 group の run では先頭の 1 回だけ表示 (rowText が dedup)。未指定は clock=false / 他=true。
+export type GroupCfg = {
+  enabled: boolean
+  expanded: boolean
+  align?: GAlign
+  showDefaultLabel?: boolean
+  segments: SegCfg[]
+}
+
+// group の default-label 既定値: builtin clock のみ OFF (時刻に 'Clock' は不要)、他は ON。
+export function defaultShowGroupLabel(groupId: string): boolean {
+  return groupId !== 'clock'
+}
 export type GroupRef = { sourceId: string; groupId: string }
 
 // glass の行レイアウト (表示レシピ)。group (素材) とは独立した固定 MAX_ROWS 行スロット。
@@ -108,8 +121,9 @@ function migrateBuiltinGroups(cfg: Config): void {
   const bg = cfg.groups[BUILTIN_SOURCE_ID]
   if (!bg?.hud) return
   delete bg.hud
-  if (!bg.clock) bg.clock = { enabled: true, expanded: false, segments: [] }
-  if (!bg.g2) bg.g2 = { enabled: true, expanded: false, segments: [] }
+  if (!bg.clock)
+    bg.clock = { enabled: true, expanded: false, showDefaultLabel: false, segments: [] }
+  if (!bg.g2) bg.g2 = { enabled: true, expanded: false, showDefaultLabel: true, segments: [] }
   const idx = cfg.groupOrder.findIndex((r) => r.sourceId === BUILTIN_SOURCE_ID)
   cfg.groupOrder = cfg.groupOrder.filter((r) => r.sourceId !== BUILTIN_SOURCE_ID)
   const refs: GroupRef[] = [
@@ -180,6 +194,10 @@ function migrate(parsed: Record<string, unknown>): Config {
     c.imu ??= defaultImuConfig() // 旧 v3 config には imu が無いため default 補完
     delete (c as Record<string, unknown>).batteryRate // 旧 batteryRate 設定は廃止 (drain/est は segment 化)
     delete (c as Record<string, unknown>).glassHints // glassHints 廃止 (操作説明は companion 常設へ)
+    // default-label (showDefaultLabel) を group ごとに補完 (additive、bump 不要)
+    for (const [, gs] of Object.entries(c.groups ?? {})) {
+      for (const [gid, gc] of Object.entries(gs)) gc.showDefaultLabel ??= defaultShowGroupLabel(gid)
+    }
     normalizeVisibilityAll(c) // 旧 single-cond 形式の visibility を複合形式へ正規化 (additive、bump 不要)
     // glassLayout を新形式に正規化 (旧 anchor 形式は移行、壊れていれば undefined=自動描画)
     c.glassLayout = normalizeGlassLayout((c as Record<string, unknown>).glassLayout)
@@ -290,8 +308,11 @@ function normalizeGlassLayout(x: unknown): GlassLayout | undefined {
   if (!x || typeof x !== 'object') return undefined
   const rowsRaw = (x as { rows?: unknown }).rows
   if (!Array.isArray(rowsRaw)) return undefined
+  // 旧 @label 配置 chip は廃止 (default-label が自動で group 名を出す) → rows から除去。
   const strList = (v: unknown): string[] =>
-    Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : []
+    Array.isArray(v)
+      ? v.filter((s): s is string => typeof s === 'string' && !s.endsWith(`|${LABEL_SEG}`))
+      : []
   const customLabels = sanitizeCustomLabels((x as { customLabels?: unknown }).customLabels)
   // 新形式: rows が string[][]
   if (rowsRaw.every((r) => Array.isArray(r))) {
@@ -342,7 +363,12 @@ export function syncSourceWithStatus(cfg: Config, sourceId: string, status: Stat
   for (const g of status.groups) {
     let gc = groups[g.id]
     if (!gc) {
-      gc = { enabled: true, expanded: false, segments: [] }
+      gc = {
+        enabled: true,
+        expanded: false,
+        showDefaultLabel: defaultShowGroupLabel(g.id),
+        segments: [],
+      }
       groups[g.id] = gc
       cfg.groupOrder.push({ sourceId, groupId: g.id })
       changed = true

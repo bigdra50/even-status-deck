@@ -508,5 +508,20 @@
     <p class="done">追修正4 (任意ラベルの追加・削除, gpt-5.5 と合意): ユーザー定義の<strong>自由テキストラベル</strong>(見出し / 区切り 等) を追加・削除可能に。<code>glassLayout.customLabels: Record&lt;id,{text}&gt;</code> に本文を持ち、rows には key <code>@customLabel:&lt;id&gt;</code> だけ置く (key にテキストを入れない = '|' 衝突回避)。<code>rowText</code> は <code>@customLabel:</code> を <code>customLabels[id].text</code> に解決。companion: 棚に inline input + 「Add label」、custom chip は専用スタイル (.wys-custom-chip)、× は完全削除 (customLabels と全 rows の参照を除去。group/値 chip の × は unplace と区別)。<code>genLabelId</code>/<code>customLabelKey</code>/<code>isCustomLabelKey</code> ヘルパ。recompute は rows のみ再構築し customLabels を保持。migrate は既存 {rows} を {rows, customLabels:{}} へ正規化。検証: 追加で custom chip 出現 / 削除で消失。glass への配置・表示はロジック検証済 (drag は実機)。 また Claude Code → Claude / Session → 5h / G2 Battery → G2 にラベル短縮 (id 維持)。</p>
     <p class="done">追修正5 (スマホ操作性): (1) Edit Layout 展開時に一番下までスクロールできない問題 = 実機タッチで SortableJS のドラッグがスワイプ(スクロール)を奪っていた (desktop では到達可=CSS clip ではないと診断)。全 Sortable に <code>delay:200 + delayOnTouchOnly:true</code> を付与し「素早いスワイプ=スクロール / 長押し=ドラッグ」に分離。(2) スクロール/ドラッグ時に文字が選択されて煩わしい問題 = body に <code>user-select:none</code> + <code>-webkit-touch-callout:none</code>、入力欄 (input/textarea) のみ <code>user-select:text</code> で除外。検証: chip/行番号=none, 入力欄=text。</p>
     <p class="done">追修正6 (行境界の可読性): chip 数の多い行が 2 行に折り返すと、行番号が中央寄せで隣の行に食い込んで見えた。各行セル (<code>.wys-cell</code>) を常時<strong>枠線 + 薄い背景の box</strong> にし、行番号 (<code>.wys-ln</code>) を<strong>行の上端 (align-self:flex-start)</strong> に揃えた。折り返した chip も同じ box に収まり、どの行に属すか一目で分かる。不要になった reserved 用 CSS を除去。検証: モバイル幅スクショで row2 (3 chip 折返し) が単一 box に収まり番号が上端に来ることを確認。</p>
+    <hr>
+    <h2 class="done">default-label + 隣接 dedup (Phase 1 / gpt-5.5 と合意。配置式 @label を置換)</h2>
+    <p>ユーザー提案: 各 segment が所属 group を「デフォルトラベル」として持ち、表示/非表示トグル可能。横並びで同じ group ラベルが続く場合は最初の 1 回だけ表示 (例 <code>G2 Bat 82% Left 6h</code>)。直前に gpt 助言で導入した配置式 @label chip を<strong>置換</strong>する (自動・dedup・トグルで賄えるので chip は冗長)。custom 自由テキストラベルは残す。</p>
+    <table>
+      <tr><th>論点</th><th>決定</th></tr>
+      <tr><td>トグル粒度</td><td><strong>group 単位</strong> <code>GroupCfg.showDefaultLabel</code> (per-segment にすると "G2 Bat" 有・"G2 Left" 無しの不整合が作れてしまう)</td></tr>
+      <tr><td>既定値 (案A)</td><td>builtin <strong>clock のみ OFF</strong> (時刻に 'Clock' は不要)、他は ON。<code>defaultShowGroupLabel(groupId)</code></td></tr>
+      <tr><td>dedup 範囲</td><td><strong>隣接 run のみ</strong>。<code>rowText</code> が直前 segment と groupId が変わった時だけ group 名を前置。<code>G2…Mac…G2</code> の後ろの G2 は再表示 (意味の区切り)。custom テキストラベルは run を切る</td></tr>
+      <tr><td>@label 廃止</td><td>棚から group ラベル chip を除去 (allPlaceableKeys)、wysChip の @label 分岐削除。既存 rows の <code>|@label</code> キーは <code>normalizeGlassLayout</code> で除去 (default-label が group 名を出すので表示は保たれる)</td></tr>
+      <tr><td>UI トグル</td><td>Items の各 group 行に tag アイコンの <code>.label-btn</code> (ON=accent / OFF=薄い)。<code>toggle-grouplabel</code> ハンドラ</td></tr>
+      <tr><td>editor 可視化</td><td>値 chip の薄い group 名 (<code>.wys-grp</code>) は <strong>showDefaultLabel ON の group のみ</strong>表示 (実機の前置と一致)。「置いた要素だけ出る」原則は「ラベルは segment の表示属性」と再定義</td></tr>
+      <tr><td>migrate</td><td>既存 group に <code>showDefaultLabel ??= defaultShowGroupLabel</code> を補完 (additive, bump 不要)</td></tr>
+    </table>
+    <p class="done">検証 (ブラウザ): 棚に @label chip 無し / label-btn 既定 clock=OFF・他=ON / preview dedup (<code>Claude 5h 1% Weekly 2% Cost $797</code>, <code>Mac CPU 28% Mem 79%</code>, 時刻に Clock 前置なし) / Mac トグル OFF で <code>CPU 28% Mem 79%</code> に。drag は実機。</p>
+    <p class="open">次段階: <strong>Phase 2</strong> = segment の <code>widthChars</code> (枠確保 pad + 超過 … + editor の折返し判定)。<strong>Phase 3</strong> = clock の format preset dropdown + 結合用 <code>datetime</code> segment 追加 (time/date は維持・migration 不要)。gpt 助言: 統合(削除)せず datetime 追加、固定プリセット、幅 override UI は後回し。</p>
   </body>
 </html>

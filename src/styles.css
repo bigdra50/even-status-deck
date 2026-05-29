@@ -291,7 +291,8 @@ textarea {
 }
 
 /* 上寄せ/下寄せ切替 (表示項目の行) */
-.align-btn {
+/* group の default-label トグル (glass で group 名を前置するか) */
+.label-btn {
   flex: 0 0 auto;
   width: 30px;
   height: 22px;
@@ -303,10 +304,12 @@ textarea {
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  opacity: 0.5;
 }
-.align-btn.bottom {
+.label-btn.on {
   color: var(--accent);
   border-color: var(--accent);
+  opacity: 1;
 }
 /* 表示タイミング条件エディタ (各 metric 行のサブ行) */
 .metric {
