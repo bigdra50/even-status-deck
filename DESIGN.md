@@ -235,7 +235,7 @@ companion が叩く `/api/status`・`/api/machine` を返すローカルサー�
 - Phase 2: Windows 対応（codex spawn）+ 必要なら NDJSON 常駐 provider。
 - 本番 `.ehpk` 配信時は固定クラウド差し替え（§7）で subprocess 不可。その場合の拡張は独立 HTTP server（PROTOCOL §9 b）。
 
-## 9. 移行（v3 → v4 migration）
+## 10. 移行（v3 → v4 migration）
 
 `migrate()`（`config.ts`）に v4 ステップを追加する。破壊なし。
 
@@ -245,7 +245,7 @@ companion が叩く `/api/status`・`/api/machine` を返すローカルサー�
 4. server source に `urls`（旧 `url?` を `urls[0]` へ）と `machineId`（次回接続テストで付与）を補完する。
 5. 既存の additive migration（ensureBuiltin / consolidateClock / normalizeVisibility / normalizeGlassLayout / pruneOrphans）は維持する。`pruneOrphans` は profile の `view` も対象に拡張する。
 
-## 10. Phase ロードマップ
+## 11. Phase ロードマップ
 
 ```
 Phase 1 [MVP]  v4 データモデル + Default profile 1個（切替UIは未公開、Default固定）

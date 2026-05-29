@@ -47,12 +47,19 @@ HTTP で segment を提供する。companion (toolbar) は複数ソースを集�
 ソース識別。`machineId` は安定 ID、`label` は表示名。
 
 ```jsonc
-{ "machineId": "iphone-local", "label": "iPhone" }
+{
+  "machineId": "iphone-local",
+  "label": "iPhone",
+  "protocolVersion": 1   // 任意。省略時は 1 とみなす (§6)
+}
 ```
 
-### `POST /api/action` (任意)
+- `protocolVersion` (任意, number): ソースが話すプロトコル版。`StatusDoc.version` と同値で良い。client の機能判定に使う。
+- `capabilities` (予約): 将来の機能発見用に予約済み。stable v1 では未定義 — client/server とも依存してはならない (§10)。
 
-グラス操作などからの制御。本文 `{ "id": "music.next" }`。未対応ソースは 404 で良い。
+### `POST /api/action` (予約)
+
+グラス操作などからソースを制御するための endpoint。**stable v1 では予約のみで未規定** — 挙動契約は確定していない。実装・依存してはならない。方向性は §10 を参照。
 
 ## 3. スキーマ
 
@@ -71,6 +78,8 @@ HTTP で segment を提供する。companion (toolbar) は複数ソースを集�
 | `id` | string | ✓ | ソース内で一意。`[a-z0-9-]` 推奨。 |
 | `label` | string | ✓ | 表示名。 |
 | `segments` | Segment[] | ✓ | segment 配列。 |
+| `state` | string | | `"ok"` / `"stale"` / `"error"`。group 全体の状態。各 segment は自前の `state` が無ければこれを継承する。未指定は `ok`。 |
+| `message` | string | | `state` の補助メッセージ (client の tooltip 等)。 |
 
 ### Segment
 
@@ -82,8 +91,26 @@ HTTP で segment を提供する。companion (toolbar) は複数ソースを集�
 | `percent` | number | | 0–100。あれば progress bar を描く。 |
 | `reset` | string | | 副次表示 (例 reset 残り `2h13m`)。 |
 | `defaultEnabled` | boolean | | 初回の既定 ON/OFF。未指定は true。 |
+| `state` | string | | `"ok"` / `"stale"` / `"error"`。segment 単位の状態。あれば group.state を上書きする。 |
+| `message` | string | | `state` の補助メッセージ。 |
 
 設計原則: **値の整形はソース責務、描画 (bar 幅・配置・並び) は client 責務**。client はドメイン知識を持たない。
+
+### state の意味 (transport 鮮度との 2 軸)
+
+`state` は「ソースは応答しているが、その値の upstream が degraded」を表す。これは §6 の transport 鮮度 (client が status doc を取得できているか) とは別軸:
+
+| 状態 | 意味 | value の扱い |
+|---|---|---|
+| `ok` (既定) | 値は最新で健全 | 通常表示 |
+| `stale` | ソースは生存だが値は最後の既知値 (最新ではない) | 値は表示してよい。client は古い旨を提示できる |
+| `error` | upstream 取得失敗 | ソースは `value` を `n/a` 等にすべき |
+
+優先順位: transport が offline/stale (§6) なら doc 全体を stale 扱いし、その上で `state` は補助情報。transport ok のとき segment/group の `state` を反映する。`segment.state` があればそれを優先、無ければ `group.state` を継承する。
+
+v1 の client 振る舞い:
+- 操作者向け client (companion 等) は `state != ok` を提示する (例: ソース status を degraded 表示し `message` を tooltip)。
+- glass (読み取り専用 HUD) は `value` をそのまま描く。`error` 時の `value: "n/a"` が値レベルで失敗を符号化するため、glass は `state` を別途描かなくてよい。
 
 ## 4. ソース identity と名前空間 (companion 集約時)
 
@@ -123,11 +150,27 @@ StatusDoc 形で表現し、server ソースと完全に同等に扱う (設定�
 
 - 受信した StatusDoc は **必ず検証する**: `version` が number、`groups` が配列、各 group/segment が
   必須フィールドを持つか。壊れていれば **そのソースを無視**し、直近成功値 (あれば) を保持する。
-- 未知の追加フィールドは無視 (前方互換)。`version > 対応版` は「一部のみ解釈」または無視して良い。
 - 取得失敗・タイムアウト・検証失敗のソースは **直近成功値を stale 表示**する (group を即欠落させない。
   順序と詳細ビューの揺れを防ぐ)。online / lastError は runtime 状態として持ち、永続化しない。
 - リクエストには timeout と abort を付け、URL 変更前の遅延応答が後の状態を上書きしないよう
   revision (世代番号) で破棄する。
+
+### バージョニング規則
+
+- **未知の追加フィールドは無視する** (前方互換)。新フィールドは optional でのみ追加し、既存フィールドの
+  意味は変えない。
+- `version` 欠落は **v1 とみなす**。`version > 対応版` は解釈できる範囲だけ解釈し、未対応部分は無視して良い。
+- **breaking change は別 major (`version: 2`) か別 path で行う** — `version: 1` の形を後方非互換に変えない。
+  client は `StatusDoc.version` / `machine.protocolVersion` で機能を判定する。
+
+### 鮮度 / キャッシュ (任意)
+
+ポーリング負荷 (WKWebView では電池・WebContent jettison に直結) を下げるため、ソースは HTTP 標準の
+条件付き取得を **MAY** で提供してよい。
+
+- `ETag` + 条件付き `If-None-Match` → 無変更時 `304 Not Modified` (本文なし)。
+- `Cache-Control: max-age=<秒>` で最小ポーリング間隔をソースから示唆する。
+- client はこれらを使えれば使い、無ければ通常の GET にフォールバックする (必須ではない)。
 
 ## 7. セキュリティ
 
@@ -164,12 +207,16 @@ provider の戻り値型は常に StatusDoc / Group（§3）。搬送路はプ�
 ```toml
 [providers.weather]
 command = "python"
-args = ["~/.config/eveng2-toolbar/providers/weather.py"]
+args = ["${configDir}/providers/weather.py"]   # 絶対パス or 既知 token のみ
 timeoutMs = 1000
 ttlMs = 30000
 ```
 
 - provider は stdout に StatusDoc（または単一 Group）の JSON を print して exit するだけ。言語非依存（`command` 指定なので shebang / Windows PATHEXT に依存しない）。
+- **パス展開はしない**。spawn は shell を介さない（`shell:false`）ため、`args` の `~` / `$VAR` / `%VAR%` は展開されない（POSIX/Windows とも）。`command`/`args` は **絶対パス**にするか、本体が置換する既知 token だけを使う:
+  - `${configDir}` → 設定ディレクトリ (`$XDG_CONFIG_HOME/eveng2-toolbar` 等) の絶対パス。
+  - 置換後は必ず絶対パスになること。相対パスや未知 token は拒否する。
+- Windows: `command` は実行ファイル解決を本体が担う（`.cmd`/PATHEXT・loopback firewall・env 差は実装側で吸収）。パス区切りはどちらでも本体が正規化する。
 - 受信は `parseStatusDoc()`（§6）でサニタイズ。spawn は timeout + kill、結果は `ttlMs` キャッシュ、同時実行は抑止、出力サイズ上限あり。
 - 子プロセスの env は最小 allowlist（token / API key を渡さない）。`ctx.options`（`[providers.<id>]`）は限定的に env/argv で渡す。
 - 標準 provider をこの形式で書けば、そのまま他言語ユーザーのコピペサンプルになる（JS の `export default` 形式と違い翻訳不要）。
@@ -179,3 +226,25 @@ ttlMs = 30000
 
 - provider は信頼コードのみ実行（config 明示登録 = ユーザーの意図）。
 - token / refreshToken を provider・レスポンス・ログに出さない（§7）。サーバー内に留め `value` には集計済みの値だけ載せる。
+
+## 10. Reserved（非規範・stable v1 の一部ではない）
+
+将来 minor 版で正規化する拡張点を **予約** する。stable v1 の client/server は以下に依存してはならない。
+ここに書く形は確定契約ではなく方向性のスケッチ（実装は固まるまで作らない）。
+
+### `POST /api/action` + `machine.capabilities`（予約）
+
+glass 入力（click / scroll / double-click / IMU はすでに `onEvenHubEvent` で受信済み）から
+ソースを遠隔操作する拡張点。namespace（path + `capabilities`）だけ押さえ、挙動契約は未確定。
+
+正規化時に詰める想定の要素（非規範）:
+
+- 発見: `GET /api/machine` の `capabilities.actions[]`（`id` / `label` / `safety: "safe"|"unsafe"` / `confirmation`）。
+- 要求: `POST /api/action` 本文 `{ id, params?, requestId }`。
+- 応答: `{ ok: true }` または `{ ok: false, error: { code, message } }`。同期/非同期、結果の segment 反映は未定。
+- 安全性: confirmation は **client UX の安全弁であって認証ではない**。3rd party source の action は untrusted。
+  companion は `unsafe` / `confirmation:"required"` を glass ジェスチャから直接実行しない。破壊的操作は
+  source 側でも認証・loopback 限定・明示設定で守る（責務分担）。
+
+未確定な理由: gesture mapping UI も実 action UX も未着手で、request 形・params・sync/async・gesture binding を
+今 normative に固定すると推測を外したまま stable v1 を縛るため。実装が出てから §2 へ昇格する。
