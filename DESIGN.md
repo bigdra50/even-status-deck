@@ -193,15 +193,18 @@ Source Edit : 接続先 URL（複数可） + 接続テスト + 「ローカル�
 
 ## 8. データ層 / 取得経路
 
-| モード | データソース | CORS |
-|---|---|---|
-| sideload（自分用） | Mac dev server（Vite middleware + proxy） | Vite proxy で回避 |
-| store（.ehpk 配布） | 固定クラウド（Cloudflare Worker proxy 等） | whitelist + CORS ヘッダ必須 |
+アプリ本体（dev / store `.ehpk` 配布のどちらでも）は、ユーザーが任意のデバイスで起動したローカルサーバーに URL で接続する。**クラウド経由は持たない**（不要）。
 
-- フロントは `fetchStatusFrom(url)` / `fetchMachineFrom(url)` のデータ取得層を抽象化し、sideload/store でこの層だけ差し替える。
+| モード | 接続先 |
+|---|---|
+| dev（vite） | 同一オリジン（`server/vite-plugin` の middleware が `/api/status`・`/api/machine` を提供） |
+| store（`.ehpk`） | ユーザーが起動したサーバーの URL。同一デバイスなら loopback、別デバイス（claude/codex のある Mac/PC で起動し phone から繋ぐ）なら LAN IP |
+
+- フロントは `fetchStatusFrom(url)` / `fetchMachineFrom(url)` で URL に `/api/status`・`/api/machine` を叩くだけ。dev / store でデータ層は同一（差し替え不要）。
+- 典型構成: claude/codex CLI のある Mac/PC で `bun run server`（将来 `bunx`）し、Even アプリ（phone）から起動ログの LAN IP を入力して接続する。だから store では server を自動登録しない（§5 / companion OD-4）。store 配布版 + ユーザー起動サーバーの LAN 直結は実機（ストアインストール版）で動作確認済み。
 - Claude（標準）: `~/.claude/projects/**/*.jsonl` をローカル集計し cost / msgs を算出する（認証不要）。rate-limit % の OAuth/keychain（`/api/oauth/usage`）経路は標準から外し、外部 subprocess provider に委ねる（§7）。
 - Codex: `codex app-server` JSON-RPC `initialize` → `initialized` → ~1.5s → `account/rateLimits/read`。`primary` が埋まるまで再取得。
-- トークン/認証はデータソース（Mac/サーバー）内に留め、フロント/glass には集計値（cost / % 等）だけ渡す。
+- トークン/認証はデータソース（Mac/PC のサーバー）内に留め、フロント/glass には集計値（cost / % 等）だけ渡す。
 
 ## 9. ローカルサーバーのリリース整備（クロスプラットフォーム・配布・拡張）
 
@@ -230,9 +233,9 @@ companion が叩く `/api/status`・`/api/machine` を返すローカルサー�
 
 ### 段階
 
-- Phase 1: server を vite から切り出し + credential file 前置 + systeminformation + subprocess provider(MVP) + bunx/Bun compile + help.html。macOS/Linux 同時。
+- Phase 1: server を vite から切り出し + systeminformation + subprocess provider(MVP) + bunx/Bun compile + help.html。macOS/Linux 同時。（実装済み: §11 と PROTOCOL §9）
 - Phase 2: Windows 対応（codex spawn）+ 必要なら NDJSON 常駐 provider。
-- 本番 `.ehpk` 配信時は固定クラウド差し替え（§7）で subprocess 不可。その場合の拡張は独立 HTTP server（PROTOCOL §9 b）。
+- store 配布でもデータ源はユーザーが起動するローカルサーバーなので、subprocess provider も独立 HTTP server もそのまま使える（クラウド差し替えは廃止）。
 
 ## 10. 移行（v3 → v4 migration）
 

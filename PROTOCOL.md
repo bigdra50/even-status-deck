@@ -1,12 +1,12 @@
 # eveng2 status protocol
 
 Even G2 toolbar が複数のデータソースから取り込み、グラスに描画するための公開仕様。
-データソース (Mac dev server / iPhone bridge / cloud / サードパーティ) はこの仕様に従って
+データソース (Mac/PC のローカルサーバー / iPhone bridge / サードパーティ) はこの仕様に従って
 HTTP で segment を提供する。companion (toolbar) は複数ソースを集約し、ユーザーが表示を
-カスタムする。
+カスタムする。アプリ本体 (dev / store 配布とも) はユーザーが起動したローカルサーバーに URL で繋ぐ。
 
 - 現行バージョン: **1** (公開・安定)
-- トランスポート: HTTP/1.1 (loopback `127.0.0.1` / LAN / cloud いずれも可)
+- トランスポート: HTTP/1.1 (loopback `127.0.0.1` / LAN)
 - 文字コード: UTF-8 JSON
 - companion 側の検証は `src/status-types.ts` の `parseStatusDoc()` が実装 (受信時に
   shape 検証 + サニタイズ。不正 group/segment は破棄、想定外フィールドは除去)。
@@ -179,9 +179,8 @@ StatusDoc 形で表現し、server ソースと完全に同等に扱う (設定�
   (公開プロトコルで 3rd party ソースを受け入れるため)。ソースは markup を埋め込まない。
   ※ グラス描画はプレーンテキスト (LVGL container) なので XSS 経路にならないが、companion の
   プレビュー UI は DOM なので escape 必須。
-- loopback / LAN 利用が主。CORS ヘッダ付与を **推奨**するが必須ではない (EvenApp WebView は実測で
-  ランタイム CORS 強制をしておらず、private 配布で localhost 直結が動作する)。cloud 配信で
-  ブラウザ厳格 CORS 下に置く場合のみ CORS ヘッダが必須。loopback は例外扱い。
+- loopback / LAN 利用のみ。CORS ヘッダは不要 (EvenApp WebView は実測でランタイム CORS 強制をしておらず、
+  store インストール版アプリ + ユーザー起動サーバーの LAN 直結も動作確認済み)。付けても害はないが必須ではない。
 
 ## 8. 実装例
 
@@ -197,7 +196,7 @@ provider の戻り値型は常に StatusDoc / Group（§3）。搬送路はプ�
 |---|---|---|---|
 | builtin | 同梱関数が Group を返す | 本体言語 | claude / codex / system の標準 provider |
 | (c) subprocess | config に明示登録した command を実行し stdout の StatusDoc JSON を読む | 任意（command 指定） | ローカル拡張の第一級。標準 provider のサンプル |
-| (b) 独立 HTTP server | §2 のエンドポイントを話す常駐サーバーを URL 登録 | 任意 | 常駐 source / cloud 配信時 |
+| (b) 独立 HTTP server | §2 のエンドポイントを話す常駐サーバーを URL 登録 | 任意 | 常駐 source |
 | (a) JS plugin | `providers/*.mjs` を動的 import（`export default {id,group}`） | TS/JS | 上級者向け（Node/bun ランタイム時のみ） |
 
 ### (c) subprocess provider の登録（推奨・第一級）

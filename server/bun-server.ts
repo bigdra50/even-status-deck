@@ -2,7 +2,7 @@
 // Bun ランタイム以外から import されたら即座にエラーにする。
 // /api/machine → machineInfo、/api/status → buildStatusDoc(await loadServerConfig())。
 // 詳細なエラー (ローカルパス等) は LAN クライアントに返さず console.error にのみ出す。
-// CORS は loopback/LAN では推奨 (PROTOCOL §7)。'*' を付けておけば cloud / 別ポート dev でも困らない。
+// CORS は loopback/LAN では不要 (PROTOCOL §7)。'*' を付けておけば別ポート dev でも困らない。
 
 // I-4 解決: 万一 Node 経路から import されても即座に明確なエラーを出す。
 if (typeof Bun === 'undefined') throw new Error('bun-server.ts requires the Bun runtime')
