@@ -8,7 +8,9 @@ import {
   Copy,
   ExternalLink,
   GripVertical,
+  LayoutGrid,
   LoaderCircle,
+  Maximize2,
   Pencil,
   Plus,
   Settings,
@@ -40,6 +42,8 @@ export type IconName =
   | 'copy'
   | 'trash'
   | 'sparkles'
+  | 'layout'
+  | 'maximize'
 
 const SVGS: Record<IconName, string> = {
   settings: Settings,
@@ -60,6 +64,8 @@ const SVGS: Record<IconName, string> = {
   copy: Copy,
   trash: Trash2,
   sparkles: Sparkles,
+  layout: LayoutGrid,
+  maximize: Maximize2,
 }
 
 type IconOpts = { size?: number; stroke?: number; cls?: string }

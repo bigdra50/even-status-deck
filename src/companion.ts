@@ -461,12 +461,13 @@ function renderGlassEdit(lay: GlassLayout): string {
 function renderGlassSection(): string {
   const lay = activeView(config).glassLayout
   if (!lay) {
-    return `<div class="cmp-label">Glass</div>
+    return `<div class="cmp-label cmp-label-row">Glass<span class="cmp-actions">
+        <button class="gear-btn" data-action="layout-customize" title="Customize layout" aria-label="Customize layout">${icon('layout', { size: 16 })}</button>
+        <button class="gear-btn" data-action="fs-open" title="Fullscreen edit (beta)" aria-label="Fullscreen edit">${icon('maximize', { size: 16 })}</button>
+      </span></div>
       <div class="gpv"><div class="gpv-cap">G2 576×288</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
       <div class="cmp-sub">Glass gestures: tap = summary / swipe = switch view / double-tap = exit</div>
-      <div class="cmp-sub">One row per group. Customize to place items freely on the preview.</div>
-      <button class="save-btn" data-action="layout-customize">${icon('plus', { size: 16 })}Customize layout</button>
-      <button class="save-btn sm" data-action="fs-open">${icon('plus', { size: 14 })}Fullscreen edit (beta)</button>`
+      <div class="cmp-sub">One row per group. Customize layout to place items freely on the preview.</div>`
   }
   if (layoutEditing) {
     return `<div class="cmp-label cmp-label-row">Glass layout<button class="link-btn" data-action="layout-edit-toggle">Done</button></div>
