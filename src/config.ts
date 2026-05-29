@@ -103,6 +103,9 @@ const KEY = 'toolbar.config'
 
 let bridge: EvenAppBridge | null = null
 let memory: Config | null = null
+// bridge への保存を直列化するチェイン。companion が連続トグルで await を外しても、
+// 各タスクが最新 memory を書く + 書込み完了後に通知することで、古い JSON での上書きを防ぐ。
+let saveChain: Promise<void> = Promise.resolve()
 
 export function setConfigBridge(b: EvenAppBridge): void {
   bridge = b
@@ -182,16 +185,27 @@ export async function loadConfig(): Promise<Config> {
 
 export async function saveConfig(c: Config): Promise<void> {
   memory = c
-  if (bridge) {
-    try {
-      await bridge.setLocalStorage(KEY, JSON.stringify(c))
-    } catch {
-      /* bridge 不在/失敗時はメモリのみ */
+  if (!bridge) {
+    // bridge 不在 (ブラウザ dev / 未接続): メモリのみ。glass/companion へ即時通知。
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('toolbar:config-changed'))
     }
+    return
   }
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('toolbar:config-changed'))
-  }
+  // 書込みを直列化し、各タスクは最新 memory を書く (古い JSON での上書き防止)。
+  // config-changed は書込み完了後に発火する。発火を書込み前に出すと glass の loadConfig が
+  // bridge から stale を読むため (glass.ts onConfigChanged は getLocalStorage で再読込する)。
+  saveChain = saveChain.then(async () => {
+    try {
+      await bridge?.setLocalStorage(KEY, JSON.stringify(memory))
+    } catch {
+      /* bridge 失敗時はメモリのみ */
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('toolbar:config-changed'))
+    }
+  })
+  return saveChain
 }
 
 // v1/v2 (machines マップ) -> v3。URL・トグル・並び順を保持。builtin を先頭に追加。

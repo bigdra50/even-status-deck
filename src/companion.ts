@@ -604,7 +604,7 @@ async function onClick(e: MouseEvent): Promise<void> {
       break
     case 'add-source': {
       const def = addServer(config, 'New server')
-      await saveConfig(config)
+      void saveConfig(config)
       editingSourceId = def.id
       testState = 'idle'
       testUrl = ''
@@ -624,7 +624,7 @@ async function onClick(e: MouseEvent): Promise<void> {
     case 'remove-source':
       if (editingSourceId) {
         removeSource(config, editingSourceId)
-        await saveConfig(config)
+        void saveConfig(config)
         setSources(config.sources)
         editingSourceId = null
         view = 'home'
@@ -636,7 +636,7 @@ async function onClick(e: MouseEvent): Promise<void> {
       const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
       if (gcfg) {
         gcfg.expanded = !gcfg.expanded
-        await saveConfig(config)
+        void saveConfig(config)
         render()
       }
       break
@@ -646,7 +646,7 @@ async function onClick(e: MouseEvent): Promise<void> {
       const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
       if (gcfg) {
         gcfg.enabled = !gcfg.enabled
-        await saveConfig(config)
+        void saveConfig(config)
         render()
       }
       break
@@ -657,7 +657,7 @@ async function onClick(e: MouseEvent): Promise<void> {
       const gcfg = config.groups[ref.sourceId]?.[ref.groupId]
       if (gcfg) {
         gcfg.showDefaultLabel = !(gcfg.showDefaultLabel ?? ref.groupId !== 'clock')
-        await saveConfig(config)
+        void saveConfig(config)
         render()
       }
       break
@@ -669,7 +669,7 @@ async function onClick(e: MouseEvent): Promise<void> {
       )
       if (seg) {
         seg.enabled = !seg.enabled
-        await saveConfig(config)
+        void saveConfig(config)
         render()
       }
       break
@@ -692,7 +692,7 @@ async function onClick(e: MouseEvent): Promise<void> {
               : { kind: 'onChange', holdMs: 5000 },
           )
           sc.visibility = cond
-          await saveConfig(config)
+          void saveConfig(config)
           render()
         }
       }
@@ -707,7 +707,7 @@ async function onClick(e: MouseEvent): Promise<void> {
       if (sc?.visibility && Number.isInteger(idx)) {
         sc.visibility.conditions.splice(idx, 1)
         if (sc.visibility.conditions.length === 0) sc.visibility = undefined
-        await saveConfig(config)
+        void saveConfig(config)
         render()
       }
       break
@@ -719,20 +719,20 @@ async function onClick(e: MouseEvent): Promise<void> {
     case 'layout-customize':
       config.glassLayout = generateGlassLayout(config)
       layoutEditing = true // 生成と同時に編集モードへ
-      await saveConfig(config)
+      void saveConfig(config)
       render()
       break
     case 'layout-reset':
       config.glassLayout = undefined
       layoutEditing = false
-      await saveConfig(config)
+      void saveConfig(config)
       render()
       break
     case 'fs-open':
       // フルスクリーン WYSIWYG エディタ (実験的)。custom layout 未生成なら生成して開く。
       if (!config.glassLayout) {
         config.glassLayout = generateGlassLayout(config)
-        await saveConfig(config)
+        void saveConfig(config)
       }
       openFsEditor()
       break
@@ -741,7 +741,7 @@ async function onClick(e: MouseEvent): Promise<void> {
       const key = t.dataset.segkey
       if (config.glassLayout && key) {
         config.glassLayout.rows = config.glassLayout.rows.map((r) => r.filter((k) => k !== key))
-        await saveConfig(config)
+        void saveConfig(config)
         render()
       }
       break
@@ -752,7 +752,7 @@ async function onClick(e: MouseEvent): Promise<void> {
       const text = (input?.value ?? '').trim().slice(0, 64)
       if (config.glassLayout && text) {
         config.glassLayout.customLabels[genLabelId()] = { text }
-        await saveConfig(config)
+        void saveConfig(config)
         render()
       }
       break
@@ -764,7 +764,7 @@ async function onClick(e: MouseEvent): Promise<void> {
         delete config.glassLayout.customLabels[id]
         const k = customLabelKey(id)
         config.glassLayout.rows = config.glassLayout.rows.map((r) => r.filter((x) => x !== k))
-        await saveConfig(config)
+        void saveConfig(config)
         render()
       }
       break
@@ -783,15 +783,15 @@ async function onClick(e: MouseEvent): Promise<void> {
 // segment 条件エディタ (combinator select / leaf の kind・op・value・hold) の変更を
 // config.groups[*][*].segments[*].visibility に反映する。leaf は data-idx で特定する。
 // change イベントの振り分け: clock フォーマット (Time/Date/順序) → onClockFormatChange、それ以外 → onSegVisChange。
-async function onChange(e: Event): Promise<void> {
+function onChange(e: Event): void {
   const action = (e.target as HTMLElement).dataset.action ?? ''
-  if (action.startsWith('clock-')) await onClockFormatChange(e)
-  else await onSegVisChange(e)
+  if (action.startsWith('clock-')) onClockFormatChange(e)
+  else onSegVisChange(e)
 }
 
 // clock の Time/Date/順序 select 変更を合成して SegCfg.format に保存。
 // saveConfig が config-changed を dispatch → glass が loadConfig して実機描画にも反映。
-async function onClockFormatChange(e: Event): Promise<void> {
+function onClockFormatChange(e: Event): void {
   const t = e.target as HTMLSelectElement
   const key = t.dataset.key
   const segId = t.dataset.seg
@@ -804,11 +804,11 @@ async function onClockFormatChange(e: Event): Promise<void> {
   else if (t.dataset.action === 'clock-date') cur.date = t.value
   else if (t.dataset.action === 'clock-order') cur.order = t.value === 'date' ? 'date' : 'time'
   sc.format = composeClockFormat(cur.time, cur.date, cur.order) || undefined
-  await saveConfig(config)
+  void saveConfig(config)
   render()
 }
 
-async function onSegVisChange(e: Event): Promise<void> {
+function onSegVisChange(e: Event): void {
   const t = e.target as HTMLInputElement | HTMLSelectElement
   const action = t.dataset.action
   const key = t.dataset.key
@@ -845,7 +845,7 @@ async function onSegVisChange(e: Event): Promise<void> {
         return
     }
   }
-  await saveConfig(config)
+  void saveConfig(config)
   render()
 }
 
