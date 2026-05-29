@@ -470,11 +470,11 @@ function renderGlassSection(): string {
       <div class="cmp-sub">One row per group. Customize layout to place items freely on the preview.</div>`
   }
   if (layoutEditing) {
-    return `<div class="cmp-label cmp-label-row">Glass layout<button class="link-btn" data-action="layout-edit-toggle">Done</button></div>
+    return `<div class="cmp-label cmp-label-row">Glass layout<button class="gear-btn" data-action="layout-edit-toggle" title="Done" aria-label="Done">${icon('check', { size: 16 })}</button></div>
       <div class="cmp-sub">Drag items to rows (1–${MAX_ROWS}) or the Unplaced shelf. Row number = position from top of glass.</div>
       ${renderGlassEdit(lay)}`
   }
-  return `<div class="cmp-label cmp-label-row">Glass<span class="cmp-actions"><button class="link-btn" data-action="fs-open">Fullscreen</button><button class="link-btn" data-action="layout-edit-toggle">Edit layout</button></span></div>
+  return `<div class="cmp-label cmp-label-row">Glass<span class="cmp-actions"><button class="gear-btn" data-action="layout-edit-toggle" title="Edit layout" aria-label="Edit layout">${icon('layout', { size: 16 })}</button><button class="gear-btn" data-action="fs-open" title="Fullscreen edit" aria-label="Fullscreen edit">${icon('maximize', { size: 16 })}</button></span></div>
     <div class="gpv"><div class="gpv-cap">G2 576×288</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
     <div class="cmp-sub">Glass gestures: tap = summary / swipe = switch view / double-tap = exit</div>`
 }
