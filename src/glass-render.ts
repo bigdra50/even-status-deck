@@ -2,8 +2,10 @@ import {
   BUILTIN_GROUP_LABELS,
   BUILTIN_SOURCE_ID,
   type Config,
+  customLabelId,
   type GroupCfg,
   type GroupRef,
+  isCustomLabelKey,
   LABEL_SEG,
 } from './config'
 import type { Group, StatusDoc } from './status-types'
@@ -66,10 +68,15 @@ function groupLabelText(d: GlassData, sourceId: string, groupId: string): string
 function rowText(items: string[], d: GlassData, visible?: VisibleMap): string {
   const parts: string[] = []
   for (const key of items) {
+    if (isCustomLabelKey(key)) {
+      const text = d.config.glassLayout?.customLabels[customLabelId(key)]?.text
+      if (text) parts.push(text) // ユーザー定義の自由テキストラベル
+      continue
+    }
     const [sourceId, groupId, segId] = key.split('|')
     if (!sourceId || !groupId || !segId) continue
     if (segId === LABEL_SEG) {
-      parts.push(groupLabelText(d, sourceId, groupId)) // 配置式ラベル
+      parts.push(groupLabelText(d, sourceId, groupId)) // 配置式 group ラベル
       continue
     }
     const gcfg = d.config.groups[sourceId]?.[groupId]

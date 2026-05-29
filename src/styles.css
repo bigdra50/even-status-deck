@@ -583,6 +583,24 @@ body {
   font-size: 10px;
   opacity: 0.55;
 }
+/* custom (ユーザー定義) ラベル chip: group 自動ラベルと区別 */
+.wys-custom-chip {
+  background: rgba(254, 249, 145, 0.18);
+  border-color: rgba(254, 249, 145, 0.5);
+}
+/* 「+ Add label」入力行 */
+.wys-add {
+  margin-top: var(--space-2);
+}
+.wys-add .lay-add-input {
+  flex: 1;
+  padding: var(--space-2) var(--space-3);
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
 .wys-x {
   background: none;
   border: none;

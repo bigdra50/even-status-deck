@@ -5,9 +5,13 @@ import {
   BUILTIN_SEG_LABELS,
   BUILTIN_SOURCE_ID,
   type Config,
+  customLabelId,
+  customLabelKey,
   emptyConfig,
   type GroupRef,
   generateGlassLayout,
+  genLabelId,
+  isCustomLabelKey,
   LABEL_SEG,
   loadConfig,
   removeSource,
@@ -222,11 +226,14 @@ function allPlaceableKeys(): string[] {
   for (const ref of config.groupOrder) {
     const gc = config.groups[ref.sourceId]?.[ref.groupId]
     if (!gc) continue
-    keys.push(segKey(ref.sourceId, ref.groupId, LABEL_SEG)) // 配置式ラベル chip
+    keys.push(segKey(ref.sourceId, ref.groupId, LABEL_SEG)) // 配置式 group ラベル chip
     for (const sc of gc.segments) {
       if (sc.enabled) keys.push(segKey(ref.sourceId, ref.groupId, sc.id))
     }
   }
+  // ユーザー定義の custom ラベル
+  for (const id of Object.keys(config.glassLayout?.customLabels ?? {}))
+    keys.push(customLabelKey(id))
   return keys
 }
 
@@ -247,12 +254,19 @@ function rowOverflow(items: string[]): boolean {
 // WYSIWYG の chip。LABEL_SEG はラベル chip (group 名を出す配置式ヘッダ)、それ以外は値 chip。
 // 値 chip は実機の表示文字列 (label value / value) + group 名を小さく添える (重複名の判別)。
 function wysChip(key: string): string {
+  const grip = `<span class="wys-grip">${icon('grip', { size: 11 })}</span>`
+  // custom ラベル: × は削除 (customLabels から除去)。group ラベル/値 chip の × は unplace。
+  if (isCustomLabelKey(key)) {
+    const id = customLabelId(key)
+    const text = config.glassLayout?.customLabels[id]?.text ?? ''
+    const del = `<button class="wys-x" data-action="label-delete" data-label-id="${esc(id)}" title="Delete label" aria-label="Delete label">${icon('x', { size: 10 })}</button>`
+    return `<span class="wys-chip wys-label-chip wys-custom-chip" data-segkey="${esc(key)}" title="${esc(text)}">${grip}<span class="wys-txt">${esc(text)}</span>${del}</span>`
+  }
   const [sourceId, groupId, segId] = key.split('|')
   const { group, seg } = segLabelParts(key)
   const x = `<button class="wys-x" data-action="layout-item-remove" data-segkey="${esc(key)}" aria-label="Unplace">${icon('x', { size: 10 })}</button>`
-  const grip = `<span class="wys-grip">${icon('grip', { size: 11 })}</span>`
   if (segId === LABEL_SEG) {
-    // ラベル chip: group 名そのもの (glass に出すヘッダ)。
+    // group ラベル chip: group 名そのもの (glass に出すヘッダ)。
     return `<span class="wys-chip wys-label-chip" data-segkey="${esc(key)}" title="${esc(group)} label">${grip}<span class="wys-txt">${esc(group)}</span>${x}</span>`
   }
   const sg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
@@ -284,6 +298,10 @@ function renderGlassEdit(lay: NonNullable<Config['glassLayout']>): string {
       <div class="gpv-screen wys-screen">${lines.join('')}</div></div>
     <div class="cmp-label">Unplaced</div>
     <div class="wys-cell wys-shelf" data-shelf="1">${shelf}</div>
+    <div class="field-row wys-add">
+      <input class="lay-add-input" type="text" maxlength="64" placeholder="任意ラベル (見出し / 区切り 等)" />
+      <button class="save-btn sm" data-action="label-add">${icon('plus', { size: 14 })}Add label</button>
+    </div>
     <button class="danger-btn" data-action="layout-reset">Reset to auto</button>`
 }
 
@@ -445,7 +463,7 @@ function recomputeWysFromDom(): void {
       .map((c) => c.dataset.segkey ?? '')
       .filter(Boolean)
   }
-  config.glassLayout = { rows }
+  config.glassLayout = { rows, customLabels: config.glassLayout.customLabels }
   void saveConfig(config)
   render()
 }
@@ -608,6 +626,29 @@ async function onClick(e: MouseEvent): Promise<void> {
       const key = t.dataset.segkey
       if (config.glassLayout && key) {
         config.glassLayout.rows = config.glassLayout.rows.map((r) => r.filter((k) => k !== key))
+        await saveConfig(config)
+        render()
+      }
+      break
+    }
+    case 'label-add': {
+      // 任意テキストのラベルを作成 (未配置棚に出る)。inline input から読む。
+      const input = root?.querySelector<HTMLInputElement>('.lay-add-input')
+      const text = (input?.value ?? '').trim().slice(0, 64)
+      if (config.glassLayout && text) {
+        config.glassLayout.customLabels[genLabelId()] = { text }
+        await saveConfig(config)
+        render()
+      }
+      break
+    }
+    case 'label-delete': {
+      // custom ラベルを完全削除 (customLabels から除去 + 全 rows の参照を除去)。
+      const id = t.dataset.labelId
+      if (config.glassLayout && id) {
+        delete config.glassLayout.customLabels[id]
+        const k = customLabelKey(id)
+        config.glassLayout.rows = config.glassLayout.rows.map((r) => r.filter((x) => x !== k))
         await saveConfig(config)
         render()
       }

@@ -10,8 +10,24 @@ export const CONFIG_VERSION = 3
 export const BUILTIN_SOURCE_ID = 'builtin.local'
 
 // glass layout の「ラベル chip」を表す予約 segId。items の key が `src|grp|@label` のとき、
-// その group のラベルテキスト (Claude Code 等) を glass に出す (自動接頭辞は廃止、配置式)。
+// その group のラベルテキスト (Claude 等) を glass に出す (自動接頭辞は廃止、配置式)。
 export const LABEL_SEG = '@label'
+
+// ユーザー定義の自由テキストラベル。rows には key `@customLabel:<id>` だけを置き、本文は
+// glassLayout.customLabels[id].text に持つ (key にテキストを入れない = '|' 衝突回避)。
+export const CUSTOM_LABEL_PREFIX = '@customLabel:'
+export function customLabelKey(id: string): string {
+  return CUSTOM_LABEL_PREFIX + id
+}
+export function isCustomLabelKey(key: string): boolean {
+  return key.startsWith(CUSTOM_LABEL_PREFIX)
+}
+export function customLabelId(key: string): string {
+  return key.slice(CUSTOM_LABEL_PREFIX.length)
+}
+export function genLabelId(): string {
+  return `cl_${genSourceId().slice(0, 8)}`
+}
 
 // builtin の表示ラベルはコード所有 (localStorage に保存しない)。companion はこれで
 // group/segment の行名を出し、永続化された source label (旧: '本体(時刻/電池)') へ
@@ -41,7 +57,10 @@ export type GroupRef = { sourceId: string; groupId: string }
 // どの行にも無い enabled segment は companion の Unplaced 棚に自動表示 (導出。新規 segment も
 // 自動で棚に出る)。未設定 (undefined) の間は従来の group=1行 自動描画。companion の Customize
 // で生成・固定する (以降 status 増減で自動変更しない)。
-export type GlassLayout = { rows: string[][] } // rows.length === MAX_ROWS
+export type GlassLayout = {
+  rows: string[][] // rows.length === MAX_ROWS。各要素 = key (segKey / @label / @customLabel:id)
+  customLabels: Record<string, { text: string }> // ユーザー定義ラベルの本文 (id -> text)
+}
 // IMU 方向検出は src/imu ライブラリが所有。Config は enable + キャリブの永続先として imu? を持つ。
 export type Config = {
   version: number
@@ -249,7 +268,19 @@ export function generateGlassLayout(cfg: Config): GlassLayout {
       .map((s) => segKey(ref.sourceId, ref.groupId, s.id))
     if (items.length && i < MAX_ROWS) rows[i++] = items
   }
-  return { rows }
+  return { rows, customLabels: {} }
+}
+
+// 永続化された customLabels を検証する (id -> {text})。text 文字列のみ採用。
+function sanitizeCustomLabels(x: unknown): Record<string, { text: string }> {
+  const out: Record<string, { text: string }> = {}
+  if (x && typeof x === 'object') {
+    for (const [id, v] of Object.entries(x as Record<string, unknown>)) {
+      const t = (v as { text?: unknown })?.text
+      if (typeof t === 'string') out[id] = { text: t }
+    }
+  }
+  return out
 }
 
 // 永続化された glassLayout を新形式 (固定 MAX_ROWS 行) に正規化する。
@@ -261,11 +292,12 @@ function normalizeGlassLayout(x: unknown): GlassLayout | undefined {
   if (!Array.isArray(rowsRaw)) return undefined
   const strList = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : []
+  const customLabels = sanitizeCustomLabels((x as { customLabels?: unknown }).customLabels)
   // 新形式: rows が string[][]
   if (rowsRaw.every((r) => Array.isArray(r))) {
     const rows = emptyRows()
     for (let i = 0; i < MAX_ROWS; i++) rows[i] = strList(rowsRaw[i])
-    return { rows }
+    return { rows, customLabels }
   }
   // 旧 anchor 形式 → 絶対行 (top は上から / bottom は下から詰める)
   const top: string[][] = []
@@ -282,7 +314,7 @@ function normalizeGlassLayout(x: unknown): GlassLayout | undefined {
   for (const r of top) if (i < MAX_ROWS) rows[i++] = r
   let j = MAX_ROWS - 1
   for (let k = bottom.length - 1; k >= 0 && j >= i; k--) rows[j--] = bottom[k]
-  return { rows }
+  return { rows, customLabels }
 }
 
 // 新規 server ソースを不変 ID で追加する。
