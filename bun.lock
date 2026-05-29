@@ -6,6 +6,7 @@
       "name": "eveng2-toolbar",
       "dependencies": {
         "@evenrealities/even_hub_sdk": "^0.0.10",
+        "@evenrealities/pretext": "^0.1.4",
         "lucide-static": "^1.16.0",
         "sortablejs": "^1.15.7",
       },
@@ -51,6 +52,8 @@
     "@evenrealities/evenhub-cli": ["@evenrealities/evenhub-cli@0.1.13", "", { "dependencies": { "chalk": "^5.6.2", "commander": "^14.0.2", "inquirer": "^13.1.0", "js-yaml": "^4.1.1", "open": "^11.0.0", "qr-image": "^3.2.0", "qrcode-terminal": "^0.12.0", "zod": "^4.3.2" }, "peerDependencies": { "typescript": "^5" }, "bin": { "evenhub": "main.js", "eh": "main.js" } }, "sha512-glkkGfImds8ceh1YTbVvwuw7jlcSAKnI6Q7ATrDynKSvODs9/FV/R+0CliyCog3JJRTON0+EXBLW3lxU4x8NBQ=="],
 
     "@evenrealities/evenhub-simulator": ["@evenrealities/evenhub-simulator@0.7.3", "", { "optionalDependencies": { "@evenrealities/sim-darwin-arm64": "0.7.3", "@evenrealities/sim-darwin-x64": "0.7.3", "@evenrealities/sim-linux-x64": "0.7.3", "@evenrealities/sim-win32-x64": "0.7.3" }, "bin": { "evenhub-simulator": "bin/index.js" } }, "sha512-ZZ/leB3ed5LFJ8eERgQBltJIpibwu2RtjIwtomwmXl0+0bDPCAm6KiSLAkqlzMeweEu6TVxT0fh8mK16+M0pWA=="],
+
+    "@evenrealities/pretext": ["@evenrealities/pretext@0.1.4", "", {}, "sha512-gSZk/uxIhZW3geOM5bP1IS0s1sg7cA7KLLpBDgH9T1+ZNHMIFTMcgQN1qw4+/Xi/rcxsDsWZ7UZndIS/s4fRcA=="],
 
     "@evenrealities/sim-darwin-arm64": ["@evenrealities/sim-darwin-arm64@0.7.3", "", { "os": "darwin", "cpu": "arm64", "bin": { "evenhub-simulator": "bin/evenhub-simulator" } }, "sha512-M3ANiH8gc+TqwFxpcj1ncVTWMODvFIv1rCsYOJyMR0JWyAe8rRjdaRZEGL9BG7Qw9qhW/qMwSV2NGVSwUgJNlQ=="],
 

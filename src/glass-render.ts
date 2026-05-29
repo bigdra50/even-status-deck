@@ -1,3 +1,4 @@
+import { getTextWidth } from '@evenrealities/pretext'
 import {
   BUILTIN_GROUP_LABELS,
   BUILTIN_SOURCE_ID,
@@ -7,6 +8,7 @@ import {
   type GroupCfg,
   type GroupRef,
   isCustomLabelKey,
+  isRightDivider,
   LABEL_SEG,
 } from './config'
 import type { Group, StatusDoc } from './status-types'
@@ -23,6 +25,14 @@ export type GlassData = {
 
 // 288px / line-height 27px ≒ 10 行。glass の表示可能行数 (companion の行数上限にも使う)。
 export const MAX_ROWS = 10
+
+// G2 ディスプレイ寸法と TextContainer padding (glass.ts の TextContainerProperty と一致させる)。
+// 右クラスタの justify (右寄せ) は INNER_W の中で行う。
+export const GLASS_WIDTH = 576
+export const GLASS_HEIGHT = 288
+export const GLASS_PADDING = 8
+const INNER_W = GLASS_WIDTH - 2 * GLASS_PADDING // テキスト描画可能幅 (560px)
+const SPACE_W = getTextWidth(' ') // proportional フォントの space 1 個の advance 幅 (px)
 
 // progress bar: ━(filled) / ─(empty)。DESIGN.md §5 準拠。
 export function bar(percent: number, width = 12): string {
@@ -80,10 +90,10 @@ function showsGroupLabel(gcfg: GroupCfg, groupId: string): boolean {
   return gcfg.showDefaultLabel ?? defaultShowGroupLabel(groupId)
 }
 
-// items を解決して行文字列を連結する。各 segment は値 (segLabel value) を出し、group の
+// items を解決して 1 クラスタの文字列を連結する。各 segment は値 (segLabel value) を出し、group の
 // default-label が ON なら group 名を前置する。隣接する同 group の run では先頭 1 回だけ
 // (dedup)。custom テキストラベルは独立要素で run を切る。enabled/表示条件/status でフィルタ。
-function rowText(items: string[], d: GlassData, visible?: VisibleMap): string {
+function renderKeys(items: string[], d: GlassData, visible?: VisibleMap): string {
   const parts: string[] = []
   let prevGroup: string | null = null // 直前に出力した segment の groupId (custom label / 行頭で null)
   for (const key of items) {
@@ -119,17 +129,58 @@ function rowText(items: string[], d: GlassData, visible?: VisibleMap): string {
   return parts.length ? parts.join('  ') : ''
 }
 
+// 1 行を @right 区切りで左右クラスタの key 配列に分ける。@right が無ければ全て左。
+// normalize で @right は行内 1 個に正規化済 (念のため右側からは除外する)。
+export function splitRowClusters(row: string[]): { left: string[]; right: string[] } {
+  const i = row.findIndex(isRightDivider)
+  if (i < 0) return { left: row, right: [] }
+  return { left: row.slice(0, i), right: row.slice(i + 1).filter((k) => !isRightDivider(k)) }
+}
+
+export type RowClusters = { left: string; right: string }
+
+// 1 行の左右クラスタを描画文字列にする (companion プレビューが flex で左右配置に使う)。
+function rowClusters(row: string[], d: GlassData, visible?: VisibleMap): RowClusters {
+  const { left, right } = splitRowClusters(row)
+  return { left: renderKeys(left, d, visible), right: renderKeys(right, d, visible) }
+}
+
+// custom layout 各行の左右クラスタ (描画文字列)。companion プレビューが flex space-between で
+// 正確に左右表示するのに使う (実機の space 近似と違い px 量子化しない)。
+export function layoutRowClusters(
+  d: GlassData,
+  visible: VisibleMap | undefined,
+  budget: number,
+): RowClusters[] {
+  const rows = d.config.glassLayout?.rows ?? []
+  const out: RowClusters[] = []
+  for (let i = 0; i < budget; i++) out.push(rowClusters(rows[i] ?? [], d, visible))
+  return out
+}
+
+// 左右クラスタを 1 行文字列に justify する。実機は単一 TextContainer (content) しか持たないため
+// 中央を space で充填して右クラスタを右端へ寄せる近似 (誤差 ≒ SPACE_W/2)。pretext で px 計測。
+// - 右が空: 左だけ (従来の左寄せ)。- 左が空: 行頭 space で右寄せ。- 両方: 中央 space は最低 1 個。
+function justifyClusters({ left, right }: RowClusters): string {
+  if (!right) return left
+  const rightW = getTextWidth(right)
+  if (!left) {
+    const pad = Math.max(0, Math.round((INNER_W - rightW) / SPACE_W))
+    return ' '.repeat(pad) + right
+  }
+  const gap = Math.round((INNER_W - getTextWidth(left) - rightW) / SPACE_W)
+  return left + ' '.repeat(Math.max(1, gap)) + right
+}
+
 // custom layout (固定行) の絶対行レンダー。budget 行ぶん (空行は '' で保持) を返す。
-// 行番号 = 絶対位置なので空行も保持する (上の空行が下へ押し下げる)。
+// 行番号 = 絶対位置なので空行も保持する (上の空行が下へ押し下げる)。各行は @right 区切りで
+// 左右クラスタに分け、右クラスタがあれば中央 space 充填で右端へ寄せる。
 export function layoutLines(
   d: GlassData,
   visible: VisibleMap | undefined,
   budget: number,
 ): string[] {
-  const rows = d.config.glassLayout?.rows ?? []
-  const out: string[] = []
-  for (let i = 0; i < budget; i++) out.push(rowText(rows[i] ?? [], d, visible))
-  return out
+  return layoutRowClusters(d, visible, budget).map(justifyClusters)
 }
 
 // 従来の group=1行 描画 (glassLayout 未設定時)。align で top/bottom に振り分ける。

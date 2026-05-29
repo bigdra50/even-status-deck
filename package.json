@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@evenrealities/even_hub_sdk": "^0.0.10",
+    "@evenrealities/pretext": "^0.1.4",
     "lucide-static": "^1.16.0",
     "sortablejs": "^1.15.7"
   },

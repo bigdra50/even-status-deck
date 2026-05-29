@@ -21,7 +21,9 @@ import {
   generateGlassLayout,
   genLabelId,
   isCustomLabelKey,
+  isRightDivider,
   loadConfig,
+  RIGHT_DIVIDER,
   removeSource,
   type SegCfg,
   saveConfig,
@@ -30,7 +32,13 @@ import {
 } from './config'
 import { fetchMachineFrom, type MachineInfo } from './data'
 import { esc } from './escape'
-import { type GlassData, layoutLines, MAX_ROWS, summarySections } from './glass-render'
+import {
+  type GlassData,
+  layoutRowClusters,
+  MAX_ROWS,
+  splitRowClusters,
+  summarySections,
+} from './glass-render'
 import { icon } from './icons'
 import type { Group, Segment } from './status-types'
 import { getAllStatuses, getSourceStatus, setSources, startPolling, subscribe } from './store'
@@ -83,7 +91,13 @@ function glassPreviewHtml(): string {
   const d = glassData()
   const grow = (l: string) => `<span class="grow">${l ? esc(l) : '&nbsp;'}</span>`
   if (config.glassLayout) {
-    return `<div class="glass-screen">${layoutLines(d, visible, MAX_ROWS).map(grow).join('')}</div>`
+    // 各行を左右クラスタで表示。右クラスタがあれば flex space-between で右端へ寄せる
+    // (実機の space 近似と違い、プレビューは px 量子化せず正確に左右配置する)。
+    const row = ({ left, right }: { left: string; right: string }) =>
+      right
+        ? `<div class="grow gjust"><span>${left ? esc(left) : ''}</span><span class="gj-r">${esc(right)}</span></div>`
+        : grow(left)
+    return `<div class="glass-screen">${layoutRowClusters(d, visible, MAX_ROWS).map(row).join('')}</div>`
   }
   const { top, bottom } = summarySections(d, visible)
   if (top.length + bottom.length === 0) top.push('(no metric)')
@@ -334,20 +348,27 @@ function wysChip(key: string): string {
   return `<span class="wys-chip" data-segkey="${esc(key)}" title="${esc(group ? `${group} ${seg}` : seg)}">${grip}${grp}<span class="wys-txt">${esc(text)}</span>${x}</span>`
 }
 
-// 編集モードのキャンバス: 固定 MAX_ROWS 行 (行番号ガター + ドロップセル) + 未配置棚 + Reset。
+// 編集モードのキャンバス: 固定 MAX_ROWS 行 (行番号ガター + 左/右ゾーン) + 未配置棚 + Reset。
 // 行番号 = glass の上からの絶対位置。glass にヒント行は出さないので予約行も無い (全行配置可)。
+// 各行は左ゾーン｜右ゾーンの 2 ドロップ領域。右ゾーンに置いた chip は実機で右寄せされる。
 function renderGlassEdit(lay: NonNullable<Config['glassLayout']>): string {
-  const placed = new Set(lay.rows.flat())
+  const placed = new Set(lay.rows.flat().filter((k) => !isRightDivider(k)))
   const unplaced = allPlaceableKeys().filter((k) => !placed.has(k))
   const lines: string[] = []
   for (let i = 0; i < MAX_ROWS; i++) {
-    const items = lay.rows[i] ?? []
-    const chips = items.map(wysChip).join('')
-    const warn = rowOverflow(items)
+    const row = lay.rows[i] ?? []
+    const { left, right } = splitRowClusters(row)
+    const lc = left.map(wysChip).join('')
+    const rc = right.map(wysChip).join('')
+    const warn = rowOverflow(row)
       ? `<span class="wys-over" title="May be too long for one line">${icon('alert', { size: 12 })}</span>`
       : ''
     lines.push(
-      `<div class="wys-line"><span class="wys-ln">${i + 1}</span><div class="wys-cell" data-row="${i}">${chips}</div>${warn}</div>`,
+      `<div class="wys-line"><span class="wys-ln">${i + 1}</span>` +
+        `<div class="wys-cell wys-zone" data-row="${i}" data-zone="left" title="Left">${lc}</div>` +
+        `<span class="wys-zone-sep" title="Left ｜ Right"></span>` +
+        `<div class="wys-cell wys-zone wys-zone-r" data-row="${i}" data-zone="right" title="Right">${rc}</div>` +
+        `${warn}</div>`,
     )
   }
   const shelf = unplaced.length
@@ -355,6 +376,7 @@ function renderGlassEdit(lay: NonNullable<Config['glassLayout']>): string {
     : '<span class="cmp-sub">Nothing unplaced</span>'
   return `<div class="gpv"><div class="gpv-cap">G2 576×288 — editing</div>
       <div class="gpv-screen wys-screen">${lines.join('')}</div></div>
+    <div class="cmp-sub">Drag items into the left or right side of a row. Right-side items align to the right edge.</div>
     <div class="cmp-label">Unplaced</div>
     <div class="wys-cell wys-shelf" data-shelf="1">${shelf}</div>
     <div class="field-row wys-add">
@@ -391,9 +413,8 @@ function renderHome(): string {
     .map((s) => sourceRow(s))
     .join('')
   return `
-    <div class="cmp-label">Sources</div>
+    <div class="cmp-label cmp-label-row">Sources<button class="add-btn" data-action="add-source" title="Add source" aria-label="Add source">${icon('plus', { size: 16 })}</button></div>
     ${sources}
-    <button class="save-btn" data-action="add-source">${icon('plus', { size: 16 })}Add server</button>
 
     <div class="cmp-label">Items (drag ${icon('grip', { size: 12 })} to reorder)</div>
     <div id="source-list">${renderItems()}</div>
@@ -517,18 +538,25 @@ function attachSortables(): void {
   }
 }
 
-// ドラッグ後、各行セルの chip 並びから glassLayout.rows (固定 MAX_ROWS 行) を再構築する。
+// ドラッグ後、各行の左/右ゾーンの chip 並びから glassLayout.rows (固定 MAX_ROWS 行) を再構築する。
+// 右ゾーンに chip があれば左ゾーンとの間に @right 区切りを挿む (前=左/後=右クラスタ)。
 // 棚 (data-shelf) の chip はどの行にも無い = 未配置 (次の描画で棚に導出される)。
 function recomputeWysFromDom(): void {
   if (!config.glassLayout) return
-  const rows: string[][] = Array.from({ length: MAX_ROWS }, () => [])
-  for (const el of document.querySelectorAll<HTMLElement>('.wys-cell[data-row]')) {
-    const i = Number(el.dataset.row)
-    if (!Number.isInteger(i) || i < 0 || i >= MAX_ROWS) continue
-    rows[i] = [...el.querySelectorAll<HTMLElement>('.wys-chip')]
+  const readZone = (i: number, zone: 'left' | 'right'): string[] => {
+    const el = document.querySelector<HTMLElement>(
+      `.wys-cell[data-row="${i}"][data-zone="${zone}"]`,
+    )
+    if (!el) return []
+    return [...el.querySelectorAll<HTMLElement>('.wys-chip')]
       .map((c) => c.dataset.segkey ?? '')
       .filter(Boolean)
   }
+  const rows: string[][] = Array.from({ length: MAX_ROWS }, (_, i) => {
+    const left = readZone(i, 'left')
+    const right = readZone(i, 'right')
+    return right.length ? [...left, RIGHT_DIVIDER, ...right] : left
+  })
   config.glassLayout = { rows, customLabels: config.glassLayout.customLabels }
   void saveConfig(config)
   render()

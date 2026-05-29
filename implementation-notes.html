@@ -561,5 +561,44 @@
     </table>
     <p class="done">検証 (ブラウザ): clock 1 segment 化 / Time-Date-Order の合成 (<code>1:32 PM  Fri May 29</code>) / 順序入替 / Time Off→日付のみ / Date Off→時刻のみ / MMM 月名 / 12h / parse 往復 / preview 追従 / lint・build クリーン。</p>
     <p class="done">敵対的レビュー (30 エージェント, 確定 15 = 実バグ 2 + 健全確認 12 + 設計指摘 1): (1) <code>consolidateClock</code> が旧 time/date の format を datetime に引き継がず黙って消える → 旧 format を合成 (区切り 2 スペース) して継承。(2) else 分岐が datetime.enabled を毎ロード true に上書きし OFF 選択を破棄 → 上書き廃止、新規作成時のみ enabled を旧 time/date から継承 (両 OFF は OFF 維持)。round-trip/UI 復元/onChange routing/esc/CSS/widthChars 等 12 件は健全と確認。</p>
+    <hr>
+
+    <h2 class="done">glass の segment 単位 左右配置 (iOS ステータスバー型) + UI 小修正 [2026-05-29]</h2>
+    <p>ユーザー要望: (1)「Add server」→「Add Sources」、(2) その追加ボタンを小さく、(3) glass は現状すべて左詰めだが
+      <strong>segment ごと</strong>に右詰めもできるようにしたい。具体例「同一行で時計関連=左 / バッテリー等デバイス状態=右」(iOS 風 justify-between)。
+      設計の粒度・実装は gpt-5.5 (copilot) と 2 ラウンド議論し確定。</p>
+
+    <h3>Design decisions <span class="done">[decided]</span></h3>
+    <table>
+      <tr><th>項目</th><th>採用</th><th>根拠</th></tr>
+      <tr><td>粒度</td><td>custom layout の<strong>行内 左右クラスタ</strong> (各行 = 左クラスタ + 右クラスタ)</td><td>ユーザー指定の iOS 例 (同一行で時計左/電池右) は cross-group 配置 = custom layout でのみ成立。auto モードは 1 group=1 行のため据え置き。</td></tr>
+      <tr><td>データモデル</td><td>案S: <code>glassLayout.rows: string[][]</code> 据え置き。予約キー <code>RIGHT_DIVIDER='@right'</code> を行内に 1 個挿み、前=左 / 後=右。無ければ全左 (後方互換)。</td><td>移行/正規化/生成/DOM 読み戻しが <code>string[][]</code> 前提で多数。案T (<code>{left,right}[]</code> 構造化) は全層改修 + データ移行が必要。copilot も案S 推奨。</td></tr>
+      <tr><td>内部表現</td><td><code>RowClusters = {left:string; right:string}</code> を描画/プレビューで使用、永続は案S</td><td>意味の明快さ (左右) とデータの単純さ (string[][]) を両立。</td></tr>
+    </table>
+
+    <h3>Deviations / Tradeoffs <span class="warn">[deviation]</span></h3>
+    <table>
+      <tr><th>逸脱</th><th>内容</th><th>理由</th></tr>
+      <tr><td>実機は space 近似</td><td>SDK <code>TextContainerProperty</code> に text-align が無く、フォントは proportional (LVGL)。単一コンテナ <code>content</code> しか持てないため、<code>@evenrealities/pretext</code> の <code>getTextWidth</code> で左右クラスタの px 幅を測り、中央を space で充填して右クラスタを右端へ寄せる。</td><td>誤差 ≒ <code>SPACE_W/2</code> (実測 <code>SPACE_W=5px</code> → 最大 ~2.5px)。HUD 用途で許容。pixel-perfect な multi-container + xPosition 案は単一→複数コンテナ大改修 + BLE churn 増のため不採用。</td></tr>
+      <tr><td>プレビューと実機の二重描画</td><td>companion プレビューは CSS flex <code>justify-content:space-between</code> で正確に左右配置 (px 量子化なし)。実機は space 近似。</td><td>プレビュー = 意図したレイアウト、実機 = 最善近似。プレビューは元々 <code>--font-mono</code> で実機 proportional と既に近似関係。</td></tr>
+      <tr><td>機能の置き場所</td><td>左右配置は custom layout 専用。auto (未カスタマイズ) では使えず「Customize layout」が前提。</td><td>同一行に複数 group を載せる = custom layout の責務。auto に per-segment 水平配置を足すと意味が曖昧。</td></tr>
+    </table>
+
+    <h3>実装</h3>
+    <table>
+      <tr><th>層</th><th>変更</th></tr>
+      <tr><td>依存</td><td><code>@evenrealities/pretext@^0.1.4</code> 追加 (bun。npm は evenhub-cli の peer ts^5 競合で不可)。</td></tr>
+      <tr><td>config.ts</td><td><code>RIGHT_DIVIDER='@right'</code> / <code>isRightDivider</code>。<code>normalizeGlassLayout</code> に行内 @right 1 個正規化 (<code>onceDivider</code>)。<code>consolidateClock</code> の flatMap は @right を passthrough (変更不要)。<code>generateGlassLayout</code> は @right 無し (全左)。</td></tr>
+      <tr><td>glass-render.ts</td><td><code>GLASS_WIDTH/HEIGHT/PADDING</code> + 派生 <code>INNER_W=560</code> / <code>SPACE_W=getTextWidth(' ')</code> を定数化。<code>rowText</code>→<code>renderKeys</code> に改名。<code>splitRowClusters</code>(@right で分割) / <code>rowClusters</code> / <code>layoutRowClusters</code>(プレビュー用, pretext 非依存) / <code>justifyClusters</code>(実機用, pretext で中央 space 充填) を追加。<code>layoutLines</code> = clusters→justify。</td></tr>
+      <tr><td>glass.ts</td><td><code>DISPLAY_W/H</code> と <code>paddingLength</code> を glass-render の共有定数に統一 (INNER_W と確実に一致)。</td></tr>
+      <tr><td>companion.ts</td><td>ソース追加 UI を「Sources」見出し右端の <code>+</code> アイコンボタン (<code>cmp-label-row</code> + <code>add-btn</code>) に変更 (旧 <code>save-btn sm</code> 横長ボタンは廃止)。プレビュー custom 分岐を <code>layoutRowClusters</code>+flex で左右表示。<code>renderGlassEdit</code> 各行を 左/右 2 ゾーン (<code>data-zone</code>) に分割。<code>recomputeWysFromDom</code> が両ゾーンを読み、右に chip があれば <code>@right</code> を挿んで直列化。</td></tr>
+      <tr><td>styles.css</td><td><code>.add-btn</code> (accent 丸 + ボタン)。<code>.save-btn.sm</code> (Add label 用に残置)。<code>.wys-zone</code>/<code>.wys-zone-r</code>(右寄せ)/<code>.wys-zone-sep</code>(破線縦線)。<code>.glass-screen .grow.gjust</code> (flex space-between) + <code>.gj-r</code>。</td></tr>
+    </table>
+    <p>justify ロジック: 右空=左のみ / 左空=行頭 space で右寄せ / 両方=中央 space (最低 1)。<code>gap=round((INNER_W-leftW-rightW)/SPACE_W)</code>。</p>
+
+    <h3>検証 <span class="done">[done]</span></h3>
+    <p class="done">数値スモーク (bun): 行「時計左 / 電池右」= <code>10:30 Mon … Battery Bat 82%</code> 実幅 562px (inner 560, 誤差 2px) / 全左 92px / 全右 560px ぴったり。</p>
+    <p class="done">ブラウザ E2E (Chrome): Add Sources 小型化 / Customize→Edit layout で各行 左｜右 2 ゾーン描画 / Clock chip を右ゾーンへドラッグ→右寄せ chip / Done でプレビューが右端寄せ。tsc・build・biome クリーン。</p>
+    <p class="open">実機 (G2) 確認待ち: space 近似の右端整合 (誤差 ~2.5px) / 行内左右の見やすさ / 長文行 (左+右が INNER 超過) 時の折返し挙動。ブラウザは bridge 無しで reload すると layout リセット (memory のみ) = dev 想定。</p>
   </body>
 </html>

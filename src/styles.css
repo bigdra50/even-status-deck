@@ -179,6 +179,20 @@ textarea {
   align-items: center;
   justify-content: center;
 }
+/* 見出し右端の追加ボタン (+ アイコン)。primary な「追加」アクションを accent の丸ボタンで示す。 */
+.add-btn {
+  background: var(--accent);
+  color: #232323;
+  border: none;
+  border-radius: var(--radius-pill);
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 
 /* source list (Home に展開, ジャンル折りたたみ) */
 .src {
@@ -529,6 +543,13 @@ textarea {
   justify-content: center;
   gap: var(--space-2);
 }
+/* 小型ボタン (Add Sources / Add label 等): 全幅をやめ内容幅・小 padding・小フォントに */
+.save-btn.sm {
+  width: auto;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-sm);
+  margin-top: var(--space-3);
+}
 
 /* glass layout WYSIWYG エディタ (GLASS PREVIEW 上で固定行に segment を配置) */
 .cmp-label-row {
@@ -581,6 +602,22 @@ textarea {
 .wys-cell.drop-hot {
   border-color: var(--accent, #4bb956);
   background: rgba(75, 185, 86, 0.12);
+}
+/* 左/右ゾーン (iOS 風の行内 左右配置)。右ゾーンの chip は右寄せして実機の右詰めを示唆する。 */
+.wys-zone {
+  flex: 1;
+  min-width: 0;
+}
+.wys-zone-r {
+  justify-content: flex-end;
+}
+/* 左ゾーンと右ゾーンの境界 (破線の縦線) */
+.wys-zone-sep {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: 0;
+  border-left: 1px dashed var(--border);
+  margin: 2px 0;
 }
 .wys-over {
   color: #e0a458;
@@ -688,6 +725,16 @@ textarea {
 }
 .glass-screen .grow {
   display: block;
+}
+/* custom layout プレビュー: 左右クラスタを space-between で正確配置 (実機の space 近似と別に
+   px 量子化せず表示)。white-space:pre なので各クラスタ内の padding space は保持される。 */
+.glass-screen .grow.gjust {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.glass-screen .gj-r {
+  text-align: right;
 }
 .glass-screen .ghud {
   color: rgba(60, 250, 68, 0.7);

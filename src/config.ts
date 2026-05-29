@@ -29,6 +29,15 @@ export function genLabelId(): string {
   return `cl_${genSourceId().slice(0, 8)}`
 }
 
+// 行内の左右クラスタ区切り (iOS ステータスバー型)。rows[i] にこの予約キーを 1 つ置くと
+// その前 = 左寄せ / 後 = 右寄せ。無ければ全て左寄せ (従来挙動・後方互換)。実機は
+// justify-between (pretext で px 計測し中央を space 充填)、companion は flex space-between。
+// segKey ('|' 区切り) とも customLabelKey ('@customLabel:' 前置) とも衝突しない。
+export const RIGHT_DIVIDER = '@right'
+export function isRightDivider(key: string): boolean {
+  return key === RIGHT_DIVIDER
+}
+
 // builtin の表示ラベルはコード所有 (localStorage に保存しない)。companion はこれで
 // group/segment の行名を出し、永続化された source label (旧: '本体(時刻/電池)') へ
 // フォールバックしない。glass は builtins.ts の短縮ラベルを使う。
@@ -318,10 +327,20 @@ function normalizeGlassLayout(x: unknown): GlassLayout | undefined {
       ? v.filter((s): s is string => typeof s === 'string' && !s.endsWith(`|${LABEL_SEG}`))
       : []
   const customLabels = sanitizeCustomLabels((x as { customLabels?: unknown }).customLabels)
+  // 行内の @right は 1 個のみ有効 (最初を残し残りを除去)。前=左 / 後=右クラスタの区切り。
+  const onceDivider = (row: string[]): string[] => {
+    let seen = false
+    return row.filter((k) => {
+      if (!isRightDivider(k)) return true
+      if (seen) return false
+      seen = true
+      return true
+    })
+  }
   // 新形式: rows が string[][]
   if (rowsRaw.every((r) => Array.isArray(r))) {
     const rows = emptyRows()
-    for (let i = 0; i < MAX_ROWS; i++) rows[i] = strList(rowsRaw[i])
+    for (let i = 0; i < MAX_ROWS; i++) rows[i] = onceDivider(strList(rowsRaw[i]))
     return { rows, customLabels }
   }
   // 旧 anchor 形式 → 絶対行 (top は上から / bottom は下から詰める)

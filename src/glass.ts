@@ -10,7 +10,15 @@ import { loadBatteryLog, recordBatteryLevel, setBatteryBridge } from './battery'
 import { localStatus } from './builtins'
 import { BUILTIN_SOURCE_ID, emptyConfig, loadConfig, syncSourceWithStatus } from './config'
 import { getGlassBattery, setGlassBattery } from './device-state'
-import { buildViews, type GlassData, type GView, renderGlass } from './glass-render'
+import {
+  buildViews,
+  GLASS_HEIGHT,
+  GLASS_PADDING,
+  GLASS_WIDTH,
+  type GlassData,
+  type GView,
+  renderGlass,
+} from './glass-render'
 import { feedImuSample, isImuStarted, setImuConfig, startImu, stopImu } from './imu'
 import { activateKeepAlive, deactivateKeepAlive } from './keep-alive'
 import { getAllStatuses, refreshBuiltins, refreshAll as storeRefresh, subscribe } from './store'
@@ -18,8 +26,8 @@ import { computeVisible, resetVisibility, type VisibleMap } from './visibility'
 
 // glass (G2 576×288) の描画。複数ソースの status は共有 store が保持し、glass は購読して
 // 横断描画する。HUD (時刻/電池) は builtin local の group として groupOrder に含まれる。
-const DISPLAY_W = 576
-const DISPLAY_H = 288
+const DISPLAY_W = GLASS_WIDTH
+const DISPLAY_H = GLASS_HEIGHT
 const CONTAINER_ID = 1
 const CONTAINER_NAME = 'toolbar'
 
@@ -247,7 +255,7 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
     height: DISPLAY_H,
     borderWidth: 0,
     borderColor: 0,
-    paddingLength: 8,
+    paddingLength: GLASS_PADDING,
     containerID: CONTAINER_ID,
     containerName: CONTAINER_NAME,
     content: renderGlass(views[idx] ?? 'summary', data, visible),
