@@ -521,12 +521,12 @@ textarea {
   flex-direction: column;
   gap: 2px;
 }
-/* テキストエディタ風: 行番号ガター + ドロップセル */
+/* テキストエディタ風: 行番号ガター + ドロップセル。各行を枠で囲い境界を明示する */
 .wys-line {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 6px;
-  min-height: 24px;
+  min-height: 28px;
 }
 .wys-ln {
   flex: 0 0 1.4em;
@@ -535,26 +535,20 @@ textarea {
   color: #4a5a4a;
   font-variant-numeric: tabular-nums;
   user-select: none;
-}
-.wys-line.reserved {
-  opacity: 0.5;
-}
-.wys-reserved-tag {
-  font-size: 10px;
-  color: #4a5a4a;
-  border: 1px solid #2a3a2a;
-  border-radius: 4px;
-  padding: 0 4px;
+  align-self: flex-start; /* 行番号は行の上端に揃える (折り返しても先頭が分かる) */
+  padding-top: 6px;
 }
 .wys-cell {
   display: flex;
   flex-wrap: wrap;
+  align-content: flex-start;
   gap: 4px;
   flex: 1;
-  min-height: 22px;
-  padding: 2px 4px;
+  min-height: 26px;
+  padding: 3px 5px;
   border-radius: 6px;
-  border: 1px solid transparent;
+  border: 1px solid var(--border); /* 行ごとに枠 → 折り返した chip も同じ行と分かる */
+  background: rgba(255, 255, 255, 0.025);
 }
 .wys-cell.drop-hot {
   border-color: var(--accent, #4bb956);
