@@ -181,13 +181,12 @@ Source Edit : 接続先 URL（複数可） + 接続テスト + 「ローカル�
 |---|---|---|---|
 | builtin（client 算出） | Device | clock: datetime | 端末ロケール（12/24h・日付順を自動判定、glass は英語表記） |
 | builtin | Device | g2: level / rate / eta | SDK 電池（充電中・不足時は rate/eta を出さない） |
-| server | claude-code | session (5h%/reset) | `/api/oauth/usage` `five_hour` |
-| server | claude-code | weekly (7d%/reset) | `seven_day` |
-| server | claude-code | sonnet / opus | `seven_day_sonnet` / `seven_day_opus` |
 | server | claude-code | cost / msgs (today) | `~/.claude/projects/**/*.jsonl` 集計 |
 | server | codex | 5h (%/reset) | `codex app-server` `account/rateLimits/read` `primary` |
 | server | codex | weekly (%/reset) | `secondary` |
+| server | system | cpu / mem / battery / disk | `systeminformation`（全OS・依存ゼロ） |
 
+- rate-limit %（claude-code の session/weekly/sonnet/opus）は標準 provider から除外した。OAuth/keychain 経由の非公式 `/api/oauth/usage` に依存し信頼境界・後方互換が脆いため、外部 subprocess provider（PROTOCOL §9c）として opt-in する。
 - 値の整形はソース（provider）責務、描画は client 責務（status line 型）。新しい group/segment は接続後に自動検出され、各 profile の Unplaced 棚に出る（自動配置はしない）。
 - 将来: Gemini、システムリソース（CPU/メモリ/バッテリー）も同じ Source/Group/Segment 枠で追加。
 - provider プラグイン（`$XDG_CONFIG_HOME/eveng2-toolbar/providers/*.ts` autoload）と server 側 `config.toml` の有効/無効は素材レイヤ。companion の可視性トグルとは別の層（README 参照）。
@@ -200,9 +199,9 @@ Source Edit : 接続先 URL（複数可） + 接続テスト + 「ローカル�
 | store（.ehpk 配布） | 固定クラウド（Cloudflare Worker proxy 等） | whitelist + CORS ヘッダ必須 |
 
 - フロントは `fetchStatusFrom(url)` / `fetchMachineFrom(url)` のデータ取得層を抽象化し、sideload/store でこの層だけ差し替える。
-- Claude: macOS keychain `Claude Code-credentials` → `GET /api/oauth/usage`（`anthropic-beta: oauth-2025-04-20`, `User-Agent: claude-code/<ver>`）。120s キャッシュで 429 回避。
+- Claude（標準）: `~/.claude/projects/**/*.jsonl` をローカル集計し cost / msgs を算出する（認証不要）。rate-limit % の OAuth/keychain（`/api/oauth/usage`）経路は標準から外し、外部 subprocess provider に委ねる（§7）。
 - Codex: `codex app-server` JSON-RPC `initialize` → `initialized` → ~1.5s → `account/rateLimits/read`。`primary` が埋まるまで再取得。
-- トークン/認証はデータソース（Mac/サーバー）内に留め、フロント/glass には使用率（%）だけ渡す。
+- トークン/認証はデータソース（Mac/サーバー）内に留め、フロント/glass には集計値（cost / % 等）だけ渡す。
 
 ## 9. ローカルサーバーのリリース整備（クロスプラットフォーム・配布・拡張）
 
@@ -224,8 +223,8 @@ companion が叩く `/api/status`・`/api/machine` を返すローカルサー�
 
 ### クロスプラットフォーム（macOS/Linux 同時 → Windows 後追い）
 
-- Claude token: `CLAUDE_CONFIG_DIR` か `~/.claude/.credentials.json`（Linux/Windows は平文・`fs` read のみ、mac も SSH 用に存在しうる）を優先し、無ければ macOS だけ `security`(keychain) にフォールバック。**分岐は1箇所**、パース後は `parsed?.claudeAiOauth?.accessToken` に統一。
-- system info: 手書き `vm_stat`/`pmset`/`df`/`loadavg` を `systeminformation`（npm・依存ゼロ・全OS・wmic 廃止対応済み）へ置換。`loadavg/cores` 概算は Windows で常に 0% になるため `currentLoad()` に置換。
+- Claude（標準 provider）: token を一切扱わず `~/.claude/projects/**/*.jsonl` のローカル集計のみ（cost / msgs）。keychain / `/api/oauth/usage` を使う rate-limit % は標準から除外し、外部 subprocess provider（PROTOCOL §9c）として opt-in する。credential file / keychain への依存は標準 server から無くなった。
+- system info: 手書き `vm_stat`/`pmset`/`df`/`loadavg` を `systeminformation`（npm・依存ゼロ・全OS・wmic 廃止対応済み）へ置換。`loadavg/cores` 概算は Windows で常に 0% になるため `currentLoad()` に置換。group id は OS 非依存になったため `system`（旧 `mac`）。
 - codex: `codex app-server` 自体は OS 非依存。Windows の `spawn('codex')` は `.cmd` シムで ENOENT になりうるため `process.platform==='win32'` で `shell:true` か `codex.cmd`（後追い・実機検証）。失敗しても codex セグメントが n/a になるだけでクラッシュしない。
 - credential の平文ファイルには refreshToken（長命）が含まれる。**token/refreshToken はレスポンス・ログ・subprocess に出さない**（集計値 % だけ glass へ）。WSL は Windows 側ファイルの 0777 継承に注意し Linux ネイティブの `~/.claude/.credentials.json` を読む。
 

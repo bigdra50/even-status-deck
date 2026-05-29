@@ -135,31 +135,25 @@
     <ol>
       <li>
         Clone the repo on your Mac
-        <span class="cmd">ghq get bigdra50/eveng2-toolbar</span>
+        <span class="cmd">git clone https://github.com/bigdra50/eveng2-toolbar.git</span>
       </li>
       <li>
         Install dependencies
-        <span class="cmd">bun install</span>
+        <span class="cmd">cd eveng2-toolbar &amp;&amp; bun install</span>
       </li>
       <li>
-        Start the dev server (it serves the API on the same origin)
-        <span class="cmd">bun run dev</span>
+        Start the local server (serves the API on port 8723)
+        <span class="cmd">bun run server</span>
       </li>
       <li>
-        Find your Mac's LAN IP
-        <span class="cmd">ipconfig getifaddr en0</span>
+        Read the LAN address it prints on startup. It looks like
+        <code>http://192.168.x.x:8723</code> (the server logs your Mac's LAN IP).
       </li>
       <li>
-        Enter <code>http://&lt;LAN-IP&gt;:5173</code> as the URL in the server
+        Enter that <code>http://&lt;LAN-IP&gt;:8723</code> as the URL in the server
         settings, then tap Test
       </li>
     </ol>
-
-    <h2>QR shortcut</h2>
-    <p>
-      Instead of typing it, run this on your Mac to show a QR code of the URL and scan it from your phone.
-    </p>
-    <span class="cmd">bun run qr</span>
 
     <div class="note">
       <p>
@@ -167,7 +161,7 @@
         It won't connect if your Mac and phone (glasses) are on different networks.
       </p>
       <p style="margin-bottom: 0">
-        Updates only while the dev server is running. It stops when your Mac sleeps.
+        Updates only while the server is running. It stops when your Mac sleeps.
       </p>
     </div>
   </body>
