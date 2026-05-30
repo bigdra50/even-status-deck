@@ -49,12 +49,18 @@ export function isRightDivider(key: string): boolean {
 // フォールバックしない。glass は builtins.ts の短縮ラベルを使う。
 export const BUILTIN_GROUP_LABELS: Record<string, string> = {
   clock: 'Clock',
+  calendar: 'Calendar', // year/month/week 経過バー
+  moon: 'Moon', // 月相 (segment 'phase' は無名なので glass は "Moon 4.2d")
   g2: 'G2', // segment 'Bat' と重複しないよう短縮 ("G2 Bat 82%")
 }
 export const BUILTIN_SEG_LABELS: Record<string, string> = {
   time: 'Time',
   date: 'Date',
   datetime: 'Date & Time',
+  year: 'Year progress',
+  month: 'Month progress',
+  week: 'Week progress',
+  phase: 'Moon phase',
   level: 'Battery level',
   rate: 'Rate',
   eta: 'Estimated time left',

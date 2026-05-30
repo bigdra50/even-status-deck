@@ -159,16 +159,124 @@ function clockSegment(cfg?: Config): Segment {
   }
 }
 
-// builtin local の StatusDoc。意味単位で 2 group に分ける:
-//   clock: time/date (時計。glass は値のみ)
-//   g2:    level/rate/eta (G2 電池。充電中/データ不足で rate/eta は出さない = segment 不在で非描画)
+// ── A 系データソース (キー不要・計算のみ・オフライン) ──
+// ネット不要の純計算で出せる値。date/clock と同じく client (WebView) で算出し、
+// builtin の StatusDoc に group として足す。各関数は時刻 d を引数に取り副作用を持たない (テスト可能)。
+
+// 期間 [start,end) における時刻 t の進捗 (0-100)。end<=start は 0。範囲外は 0/100 にクランプ。
+export function spanProgress(t: number, start: number, end: number): number {
+  if (end <= start) return 0
+  const p = ((t - start) / (end - start)) * 100
+  return Math.max(0, Math.min(100, p))
+}
+
+// 年の経過率 (1/1 0:00 = 0%、翌 1/1 0:00 = 100%)。ローカル時刻基準。
+export function yearProgress(d: Date): number {
+  const y = d.getFullYear()
+  return spanProgress(d.getTime(), new Date(y, 0, 1).getTime(), new Date(y + 1, 0, 1).getTime())
+}
+
+// 月の経過率 (1 日 0:00 = 0%、翌月 1 日 0:00 = 100%)。ローカル時刻基準。
+export function monthProgress(d: Date): number {
+  const y = d.getFullYear()
+  const m = d.getMonth()
+  return spanProgress(d.getTime(), new Date(y, m, 1).getTime(), new Date(y, m + 1, 1).getTime())
+}
+
+// 週の経過率 (月曜 0:00 = 0%、次の月曜 0:00 = 100%)。ISO 週 (月曜始まり) に合わせる。
+export function weekProgress(d: Date): number {
+  const dow = (d.getDay() + 6) % 7 // 0=Mon .. 6=Sun
+  const start = new Date(d.getFullYear(), d.getMonth(), d.getDate() - dow).getTime()
+  const end = new Date(d.getFullYear(), d.getMonth(), d.getDate() - dow + 7).getTime()
+  return spanProgress(d.getTime(), start, end)
+}
+
+// 朔望月 (新月→新月の平均日数) と基準新月 (2000-01-06 18:14 UTC)。月齢/照度の天文計算に使う。
+const SYNODIC_MONTH = 29.530588853
+const KNOWN_NEW_MOON = Date.UTC(2000, 0, 6, 18, 14)
+
+// 月齢 (0 以上 SYNODIC_MONTH 未満、単位=日)。新月=0、満月≈14.8。平均朔望月による近似。
+export function moonAge(d: Date): number {
+  const days = (d.getTime() - KNOWN_NEW_MOON) / 86_400_000
+  const age = days % SYNODIC_MONTH
+  return age < 0 ? age + SYNODIC_MONTH : age
+}
+
+// 月の照度 (0-100)。新月=0、満月=100。月齢から余弦近似で求める (bar 用 percent)。
+export function moonIllumination(age: number): number {
+  return ((1 - Math.cos((2 * Math.PI * age) / SYNODIC_MONTH)) / 2) * 100
+}
+
+// percent 値の表示文字列 ("41%")。bar は glass-render が percent から描く。
+function pctValue(p: number): string {
+  return `${Math.round(p)}%`
+}
+
+// 進捗 segment (年/月/週)。値は "41%"、percent は bar 用。数値系として右寄せ。
+function progressSeg(id: string, label: string, p: number): Segment {
+  return {
+    id,
+    label,
+    value: pctValue(p),
+    percent: p,
+    defaultEnabled: true,
+    widthChars: 4, // '100%'
+    isNumeric: true,
+  }
+}
+
+// calendar group: 年/月/週の経過バー (純計算・config 不要)。
+function calendarGroup(now: Date): Group {
+  return {
+    id: 'calendar',
+    label: '',
+    segments: [
+      progressSeg('year', 'Year', yearProgress(now)),
+      progressSeg('month', 'Month', monthProgress(now)),
+      progressSeg('week', 'Week', weekProgress(now)),
+    ],
+  }
+}
+
+// moon group: 月相 (月齢 + 照度)。値は月齢 "4.2d"、percent は照度 (bar 用)。
+// 絵文字 (🌒 等) は glass で tofu になるため value には含めない (glyphs.ts 参照)。
+function moonGroup(now: Date): Group {
+  const age = moonAge(now)
+  return {
+    id: 'moon',
+    label: '',
+    segments: [
+      {
+        id: 'phase',
+        label: '',
+        value: `${age.toFixed(1)}d`,
+        percent: moonIllumination(age),
+        defaultEnabled: true,
+        widthChars: 5, // '29.5d'
+        isNumeric: true,
+      },
+    ],
+  }
+}
+
+// builtin local の StatusDoc。意味単位で group に分ける:
+//   clock:    time/date (時計。glass は値のみ)
+//   calendar: year/month/week 経過バー (純計算・キー不要)
+//   moon:     月相 (月齢 + 照度。純計算・キー不要)
+//   g2:       level/rate/eta (G2 電池。充電中/データ不足で rate/eta は出さない = segment 不在で非描画)
 // group.label / segment.label は glass 向けの短縮。companion 側は config.ts の
 // BUILTIN_GROUP_LABELS / BUILTIN_SEG_LABELS で説明的なラベルに置き換えて表示する
 // (glass は狭いので compact、companion は分かりやすく、を両立する)。
 export function localStatus(config?: Config): StatusDoc {
   const { level, charging } = getGlassBattery()
+  const now = new Date()
   // clock group は単一 segment (Time/Date を合成した 1 つ)。SegCfg.format で表示を制御。
-  const groups: Group[] = [{ id: 'clock', label: '', segments: [clockSegment(config)] }]
+  // calendar/moon は純計算 (キー不要・ネット不要)。clock と同じく毎 tick / poll で更新される。
+  const groups: Group[] = [
+    { id: 'clock', label: '', segments: [clockSegment(config)] },
+    calendarGroup(now),
+    moonGroup(now),
+  ]
   if (level != null) {
     const battery: Segment[] = [
       {
