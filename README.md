@@ -6,6 +6,26 @@ Mac のメニューバーのように視界の端へ最小表示する。
 
 Even Hub SDK の WebView アプリで、companion（スマホ UI）と glass（G2 576×288, 4-bit 緑単色）描画を 1 つに含む。
 
+## クイックスタート
+
+アプリ本体（グラス表示 + companion）は Even Hub から入れ、データ源のローカルサーバーは手元の Mac / PC で起動する。クラウドは経由しない。
+
+前提: サーバーを動かすマシンに [Bun](https://bun.sh)（推奨）か Node.js 18+。Claude Code / Codex の利用状況を出すなら、そのマシンに各 CLI が入っていること。
+
+1. ローカルサーバーを起動する（`/api` を `0.0.0.0:8723` で配信し、起動時に接続用の LAN IP を表示する）。
+
+   ```bash
+   bunx eveng2-toolbar server   # Bun
+   npx eveng2-toolbar server    # Node.js
+   ```
+
+   > npm 公開後に有効。公開前は[開発者向けセットアップ](#開発者向けセットアップ)の clone 手順で起動する。
+
+2. companion（スマホ UI）の「+ サーバーを追加」に、表示された `http://<LAN-IP>:8723` を登録して Test する。
+3. グラス（スマホ）とサーバーのマシンを同じ Wi-Fi に置く。サーバー稼働中だけ更新され、マシンがスリープすると止まる。
+
+provider の追加や表示のカスタマイズは下記参照。
+
 ## 仕組み
 
 「サーバーが決まった形式（segment）でデータを提供し、クライアントは汎用に描画する」status line 型。
@@ -109,7 +129,7 @@ print(json.dumps({
 
 ### (4) JS plugin（autoload）
 
-`$XDG_CONFIG_HOME/eveng2-toolbar/providers/<id>.{ts,mjs,js}`（既定 `~/.config/eveng2-toolbar/providers/`）に置き、`config.toml` に `[providers.<id>]` を書くと有効になる。本体ランタイム（`bun run server` / dev）でのみ有効（compile 単一バイナリでは無効）。
+`$XDG_CONFIG_HOME/eveng2-toolbar/providers/<id>.{ts,mjs,js}`（既定 `~/.config/eveng2-toolbar/providers/`）に置き、`config.toml` に `[providers.<id>]` を書くと有効になる。本体ランタイム実行（`bunx` / `npx` / `bun run server`）で有効（autoload はバンドル配布でも効く）。`npx`（Node.js）で動かすときはプラグインを `.mjs` / `.js` で書く（`.ts` は Bun 実行時のみ読める）。
 
 **置くだけでは動かない（gate）**: セキュリティのため、`config.toml` に `[providers.<id>]` で**明示登録した id の `<id>.<ext>` だけ**が import・実行される。未登録ファイルは import すらされない（sync ツールや誤って置いたファイルが勝手に走らない）。よって **ファイル名は id に一致**させる。`enabled = false` にすると import もしない。
 
@@ -158,8 +178,9 @@ apiKey = "xxxx"        # group(ctx) で ctx.options.apiKey として受け取る
 provider の管理は `eveng2-toolbar` バイナリの **`provider` サブコマンド**（`claude mcp` / `git remote` と同じ構造。単独 install するものではない）。
 
 ```
-eveng2-toolbar provider <cmd>     # グローバル install (bunx / npm) 済みのとき
-bun run provider <cmd>            # clone 実行の近道 (= bun server/index.ts provider <cmd>)
+bunx eveng2-toolbar provider <cmd>   # 公開後: install 不要でそのまま実行 (Bun)
+npx eveng2-toolbar provider <cmd>    # 同上 (Node.js)
+bun run provider <cmd>               # clone 実行の近道 (= bun server/index.ts provider <cmd>)
 ```
 
 config / ledger を書き換えるだけなので、**実行中サーバーの次 poll（最大 3s）で反映、restart 不要**。
@@ -180,10 +201,10 @@ risk のある provider（非公式 API 等）は `--accept-risk <tag>` で明�
 
 ```bash
 # 例: claude-limits プラグイン (rate-limit %、非公式 API) をインストール
-bun run provider install \
+bunx eveng2-toolbar provider install \
   https://raw.githubusercontent.com/bigdra50/eveng2-claude-usage-provider/main/provider.mjs \
   --accept-risk unofficial-api
-bun run provider list
+bunx eveng2-toolbar provider list
 ```
 
 #### 手動配置からの移行（gate）
@@ -191,8 +212,8 @@ bun run provider list
 gate 導入後、`providers/` にファイルを置くだけでは動かない（未登録ファイルは import すらされない）。以前から手動配置していたものは登録する:
 
 ```bash
-bun run provider list            # 未登録は "unregistered" として表示
-bun run provider enable <id>     # [providers.<id>] を登録して有効化 (ファイル名=id にしておく)
+bunx eveng2-toolbar provider list        # 未登録は "unregistered" として表示
+bunx eveng2-toolbar provider enable <id> # [providers.<id>] を登録して有効化 (ファイル名=id にしておく)
 ```
 
 ## プロトコル
@@ -212,18 +233,21 @@ companion は受信時に `parseStatusDoc()` で検証・サニタイズし、`v
 設定は SDK の `setLocalStorage` に永続化する（ブラウザ localStorage は WebView 再起動で消えるため）。
 ソースは登録時生成の不変 ID でキーし、URL 変更でも設定が孤児化しない。
 
-## セットアップ
+## 開発者向けセットアップ
+
+リポジトリを clone して動かす場合（コントリビュート / npm 公開前の起動）。一般ユーザーは[クイックスタート](#クイックスタート)の bunx / npx で足りる。
 
 ```bash
 bun install
-bun run dev      # dev server (フロント + /api を同一オリジン配信)
-bun run server   # standalone サーバー (/api を 0.0.0.0:8723 で配信、起動時に LAN IP を表示)
-bun run provider # provider 管理 CLI (list / enable / install / ...)。例: bun run provider list
-bun run sim      # evenhub-simulator で動作確認
-bun run qr       # 接続先 URL の QR を表示 (スマホから dev-URL sideload)
-bun run build    # tsc && vite build
-bun run pack     # build + .ehpk 生成 (eveng2-toolbar.ehpk)
-bun run lint     # biome
+bun run dev          # dev server (フロント + /api を同一オリジン配信)
+bun run server       # standalone サーバー (/api を 0.0.0.0:8723 で配信、起動時に LAN IP を表示)
+bun run provider     # provider 管理 CLI (list / enable / install / ...)。例: bun run provider list
+bun run build:server # server を bunx/npx 配布用の単一 dist-server/index.js にバンドル
+bun run sim          # evenhub-simulator で動作確認
+bun run qr           # 接続先 URL の QR を表示 (スマホから dev-URL sideload)
+bun run build        # tsc && vite build
+bun run pack         # build + .ehpk 生成 (eveng2-toolbar.ehpk)
+bun run lint         # biome
 ```
 
 実機への載せ方:
@@ -254,7 +278,7 @@ phone ロック / Even App バックグラウンドでもグラスを生存さ�
 | `src/glass.ts` | glass の bridge 配線・購読・電池・keep-alive |
 | `src/companion.ts` | スマホ UI（ソース管理 + 横断 segment 設定 + プレビュー）|
 | `src/status-types.ts` | プロトコル型 + `parseStatusDoc` |
-| `server/` | standalone サーバー（provider 群 claude/codex/system + subprocess + bun-server + vite dev middleware）|
+| `server/` | standalone サーバー（provider 群 claude/codex/system + subprocess + http-server + vite dev middleware）|
 | `vite.config.ts` | `server/vite-plugin` を dev に挿すだけ（9 行）|
 
 ## 関連
