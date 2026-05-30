@@ -1,3 +1,4 @@
+import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
 import Sortable from 'sortablejs'
 import {
   CLOCK_DATE_OPTS,
@@ -95,6 +96,23 @@ let layoutEditing = false
 const dismissedSuggestions = new Set<string>()
 // 現在表示中の提案 (無ければ null)。store の health 変化で再計算し、変化したときだけ Home を再描画する。
 let currentSuggestion: ProfileSuggestion | null = null
+
+// ── デバッグコンソール (実験/検証用) ──
+// 実機 (WKWebView) には devtools が無いため、console.* を捕捉して glass preview の下の
+// 折りたたみパネルに出す。User/Geo/IP の各プローブで取得可否を実機検証するのに使う。
+type DbgLevel = 'log' | 'info' | 'warn' | 'error'
+type DbgEntry = { t: number; level: DbgLevel; text: string }
+const dbgLogs: DbgEntry[] = []
+const DBG_MAX = 500 // 保持する最大行数 (古いものから捨てる)
+let dbgOpen = false // 既定は折りたたみ
+let dbgFilter = ''
+let dbgHooked = false
+// User プローブ (bridge.getUserInfo) 用。bridge 接続後に main.ts から注入される。
+let probeBridge: EvenAppBridge | null = null
+
+export function setCompanionBridge(b: EvenAppBridge): void {
+  probeBridge = b
+}
 
 // builtin (clock/g2) は config の format/widthChars を反映した live 値で上書きする
 // (store の builtin は config 非依存の既定値なので、プレビュー/Items を選択に追従させる)。
@@ -601,6 +619,8 @@ function renderHome(): string {
     <div id="source-list">${renderItems()}</div>
 
     ${renderGlassSection()}
+
+    ${renderDbgConsole()}
   `
 }
 
@@ -693,6 +713,7 @@ function render(): void {
   if (view === 'home') {
     lastVisibleSig = visibleSig()
     attachSortables()
+    if (dbgOpen) scrollDbgBottom() // 開いていれば最新行へ
   }
 }
 
@@ -1107,6 +1128,24 @@ async function onClick(e: MouseEvent): Promise<void> {
     case 'help':
       window.open('/help.html', '_blank')
       break
+    case 'console-toggle':
+      dbgOpen = !dbgOpen
+      render()
+      break
+    case 'console-clear':
+      dbgLogs.length = 0
+      updateDbgListDom()
+      updateDbgCount()
+      break
+    case 'probe-userinfo':
+      await probeUserInfo()
+      break
+    case 'probe-geo':
+      probeGeo()
+      break
+    case 'probe-ip':
+      await probeIp()
+      break
     default:
       break
   }
@@ -1475,10 +1514,232 @@ function closeFsEditor(): void {
   render() // 通常画面のプレビューを最新化
 }
 
+// ── デバッグコンソール本体 ──
+function dbgTime(t: number): string {
+  const d = new Date(t)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+const MAX_DBG_LINE = 2000 // 1 ログ行の最大文字数 (巨大オブジェクト/長文での DOM・stringify 肥大を防ぐ)
+// token/secret 等を含むキーを伏せる (プローブが生レスポンスを UI に出すため redaction する)。
+const SENSITIVE_KEY =
+  /token|secret|password|passwd|api[-_]?key|authorization|auth|cookie|session|credential/i
+
+// オブジェクトを浅くクローンしつつ、機微なキーの値を伏せる。ログ前の生レスポンスに適用する。
+function redact(value: unknown, depth = 0): unknown {
+  if (depth > 4) return '«depth»'
+  if (Array.isArray(value)) return value.map((v) => redact(v, depth + 1))
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = SENSITIVE_KEY.test(k) ? '«redacted»' : redact(v, depth + 1)
+    }
+    return out
+  }
+  return value
+}
+
+// console.* の可変長引数を 1 行テキストにする。Error は stack、オブジェクトは JSON。1 行上限で truncate。
+function dbgFormat(args: unknown[]): string {
+  const s = args
+    .map((a) => {
+      if (typeof a === 'string') return a
+      if (a instanceof Error) return a.stack ?? `${a.name}: ${a.message}`
+      try {
+        return JSON.stringify(a)
+      } catch {
+        return String(a) // 循環参照等
+      }
+    })
+    .join(' ')
+  return s.length > MAX_DBG_LINE ? `${s.slice(0, MAX_DBG_LINE)} …(+${s.length - MAX_DBG_LINE})` : s
+}
+
+function dbgPush(level: DbgLevel, text: string): void {
+  const e: DbgEntry = { t: Date.now(), level, text }
+  dbgLogs.push(e)
+  if (dbgLogs.length > DBG_MAX) dbgLogs.splice(0, dbgLogs.length - DBG_MAX)
+  appendDbgLineToDom(e)
+  updateDbgCount()
+}
+
+function matchesFilter(text: string): boolean {
+  return !dbgFilter || text.toLowerCase().includes(dbgFilter.toLowerCase())
+}
+
+function dbgLineHtml(e: DbgEntry): string {
+  return `<div class="dbgc-line dbgc-${e.level}"><span class="dbgc-t">${dbgTime(e.t)}</span><span class="dbgc-msg">${esc(e.text)}</span></div>`
+}
+
+function dbgListInnerHtml(): string {
+  const rows = dbgLogs.filter((e) => matchesFilter(e.text))
+  return rows.length ? rows.map(dbgLineHtml).join('') : '<div class="cmp-sub">No logs</div>'
+}
+
+function updateDbgCount(): void {
+  const c = document.getElementById('dbg-count')
+  if (c) c.textContent = String(dbgLogs.length)
+}
+
+function scrollDbgBottom(): void {
+  const list = document.getElementById('dbg-list')
+  if (list) list.scrollTop = list.scrollHeight
+}
+
+// フィルタ変更・Clear 時にリストだけ差し替える (full render を避け、入力の focus を保つ)。
+function updateDbgListDom(): void {
+  const list = document.getElementById('dbg-list')
+  if (!list) return
+  list.innerHTML = dbgListInnerHtml()
+  scrollDbgBottom()
+}
+
+// 新規 1 行を直接 append (パネルが開いている間のみ)。full render を起こさず churn を抑える。
+function appendDbgLineToDom(e: DbgEntry): void {
+  if (!dbgOpen) return
+  const list = document.getElementById('dbg-list')
+  if (!list) return
+  if (!matchesFilter(e.text)) return
+  if (list.firstElementChild?.classList.contains('cmp-sub')) list.innerHTML = '' // "No logs" を除去
+  list.insertAdjacentHTML('beforeend', dbgLineHtml(e))
+  while (list.children.length > DBG_MAX) list.firstElementChild?.remove()
+  scrollDbgBottom()
+}
+
+// glass preview の下に出す折りたたみコンソール。閉じている間はヘッダ 1 行のみ。
+function renderDbgConsole(): string {
+  const caret = icon(dbgOpen ? 'chevron-down' : 'chevron-right', { size: 16 })
+  const actions = dbgOpen
+    ? `<span class="cmp-actions">
+        <button class="link-btn" data-action="probe-userinfo" title="bridge.getUserInfo()">User</button>
+        <button class="link-btn" data-action="probe-geo" title="navigator.geolocation">Geo</button>
+        <button class="link-btn" data-action="probe-ip" title="IP ジオロケーション">IP</button>
+        <button class="link-btn" data-action="console-clear">Clear</button>
+      </span>`
+    : ''
+  const head = `<div class="cmp-label cmp-label-row">
+      <button class="dbgc-toggle" data-action="console-toggle">${caret} Console <span id="dbg-count" class="dbgc-count">${dbgLogs.length}</span></button>
+      ${actions}
+    </div>`
+  if (!dbgOpen) return head
+  return `${head}
+    <div class="dbgc">
+      <input class="dbgc-filter" type="text" placeholder="Filter…" value="${esc(dbgFilter)}" aria-label="Filter logs" />
+      <div id="dbg-list" class="dbgc-list">${dbgListInnerHtml()}</div>
+    </div>`
+}
+
+// console.* を捕捉してパネルにも流す (元の console もそのまま呼ぶ)。未捕捉例外も拾う。
+function hookConsole(): void {
+  if (dbgHooked) return
+  dbgHooked = true
+  const orig = {
+    log: console.log.bind(console),
+    info: console.info.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console),
+  }
+  console.log = (...a: unknown[]) => {
+    dbgPush('log', dbgFormat(a))
+    orig.log(...a)
+  }
+  console.info = (...a: unknown[]) => {
+    dbgPush('info', dbgFormat(a))
+    orig.info(...a)
+  }
+  console.warn = (...a: unknown[]) => {
+    dbgPush('warn', dbgFormat(a))
+    orig.warn(...a)
+  }
+  console.error = (...a: unknown[]) => {
+    dbgPush('error', dbgFormat(a))
+    orig.error(...a)
+  }
+  window.addEventListener('error', (ev) => dbgPush('error', `[window.error] ${ev.message}`))
+  window.addEventListener('unhandledrejection', (ev) =>
+    dbgPush('error', `[unhandledrejection] ${dbgFormat([ev.reason])}`),
+  )
+}
+
+// ── 検証プローブ (結果は console.* 経由でパネルへ) ──
+async function probeUserInfo(): Promise<void> {
+  if (!probeBridge) {
+    console.warn('[probe] bridge 未接続 — Even App / simulator 上で実行してください')
+    return
+  }
+  try {
+    const u = await probeBridge.getUserInfo()
+    console.log('[probe] getUserInfo →', redact(u.toJson())) // PII を含むため機微キーは伏せる
+  } catch (err) {
+    console.error('[probe] getUserInfo 失敗', err)
+  }
+}
+
+function probeGeo(): void {
+  if (!('geolocation' in navigator)) {
+    console.warn('[probe] navigator.geolocation が無い')
+    return
+  }
+  console.log('[probe] geolocation 要求中 (許可ダイアログが出る場合あり)…')
+  navigator.geolocation.getCurrentPosition(
+    (pos) =>
+      console.log('[probe] geolocation →', {
+        lat: pos.coords.latitude,
+        lon: pos.coords.longitude,
+        accuracyM: pos.coords.accuracy,
+      }),
+    (err) => console.error(`[probe] geolocation 失敗 code=${err.code} ${err.message}`),
+    { enableHighAccuracy: false, timeout: 10_000, maximumAge: 0 },
+  )
+}
+
+async function probeIp(): Promise<void> {
+  // 外部サービスへ IP を送るため、クリック時に明示同意を取る (プライバシー)。
+  if (
+    !window.confirm(
+      'IP ジオロケーション検証のため、外部サービス(ipapi.co 等)にあなたの IP を送信します。続行しますか？',
+    )
+  ) {
+    console.log('[probe] IP geo: キャンセル')
+    return
+  }
+  // キー不要の IP ジオロケーションを順に試す (CORS 許可のあるもの優先)。
+  // credentials 無し・referrer 無しで最小限の送信に留める。
+  const endpoints = [
+    'https://ipapi.co/json/',
+    'https://ipwho.is/',
+    'https://get.geojs.io/v1/ip/geo.json',
+  ]
+  for (const url of endpoints) {
+    try {
+      console.log('[probe] IP geo fetch:', url)
+      const res = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer' })
+      const json = (await res.json()) as unknown
+      console.log('[probe] IP geo →', redact(json)) // 機微キーは伏せる
+      return
+    } catch (err) {
+      console.warn(`[probe] IP geo 失敗 ${url}:`, err instanceof Error ? err.message : err)
+    }
+  }
+  console.error('[probe] IP geo: すべての候補が失敗')
+}
+
+// フィルタ入力 (live)。リストだけ差し替えて入力 focus を保つ。
+function onInput(e: Event): void {
+  const t = e.target
+  if (t instanceof HTMLInputElement && t.classList.contains('dbgc-filter')) {
+    dbgFilter = t.value
+    updateDbgListDom()
+  }
+}
+
 export async function mountCompanion(el: HTMLElement): Promise<void> {
   root = el
+  hookConsole() // 早期の console も拾えるよう最初に仕込む
   el.addEventListener('click', (e) => void onClick(e))
   el.addEventListener('change', (e) => void onChange(e)) // segment 条件 / clock フォーマットの select/number
+  el.addEventListener('input', onInput) // デバッグコンソールのフィルタ
   subscribe(onStoreUpdate)
 
   config = await loadConfig()
