@@ -515,11 +515,13 @@ export const LIST_DEMO_ITEMS: string[] = [
   'Phone · 不在着信\n  090-xxxx-xxxx (2件)',
 ]
 
+// 同種の見た目 (grid 同士 / box 系の popup・list) が隣り合うと区別しづらいので、
+// 種類が交互になるよう並べる (text → grid → box(popup) → grid → box(list))。
 const EXPERIMENT_PAGES: ExperimentPage[] = [
   { id: 'cjk-width', kind: 'text', render: renderCjkWidthTest },
   { id: 'grid-cjk', kind: 'grid', layout: GRID_CJK },
-  { id: 'grid-rows', kind: 'grid', layout: GRID_ROWS },
   { id: 'popup', kind: 'popup' },
+  { id: 'grid-rows', kind: 'grid', layout: GRID_ROWS },
   { id: 'list', kind: 'list' },
 ]
 
