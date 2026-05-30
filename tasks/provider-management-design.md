@@ -99,7 +99,7 @@ export type LedgerEntrySubprocess = {
   kind: 'subprocess'
   managed: true
   source: string                 // "command:<command>"
-  command: string                // 絶対パス必須 (§I-3)
+  command: string                // bare(PATH) か絶対パス。cwd 相対は拒否 (I-3 改: subprocess.ts と整合)
   args: string[]
   timeoutMs: number
   ttlMs: number
@@ -330,7 +330,7 @@ Step 8: "Installed. Restart server to activate." 表示
 
 ```
 Step 1: id 重複チェック (ledger)。既存は --force 必須
-Step 2: command が絶対パスでなければ エラー (I-3: 警告でなく拒否)。読めれば sha256 を記録
+Step 2: command が cwd 相対 (区切りあり非絶対) なら エラー。bare(PATH 解決) と絶対パスは許可 (I-3 改: subprocess.ts の env=PATH のみと整合、MCP/i3blocks 慣習)。絶対パスなら sha256 を記録
 Step 3: builtin と同名 id なら警告表示 (I-5 roundtrip。拒否はしない = 上書きは advanced 用途)
 Step 4: risk 確認 (--accept-risk)
 Step 5: ledger upsert (env は記録しない。I-5 security)

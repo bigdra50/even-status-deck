@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { loadLedger, PROVIDER_DIR } from '../config.ts'
-import type { LedgerEntryJs, RiskTag } from '../types.ts'
+import type { LedgerEntryJs, LedgerEntrySubprocess, RiskTag } from '../types.ts'
 import {
   appendSection,
   hasSection,
@@ -17,8 +17,20 @@ import { updateLedger } from './ledger.ts'
 
 const RISK_TAGS: readonly RiskTag[] = ['unofficial-api', 'terms-risk', 'account-limitation-risk']
 const ID_RE = /^[A-Za-z0-9_-]+$/
+const BUILTIN_IDS = new Set(['claude-code', 'codex', 'system'])
 const MAX_PROVIDER_BYTES = 512 * 1024
+const DEFAULT_SUBPROCESS_TIMEOUT_MS = 1000
+const DEFAULT_SUBPROCESS_TTL_MS = 30_000
 type Ext = 'ts' | 'mjs' | 'js'
+
+// ファイルを読んで sha256 を返す。読めなければ null (bare command 等)。drift / check-updates 用。
+export async function fileSha(path: string): Promise<string | null> {
+  try {
+    return sha256(new Uint8Array(await readFile(path)))
+  } catch {
+    return null
+  }
+}
 
 function isRiskTag(s: string): s is RiskTag {
   return (RISK_TAGS as readonly string[]).includes(s)
@@ -344,4 +356,104 @@ export async function removeProvider(id: string, keepFile: boolean): Promise<voi
     })
   }
   console.log(`${id}: removed${keepFile ? ' (file kept)' : ''}。`)
+}
+
+// --- add-subprocess -------------------------------------------------------------------
+// subprocess provider を ledger に登録する (config 注入は loadServerConfig の merge が担う)。
+// risk は manifest が無いので --accept-risk でユーザーが自己申告 (宣言 = 承認)。
+export async function addSubprocess(
+  id: string,
+  command: string,
+  args: string[],
+  opts: { timeoutMs?: number; ttlMs?: number; acceptRisk: RiskTag[]; force: boolean },
+): Promise<void> {
+  if (!ID_RE.test(id)) throw new Error(`id '${id}' が不正です ([A-Za-z0-9_-] のみ)`)
+  // bare (PATH 解決) か絶対パスのみ許可。cwd 相対は拒否 (subprocess.ts と同方針)。
+  if (/[/\\]/.test(command) && !isAbsolute(command)) {
+    throw new Error('command は bare な名前 (PATH) か絶対パスにしてください')
+  }
+  const ledger = await loadLedger()
+  const existing = ledger.providers[id]
+  if (existing && existing.kind !== 'subprocess') {
+    throw new Error(
+      `${id} は ${existing.kind} provider として登録済みです。先に \`provider remove ${id}\``,
+    )
+  }
+  if (existing && !opts.force) throw new Error(`${id} は既に登録済みです。置き換えるには --force`)
+  if (BUILTIN_IDS.has(id)) {
+    console.warn(`warning: ${id} は builtin と同名です。subprocess で差し替えになります (advanced)`)
+  }
+  const entry: LedgerEntrySubprocess = {
+    id,
+    kind: 'subprocess',
+    managed: true,
+    source: `command:${command}`,
+    command,
+    args,
+    timeoutMs: opts.timeoutMs ?? DEFAULT_SUBPROCESS_TIMEOUT_MS,
+    ttlMs: opts.ttlMs ?? DEFAULT_SUBPROCESS_TTL_MS,
+    installedSha256: isAbsolute(command) ? await fileSha(command) : null,
+    installedAt: new Date().toISOString(),
+    risk: opts.acceptRisk,
+    acceptedRisks: opts.acceptRisk,
+    enabled: true,
+  }
+  await updateLedger((l) => {
+    l.providers[id] = entry
+  })
+  console.log(
+    `${id}: registered (subprocess)。反映は実行中サーバーの次 poll (最大 3s)、restart 不要。`,
+  )
+}
+
+// --- check-updates --------------------------------------------------------------------
+// managed provider の更新有無を表示する (ファイルは DL せず、HEAD の ETag / command の sha 再計算)。
+export async function checkUpdates(id?: string): Promise<void> {
+  const ledger = await loadLedger()
+  const entries = id
+    ? ledger.providers[id]
+      ? [ledger.providers[id]]
+      : []
+    : Object.values(ledger.providers)
+  if (id && !entries.length) {
+    console.error(`${id}: managed provider ではありません`)
+    process.exitCode = 1
+    return
+  }
+  for (const e of entries) {
+    if (e === undefined) continue
+    if (e.kind === 'js') {
+      const src = e.source.startsWith('local:') ? e.source.slice('local:'.length) : e.source
+      if (/^https:\/\//i.test(src)) {
+        let etag: string | null = null
+        try {
+          etag = (await fetch(src, { method: 'HEAD' })).headers.get('etag')
+        } catch {
+          /* ネットワーク不可 */
+        }
+        if (etag && e.etag)
+          console.log(`${e.id}: ${etag === e.etag ? 'up to date' : 'update available'}`)
+        else console.log(`${e.id}: ETag 非対応 (確認は \`provider update ${e.id}\`)`)
+      } else {
+        const sha = await fileSha(src)
+        if (sha === null) console.log(`${e.id}: source を読めません (${src})`)
+        else
+          console.log(
+            `${e.id}: ${sha === e.installedSha256 ? 'up to date' : 'update available (local 変更)'}`,
+          )
+      }
+    } else {
+      // subprocess: command の sha 再計算で drift 検出。
+      if (e.installedSha256 && isAbsolute(e.command)) {
+        const sha = await fileSha(e.command)
+        if (sha === null) console.log(`${e.id}: command を読めません`)
+        else
+          console.log(
+            `${e.id}: ${sha === e.installedSha256 ? 'up to date' : 'drift (command 変更)'}`,
+          )
+      } else {
+        console.log(`${e.id}: sha 不明 (bare command / 記録なし)`)
+      }
+    }
+  }
 }

@@ -1,6 +1,7 @@
 // `eveng2-toolbar provider <subcmd>` の dispatch (Phase 2: list / enable / disable)。
 // add/remove/update/check-updates は Phase 3+。
 import { readdir } from 'node:fs/promises'
+import { join } from 'node:path'
 import { loadLedger, loadServerConfig, PROVIDER_DIR } from '../config.ts'
 import type { RiskTag } from '../types.ts'
 import {
@@ -10,7 +11,7 @@ import {
   setEnabled,
   writeConfigText,
 } from './config-writer.ts'
-import { addJs, removeProvider, updateJs } from './install.ts'
+import { addJs, addSubprocess, checkUpdates, fileSha, removeProvider, updateJs } from './install.ts'
 import { updateLedger } from './ledger.ts'
 
 const BUILTIN_IDS = new Set(['claude-code', 'codex', 'system'])
@@ -63,8 +64,14 @@ async function cmdList(): Promise<void> {
     const opts = cfg.providers[id]
     const kind = BUILTIN_IDS.has(id) ? 'builtin' : isSubprocess(opts) ? 'subprocess' : 'js'
     // builtin は config 無し (opts undefined) でも有効。registered なら enabled で判定。
-    const status = opts === undefined ? 'active' : opts.enabled !== false ? 'active' : 'disabled'
+    let status = opts === undefined ? 'active' : opts.enabled !== false ? 'active' : 'disabled'
     const led = ledger.providers[id]
+    // drift: managed js の実ファイル sha が ledger と不一致 (インストール後に手で書き換え)。
+    if (led?.kind === 'js' && status === 'active') {
+      const file = files.get(id)
+      if (file && (await fileSha(join(PROVIDER_DIR, file))) !== led.installedSha256)
+        status = 'drift'
+    }
     rows.push([
       id,
       kind,
@@ -151,19 +158,26 @@ function done(id: string, what: string): void {
   console.log(`${id}: ${what}. 反映は実行中サーバーの次 poll (最大 3s)、restart 不要。`)
 }
 
-// 簡易フラグ parser。--accept-risk <csv> / --force / --keep-file / --all と positional を分ける。
+// 簡易フラグ parser。--accept-risk <csv> / --force / --keep-file / --all / --timeout / --ttl と
+// positional を分ける。`--` 以降は passthrough (add-subprocess の command 引数として渡す)。
 function parseArgs(rest: string[]): {
   positional: string[]
+  passthrough: string[]
   acceptRisk: RiskTag[]
   force: boolean
   keepFile: boolean
   all: boolean
+  timeoutMs?: number
+  ttlMs?: number
 } {
   const positional: string[] = []
+  let passthrough: string[] = []
   let acceptRisk: RiskTag[] = []
   let force = false
   let keepFile = false
   let all = false
+  let timeoutMs: number | undefined
+  let ttlMs: number | undefined
   const VALID_RISK = new Set<string>(['unofficial-api', 'terms-risk', 'account-limitation-risk'])
   // 不正タグは無視 (gate は宣言 risk と照合するので未知タグは効かない)。
   const toTags = (s: string): RiskTag[] =>
@@ -171,12 +185,27 @@ function parseArgs(rest: string[]): {
       .split(',')
       .map((x) => x.trim())
       .filter((x) => VALID_RISK.has(x)) as RiskTag[]
+  const num = (s: string | undefined): number | undefined => {
+    const v = Number(s)
+    return Number.isInteger(v) && v > 0 ? v : undefined
+  }
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i] ?? ''
+    if (a === '--') {
+      passthrough = rest.slice(i + 1) // 以降はそのまま (command の引数)
+      break
+    }
     if (a === '--force') force = true
     else if (a === '--keep-file') keepFile = true
     else if (a === '--all') all = true
-    else if (a === '--accept-risk') {
+    else if (a === '--timeout' || a === '--ttl') {
+      const v = rest[++i]
+      const p = num(v)
+      if (p === undefined)
+        console.warn(`warning: ${a} の値 '${v}' が不正です (正の整数のみ)。既定値を使います`)
+      else if (a === '--timeout') timeoutMs = p
+      else ttlMs = p
+    } else if (a === '--accept-risk') {
       const v = rest[i + 1]
       // 次が別フラグ/欠落なら値を食わない (--accept-risk --force 事故を防ぐ)。
       if (v && !v.startsWith('--')) {
@@ -187,7 +216,7 @@ function parseArgs(rest: string[]): {
     else if (a.startsWith('--')) console.warn(`warning: 未知のフラグ ${a} を無視します`)
     else positional.push(a)
   }
-  return { positional, acceptRisk, force, keepFile, all }
+  return { positional, passthrough, acceptRisk, force, keepFile, all, timeoutMs, ttlMs }
 }
 
 async function cmdUpdateAll(acceptRisk: RiskTag[]): Promise<void> {
@@ -252,10 +281,39 @@ export async function runProviderCli(argv: string[]): Promise<void> {
       await addJs(source, { acceptRisk: flags.acceptRisk, force: flags.force })
       return
     }
+    case 'add-subprocess': {
+      const id = flags.positional[0]
+      const command = flags.positional[1]
+      if (!id || !command) {
+        console.error(
+          'usage: eveng2-toolbar provider add-subprocess <id> <command> [--timeout ms] [--ttl ms] [--accept-risk a,b] [--force] [-- args...]',
+        )
+        process.exitCode = 1
+        return
+      }
+      if (!requireValidId(sub, id)) return
+      await addSubprocess(id, command, flags.passthrough, {
+        timeoutMs: flags.timeoutMs,
+        ttlMs: flags.ttlMs,
+        acceptRisk: flags.acceptRisk,
+        force: flags.force,
+      })
+      return
+    }
     case 'remove': {
       const id = flags.positional[0]
       if (!requireValidId(sub, id)) return
       await removeProvider(id, flags.keepFile)
+      return
+    }
+    case 'check-updates': {
+      const id = flags.positional[0]
+      if (id && !ID_RE.test(id)) {
+        console.error(`invalid id '${id}'`)
+        process.exitCode = 1
+        return
+      }
+      await checkUpdates(id)
       return
     }
     case 'update': {
@@ -270,7 +328,9 @@ export async function runProviderCli(argv: string[]): Promise<void> {
       return
     }
     default:
-      console.log('usage: eveng2-toolbar provider <list|enable|disable|add-js|update|remove> ...')
+      console.log(
+        'usage: eveng2-toolbar provider <list|enable|disable|add-js|add-subprocess|update|remove|check-updates> ...',
+      )
       process.exitCode = sub ? 1 : 0
   }
 }
