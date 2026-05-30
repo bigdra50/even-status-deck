@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
+import { runAskCli } from './cli/ask.ts'
 import { runProviderCli } from './cli/provider.ts'
 import { loadServerConfig } from './config.ts'
 // standalone エントリ。`eveng2-toolbar provider <subcmd>` は provider 管理 CLI へ、
 // `eveng2-toolbar watch <name>` は overlay イベント watcher を起動、
+// `eveng2-toolbar ask <message> [...actions]` は dialog を出して選択を待つ、
 // それ以外 (引数なし / `server`) は node:http の HTTP サーバーを起動する。
 import { startServer } from './http-server.ts'
 
@@ -13,6 +15,8 @@ if (process.argv[2] === 'provider') {
     console.error(`provider: ${e instanceof Error ? e.message : String(e)}`)
     process.exit(1)
   }
+} else if (process.argv[2] === 'ask') {
+  await runAskCli(process.argv.slice(3))
 } else if (process.argv[2] === 'watch') {
   // overlay イベント watcher。現状は mac 通知のみ。watcher は Mac 専用なので動的 import する
   // (通常の server 起動パスに載せない)。別 process で起動し、loopback の /api/emit に投げる。
