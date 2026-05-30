@@ -1,5 +1,6 @@
-// `eveng2-toolbar provider <subcmd>` の dispatch (Phase 2: list / enable / disable)。
-// add/remove/update/check-updates は Phase 3+。
+// `eveng2-toolbar provider <subcmd>` の dispatch。
+// list / enable / disable / install / update / remove / check-updates。
+// install は引数の形で判別: 1 つ = JS plugin、2 つ以上 = subprocess (id + command)。
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { loadLedger, loadServerConfig, PROVIDER_DIR } from '../config.ts'
@@ -269,29 +270,33 @@ export async function runProviderCli(argv: string[]): Promise<void> {
       else await cmdDisable(id)
       return
     }
-    case 'add-js': {
-      const source = flags.positional[0]
-      if (!source) {
+    case 'install': {
+      // 引数の形で判別: 1 つ = JS plugin (id は manifest 由来)、2 つ以上 = subprocess (id + command)。
+      const pos = flags.positional
+      if (pos.length === 0) {
         console.error(
-          'usage: eveng2-toolbar provider add-js <https-url|abs-path> [--accept-risk a,b] [--force]',
+          'usage:\n' +
+            '  provider install <https-url|abs-path>                 # JS plugin\n' +
+            '  provider install <id> <command> [-- args...] [--timeout ms] [--ttl ms]   # subprocess\n' +
+            '  共通: [--accept-risk a,b] [--force]',
         )
         process.exitCode = 1
         return
       }
-      await addJs(source, { acceptRisk: flags.acceptRisk, force: flags.force })
-      return
-    }
-    case 'add-subprocess': {
-      const id = flags.positional[0]
-      const command = flags.positional[1]
-      if (!id || !command) {
+      if (pos.length === 1) {
+        await addJs(pos[0] as string, { acceptRisk: flags.acceptRisk, force: flags.force })
+        return
+      }
+      const id = pos[0] as string
+      const command = pos[1] as string
+      if (!requireValidId('install', id)) return
+      if (/^https?:\/\//i.test(command)) {
         console.error(
-          'usage: eveng2-toolbar provider add-subprocess <id> <command> [--timeout ms] [--ttl ms] [--accept-risk a,b] [--force] [-- args...]',
+          'command が URL です。JS plugin のインストールは引数 1 つ: `provider install <url>`',
         )
         process.exitCode = 1
         return
       }
-      if (!requireValidId(sub, id)) return
       await addSubprocess(id, command, flags.passthrough, {
         timeoutMs: flags.timeoutMs,
         ttlMs: flags.ttlMs,
@@ -329,7 +334,7 @@ export async function runProviderCli(argv: string[]): Promise<void> {
     }
     default:
       console.log(
-        'usage: eveng2-toolbar provider <list|enable|disable|add-js|add-subprocess|update|remove|check-updates> ...',
+        'usage: eveng2-toolbar provider <list|enable|disable|install|update|remove|check-updates> ...',
       )
       process.exitCode = sub ? 1 : 0
   }

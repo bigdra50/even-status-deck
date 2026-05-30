@@ -306,7 +306,11 @@ Status:
   unregistered - providers/ にファイルがあるが config/ledger に無い (警告)
 ```
 
-### `provider add-js <https-url | absolute-path> [--accept-risk <tag>,...] [--force] [--dry-run]`
+> 実装は `add-js` と `add-subprocess` を **`provider install`** に統合し、引数の数で判別する
+> (1 つ = JS plugin / id は manifest 由来、2 つ以上 = subprocess `<id> <command>`)。以下の各 Step は
+> その install 内の JS / subprocess 経路としてそのまま有効。
+
+### `provider install <https-url | absolute-path>` (JS plugin 経路) [--accept-risk <tag>,...] [--force]
 
 ```
 Step 0: URL scheme チェック (C-3)。protocol !== 'https:' は拒否。ローカルは絶対パス必須。
@@ -326,7 +330,7 @@ Step 8: "Installed. Restart server to activate." 表示
 - 同 id・異 sha256 → Step5 の `--force` 判定へ (= 入れ替え)
 - 異 id・同 sha256 → 別 id として install を許可 (同一内容を別名で登録するユースケースを潰さない)
 
-### `provider add-subprocess <id> <abs-command> [-- args...] [--timeout ms] [--ttl ms] [--accept-risk tag,...] [--force]`
+### `provider install <id> <command> [-- args...] [--timeout ms] [--ttl ms] [--accept-risk tag,...] [--force]` (subprocess 経路)
 
 ```
 Step 1: id 重複チェック (ledger)。既存は --force 必須
