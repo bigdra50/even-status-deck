@@ -468,9 +468,14 @@ export const POPUP_DEMO_NOTIFS: PopupNotif[] = [
 export function buildPopupOverlay(stack: PopupNotif[], idx: number): GridLayout {
   const cur = Math.max(0, Math.min(idx, stack.length - 1))
   const n = stack[cur]
-  // 現在=● は大きすぎ / 他=· は小さすぎたので、字幅の近い bullet 系へ (中心も揃いやすい)。
-  // 現在 = 塗りつぶし • / 他 = 中抜き ◦。
-  const dots = stack.map((_, i) => (i === cur ? '•' : '◦')).join('\n')
+  // 左ドット列。中抜き ◦/○ は firmware フォントに無く描画されないため、描ける塗り系で
+  // サイズ差をつける (現在=• / 他=·)。col0(48px) の右端付近へ右寄せし、ボックス左辺に寄せる。
+  const dotLine = (active: boolean): string => {
+    const g = active ? '•' : '·'
+    const lead = Math.max(0, Math.floor((48 - 6 - getTextWidth(g)) / SPACE_W))
+    return ' '.repeat(lead) + g
+  }
+  const dots = stack.map((_, i) => dotLine(i === cur)).join('\n')
   // 1 行目 = タイトル (字下げなし)、2 行目以降 (sender + body) は 2 文字インデントする。
   const box = n
     ? [`${n.app} · Now`, ...`${n.sender}\n${n.body}`.split('\n').map((l) => `  ${l}`)].join('\n')
