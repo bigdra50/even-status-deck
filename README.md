@@ -1,14 +1,26 @@
 # eveng2-toolbar
 
-Even G2 のツールバー風サブモニタ。
-複数のデータソース（AI ツールの利用制限、PC / スマホの状態など）を 1 つのグラス表示に集約し、
+Even Realities G2 スマートグラスに、時刻 / 電池 / 各種ステータスを HUD 表示する companion アプリ。
+複数のデータソース（時刻・日付、グラスの電池、PC のシステム情報、AI ツールの利用状況など）を 1 つのグラス表示に集約し、
 Mac のメニューバーのように視界の端へ最小表示する。
 
 Even Hub SDK の WebView アプリで、companion（スマホ UI）と glass（G2 576×288, 4-bit 緑単色）描画を 1 つに含む。
 
-## クイックスタート
+## 導入
 
-アプリ本体（グラス表示 + companion）は Even Hub から入れ、データ源のローカルサーバーは手元の Mac / PC で起動する。クラウドは経由しない。
+時刻 / 日付 / グラスの電池だけなら、アプリを入れて接続するだけで使える。
+PC のシステム情報や AI ツールの利用状況も出したいときは、その PC でローカルサーバーを起動して接続する（任意・後述）。
+
+1. Even Hub からインストールする。
+2. companion（スマホ UI）を開く。
+3. グラスを接続する。
+
+時刻 / 日付は端末ロケールで 12/24h・日付順（M/D・D/M・Y-M-D）を自動判定する（グラス表記は英語）。
+どの項目を出すか・並び順は companion で変えられる（[カスタマイズ](#カスタマイズ2-階層)）。
+
+## ローカルサーバー（任意）
+
+PC のシステム情報や provider を配信するローカルサーバー。アプリ本体と同じ Wi-Fi 上の PC で起動し、companion から URL で接続する（クラウドは経由しない）。
 
 前提: サーバーを動かすマシンに [Bun](https://bun.sh)（推奨）か Node.js 18+。Claude Code / Codex の利用状況を出すなら、そのマシンに各 CLI が入っていること。
 
@@ -19,12 +31,12 @@ Even Hub SDK の WebView アプリで、companion（スマホ UI）と glass（G
    npx eveng2-toolbar server    # Node.js
    ```
 
-   > npm 公開後に有効。公開前は[開発者向けセットアップ](#開発者向けセットアップ)の clone 手順で起動する。
+   > npm 公開後に有効。公開前は[開発者向けセットアップ](#開発者向けセットアップ)の clone 手順（`bun run server`）で起動する。
 
 2. companion（スマホ UI）の「+ サーバーを追加」に、表示された `http://<LAN-IP>:8723` を登録して Test する。
 3. グラス（スマホ）とサーバーのマシンを同じ Wi-Fi に置く。サーバー稼働中だけ更新され、マシンがスリープすると止まる。
 
-provider の追加や表示のカスタマイズは下記参照。
+provider の管理は `bun run provider`（公開後は `bunx eveng2-toolbar provider`）。追加・カスタマイズは下記参照。
 
 ## 仕組み
 
@@ -233,9 +245,32 @@ companion は受信時に `parseStatusDoc()` で検証・サニタイズし、`v
 設定は SDK の `setLocalStorage` に永続化する（ブラウザ localStorage は WebView 再起動で消えるため）。
 ソースは登録時生成の不変 ID でキーし、URL 変更でも設定が孤児化しない。
 
+## overlay / 通知
+
+ステータス表示とは別に、source から一過性の overlay（通知 / トースト / バナー / ダイアログ）をグラスへ push できる（[`PROTOCOL.md`](./PROTOCOL.md) §11）。いずれもローカルサーバー稼働中・同一 Wi-Fi が前提。
+
+- **Mac 通知の転送**: `npm run watch:mac`（= `bun run server watch mac-notifications`）で watcher を起動すると、Mac のネイティブ通知をグラスへ転送する。
+  通知センターの DB を読むため、watcher を動かすプロセス（ターミナル / bun）に **Full Disk Access** が要る（System Settings > Privacy & Security > Full Disk Access に追加）。
+- **はい / いいえ等のダイアログ往復**: `bun run server ask "<質問>" [選択肢...]` でグラスに modal を出し、ユーザーの選択を CLI に返す。選択肢を省くと `はい` / `いいえ`。
+
+```bash
+bun run server ask "本番にデプロイ?" はい いいえ
+bun run server ask --title 確認 --timeout 30000 "削除しますか?" キャンセル 削除
+```
+
+watcher / ask はどちらもサーバーの loopback `/api/emit` に投げるので、ローカルサーバーを起動した状態で実行する。
+
+## トラブルシュート
+
+| 症状 | 対処 |
+|---|---|
+| 前面で数分後にグラスが白画面になる | 既知問題（iOS WKWebView の WebContent 強制終了でホスト側起因）。companion を開き直すと復帰する |
+| `watch:mac` で通知 DB を読めない | watcher プロセスに Full Disk Access を付与（System Settings > Privacy & Security > Full Disk Access）|
+| ローカルサーバーに繋がらない | グラス（スマホ）とサーバーのマシンが同じ Wi-Fi か、URL が `http://<LAN-IP>:8723` か、サーバーが起動中かを確認 |
+
 ## 開発者向けセットアップ
 
-リポジトリを clone して動かす場合（コントリビュート / npm 公開前の起動）。一般ユーザーは[クイックスタート](#クイックスタート)の bunx / npx で足りる。
+リポジトリを clone して動かす場合（コントリビュート / npm 公開前の起動）。一般ユーザーは[ローカルサーバー](#ローカルサーバー任意)の bunx / npx で足りる。
 
 ```bash
 bun install
