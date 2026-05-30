@@ -1,7 +1,7 @@
 // weather.ts の純粋ロジック (weatherCodeText / buildWeatherDoc)。geolocation/fetch はブラウザ依存で除外。
 // 実行: bun test src/weather.test.ts
 import { expect, test } from 'bun:test'
-import { buildWeatherDoc, WEATHER_GROUP_ID, weatherCodeText } from './weather'
+import { buildWeatherDoc, openMeteoUrl, WEATHER_GROUP_ID, weatherCodeText } from './weather'
 
 test('weatherCodeText: WMO code を短い ASCII ラベルへ', () => {
   expect(weatherCodeText(0)).toBe('Clear')
@@ -27,11 +27,18 @@ test('buildWeatherDoc: weather group を temp/cond/wind で組む', () => {
   expect(g.id).toBe(WEATHER_GROUP_ID)
   expect(g.label).toBe('Weather')
   const byId = new Map(g.segments.map((s) => [s.id, s]))
-  expect(byId.get('temp')?.value).toBe('12°C')
+  expect(byId.get('temp')?.value).toBe('12C') // ASCII のみ (° を避ける)
   expect(byId.get('cond')?.value).toBe('Cloudy')
   expect(byId.get('wind')?.value).toBe('19km/h')
   expect(byId.get('temp')?.defaultEnabled).toBe(true)
   expect(byId.get('wind')?.defaultEnabled).toBe(false) // wind は既定 OFF
+})
+
+test('openMeteoUrl: host は api.open-meteo.com 固定 + 丸め座標を含む', () => {
+  const u = new URL(openMeteoUrl(35.68, 139.61))
+  expect(u.host).toBe('api.open-meteo.com')
+  expect(u.searchParams.get('latitude')).toBe('35.68')
+  expect(u.searchParams.get('longitude')).toBe('139.61')
 })
 
 test('buildWeatherDoc: state/message を載せられる (stale/error 表示用)', () => {

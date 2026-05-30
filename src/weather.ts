@@ -5,7 +5,13 @@
 // localStorage に TTL キャッシュして open-meteo を高頻度に叩かない。store の poll(60s)から呼ばれるが、
 // fresh(30分)の間は geolocation も network も呼ばず cache を返す。失敗時は stale(6時間)→error と degrade。
 // glass の tofu を避けるため値は ASCII のみ(絵文字を使わない)。
-import type { Group, Segment, SourceState, StatusDoc } from './status-types'
+import {
+  type Group,
+  parseStatusDoc,
+  type Segment,
+  type SourceState,
+  type StatusDoc,
+} from './status-types'
 
 export const WEATHER_GROUP_ID = 'weather'
 
@@ -48,9 +54,9 @@ export function buildWeatherDoc(
     {
       id: 'temp',
       label: '',
-      value: `${Math.round(tempC)}°C`,
+      value: `${Math.round(tempC)}C`, // ASCII のみ (° は実機フォントで tofu になり得るため使わない)
       defaultEnabled: true,
-      widthChars: 5,
+      widthChars: 4,
       isNumeric: true,
     },
     { id: 'cond', label: '', value: weatherCodeText(code), defaultEnabled: true, widthChars: 9 },
@@ -75,7 +81,7 @@ function errorDoc(message: string, ts: number): StatusDoc {
     label: 'Weather',
     state: 'error',
     message,
-    segments: [{ id: 'temp', label: '', value: 'n/a', defaultEnabled: true, widthChars: 5 }],
+    segments: [{ id: 'temp', label: '', value: 'n/a', defaultEnabled: true, widthChars: 4 }],
   }
   return { version: 1, ts, groups: [group] }
 }
@@ -100,16 +106,14 @@ function readCache(): Cache | null {
     const raw = window.localStorage.getItem(CACHE_KEY)
     if (!raw) return null
     const c = JSON.parse(raw) as Partial<Cache>
-    if (
-      typeof c.lat !== 'number' ||
-      typeof c.lon !== 'number' ||
-      typeof c.fetchedAt !== 'number' ||
-      !c.doc ||
-      typeof c.doc !== 'object'
-    ) {
+    if (typeof c.lat !== 'number' || typeof c.lon !== 'number' || typeof c.fetchedAt !== 'number') {
       return null
     }
-    return c as Cache
+    // localStorage は古いバージョン/改竄で壊れ得る境界。doc を StatusDoc 形に検証してから採用する
+    // (壊れた cache を store へ注入して描画前提を壊さない)。
+    const doc = parseStatusDoc(c.doc)
+    if (!doc) return null
+    return { lat: c.lat, lon: c.lon, fetchedAt: c.fetchedAt, doc }
   } catch {
     return null
   }
@@ -141,16 +145,21 @@ function getPosition(): Promise<{ lat: number; lon: number }> {
 
 type OpenMeteoCurrent = { tempC: number; code: number; windKmh: number }
 
+// open-meteo の現在天気 URL。外部 fetch 先を限定するため host は api.open-meteo.com 固定。
+export function openMeteoUrl(lat: number, lon: number): string {
+  return (
+    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+    '&current=temperature_2m,weather_code,wind_speed_10m' +
+    '&temperature_unit=celsius&wind_speed_unit=kmh&timezone=auto'
+  )
+}
+
 async function fetchOpenMeteo(
   lat: number,
   lon: number,
   signal: AbortSignal,
 ): Promise<OpenMeteoCurrent> {
-  const url =
-    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    '&current=temperature_2m,weather_code,wind_speed_10m' +
-    '&temperature_unit=celsius&wind_speed_unit=kmh&timezone=auto'
-  const res = await fetch(url, { signal })
+  const res = await fetch(openMeteoUrl(lat, lon), { signal })
   if (!res.ok) throw new Error(`open-meteo HTTP ${res.status}`)
   const json = (await res.json()) as { current?: Record<string, unknown> }
   const cur = json.current
