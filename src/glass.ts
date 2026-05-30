@@ -13,6 +13,7 @@ import { BUILTIN_SOURCE_ID, emptyConfig, loadConfig, syncSourceWithStatus } from
 import { getGlassBattery, setGlassBattery } from './device-state'
 import { compileGrid } from './glass-layout'
 import {
+  buildPopupOverlay,
   buildViews,
   type ExpView,
   GLASS_HEIGHT,
@@ -22,7 +23,9 @@ import {
   type GView,
   gridLayoutFor,
   POPUP_BASE_TEXT,
-  POPUP_OVERLAY,
+  POPUP_DEMO_NOTIFS,
+  POPUP_MAX,
+  type PopupNotif,
   renderGlass,
 } from './glass-render'
 import { feedImuSample, isImuStarted, setImuConfig, startImu, stopImu } from './imu'
@@ -59,9 +62,11 @@ let refreshBusy = false // bridge 書き込みを直列化 (BLE 飽和でグラ�
 let refreshPending = false
 let lastContent: string | null = null // 直近送信した content (single topology)。無変化なら upgrade 抑制
 let lastTopo: string | null = null // 直近のコンテナ構成キー。変わると rebuildPageContainer する
-let popupOn = false // popup 実験ページ: 中央の通知ボックスを表示中か
-let popupTimer: ReturnType<typeof setInterval> | null = null // popup を一定間隔で発生させる
-const POPUP_INTERVAL_MS = 5000 // popup 発生間隔
+let popupStack: PopupNotif[] = [] // popup 実験ページ: 表示中の通知スタック
+let popupIdx = 0 // スタック内の現在表示 index (スクロールで移動)
+let popupDemoNext = 0 // 次に push するデモ通知の index
+let popupTimer: ReturnType<typeof setInterval> | null = null // 一定間隔で通知を push
+const POPUP_INTERVAL_MS = 4000 // 通知の発生間隔
 let glassClock: ReturnType<typeof setTimeout> | null = null // 分境界の時刻更新 (store.notify を介さない)
 
 // 全面 1 text container (page1 / linear)。従来の単一コンテナと同一。
@@ -88,8 +93,10 @@ function isPopupView(view: GView): boolean {
 // popup 実験ページのコンテナ: 表示中は overlay (上下1行 + 中央通知ボックス) を grid で、
 // 非表示時は 10 行のトップページ (base) を単一コンテナで描く。
 function popupContainers(): TextContainerProperty[] {
-  if (popupOn) return compileGrid(POPUP_OVERLAY).map((c) => new TextContainerProperty(c))
-  return [singleContainer(POPUP_BASE_TEXT)]
+  if (popupStack.length === 0) return [singleContainer(POPUP_BASE_TEXT)]
+  return compileGrid(buildPopupOverlay(popupStack, popupIdx)).map(
+    (c) => new TextContainerProperty(c),
+  )
 }
 
 // view → グラスのコンテナ集合。popup → popupContainers、grid 実験 → compiler、
@@ -104,7 +111,9 @@ function viewContainers(view: GView): TextContainerProperty[] {
 // topology キー (コンテナ構成の同一性)。popup は base/shown で別 (toggle で rebuild)、
 // grid は id ごと、それ以外は 'single' (中身差し替えのみ)。
 function topoKey(view: GView): string {
-  if (isPopupView(view)) return popupOn ? 'popup:shown' : 'popup:base'
+  // popup: stack 数 + 現在 index が変わると rebuild (ドット/中身が変わるため)。
+  if (isPopupView(view))
+    return popupStack.length === 0 ? 'popup:base' : `popup:${popupStack.length}:${popupIdx}`
   return gridLayoutFor(view) ? `grid:${(view as ExpView).exp}` : 'single'
 }
 
@@ -191,8 +200,10 @@ function syncPopupDemo(): void {
   if (isPopupView(views[idx] ?? 'summary')) {
     if (!popupTimer)
       popupTimer = setInterval(() => {
-        if (!popupOn) {
-          popupOn = true
+        if (popupStack.length < POPUP_MAX) {
+          const n = POPUP_DEMO_NOTIFS[popupDemoNext % POPUP_DEMO_NOTIFS.length]
+          if (n) popupStack.push(n)
+          popupDemoNext++
           refresh()
         }
       }, POPUP_INTERVAL_MS)
@@ -201,7 +212,8 @@ function syncPopupDemo(): void {
       clearInterval(popupTimer)
       popupTimer = null
     }
-    popupOn = false
+    popupStack = []
+    popupIdx = 0
   }
 }
 
@@ -242,7 +254,8 @@ function cleanup(): void {
     clearInterval(popupTimer)
     popupTimer = null
   }
-  popupOn = false
+  popupStack = []
+  popupIdx = 0
   if (typeof window !== 'undefined') {
     window.removeEventListener('toolbar:config-changed', onConfigChangedEvent)
     window.removeEventListener('beforeunload', cleanup)
@@ -324,9 +337,10 @@ function onEvent(event: EvenHubEvent): void {
     lastClickAt = now
     if (et === OsEventTypeList.DOUBLE_CLICK_EVENT) {
       void gbridge?.shutDownPageContainer(1)
-    } else if (isPopupView(views[idx] ?? 'summary') && popupOn) {
-      // popup 表示中のタップは popup を閉じる (summary には戻らない)。
-      popupOn = false
+    } else if (isPopupView(views[idx] ?? 'summary') && popupStack.length > 0) {
+      // 表示中の通知を既読にして閉じ、次へ。空になれば base へ戻る。
+      popupStack.splice(popupIdx, 1)
+      if (popupIdx >= popupStack.length) popupIdx = Math.max(0, popupStack.length - 1)
       refresh()
     } else {
       idx = 0
@@ -337,6 +351,15 @@ function onEvent(event: EvenHubEvent): void {
   }
   const txt = event.textEvent
   if (txt) {
+    // popup スタック表示中はスクロールでスタック内を移動 (端では据え置き)。
+    if (isPopupView(views[idx] ?? 'summary') && popupStack.length > 0) {
+      if (txt.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT)
+        popupIdx = Math.min(popupIdx + 1, popupStack.length - 1)
+      else if (txt.eventType === OsEventTypeList.SCROLL_TOP_EVENT)
+        popupIdx = Math.max(popupIdx - 1, 0)
+      refresh()
+      return
+    }
     if (txt.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) cycle(1)
     else if (txt.eventType === OsEventTypeList.SCROLL_TOP_EVENT) cycle(-1)
   }

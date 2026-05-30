@@ -449,23 +449,44 @@ export const POPUP_BASE_TEXT = [
   'Tasks 今日 4件   通知 3',
   POPUP_BOTTOM,
 ].join('\n')
-export const POPUP_OVERLAY: GridLayout = {
-  cells: [
-    { id: 'top', col: 0, row: 0, colSpan: 12, rowSpan: 1, content: POPUP_TOP },
-    {
-      id: 'box',
-      col: 1,
-      row: 2,
-      colSpan: 10,
-      rowSpan: 6,
-      content:
-        'WhatsApp · Now\nElizabeth\nお母さんから連絡。玉ねぎと\nピーマンを買ってきて。\n\n(タップで閉じる)',
-      border: 2,
-      radius: 8,
-      padding: 6,
-    },
-    { id: 'bottom', col: 0, row: 9, colSpan: 12, rowSpan: 1, content: POPUP_BOTTOM },
-  ],
+export type PopupNotif = { app: string; sender: string; body: string }
+export const POPUP_MAX = 4 // スタック最大数 (左ドットの行数 = box rowSpan6 に収まる範囲)
+// timer が順に push するデモ通知。
+export const POPUP_DEMO_NOTIFS: PopupNotif[] = [
+  {
+    app: 'WhatsApp',
+    sender: 'Elizabeth',
+    body: 'お母さんから連絡。玉ねぎと\nピーマンを買ってきて。',
+  },
+  { app: 'Slack', sender: '#general', body: 'デプロイ完了しました 🎉' },
+  { app: 'Mail', sender: 'GitHub', body: 'PR がマージされました。' },
+  { app: 'Calendar', sender: 'Reminder', body: '15:00 ミーティング 5分前' },
+]
+
+// スタック (stack) と現在 index → overlay の GridLayout。
+// 上行 + 左ドット列 (現在=● / 他=·) + 中央通知カード + 下行。背後の中央 status は隠す近似。
+export function buildPopupOverlay(stack: PopupNotif[], idx: number): GridLayout {
+  const cur = Math.max(0, Math.min(idx, stack.length - 1))
+  const n = stack[cur]
+  const dots = stack.map((_, i) => (i === cur ? '●' : '·')).join('\n')
+  return {
+    cells: [
+      { id: 'top', col: 0, row: 0, colSpan: 12, rowSpan: 1, content: POPUP_TOP },
+      { id: 'dots', col: 0, row: 2, colSpan: 1, rowSpan: 6, content: dots },
+      {
+        id: 'box',
+        col: 1,
+        row: 2,
+        colSpan: 10,
+        rowSpan: 6,
+        content: n ? `${n.app} · Now\n${n.sender}\n${n.body}` : '',
+        border: 2,
+        radius: 8,
+        padding: 6,
+      },
+      { id: 'bottom', col: 0, row: 9, colSpan: 12, rowSpan: 1, content: POPUP_BOTTOM },
+    ],
+  }
 }
 
 const EXPERIMENT_PAGES: ExperimentPage[] = [
