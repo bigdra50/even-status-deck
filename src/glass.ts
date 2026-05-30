@@ -9,8 +9,16 @@ import {
 } from '@evenrealities/even_hub_sdk'
 import { loadBatteryLog, recordBatteryLevel, setBatteryBridge } from './battery'
 import { clockShowsSeconds, localStatus } from './builtins'
-import { BUILTIN_SOURCE_ID, emptyConfig, loadConfig, syncSourceWithStatus } from './config'
+import {
+  BUILTIN_SOURCE_ID,
+  emptyConfig,
+  enabledSources,
+  loadConfig,
+  sourceUrls,
+  syncSourceWithStatus,
+} from './config'
 import { getGlassBattery, setGlassBattery } from './device-state'
+import { startEvents, stopEvents } from './events'
 import { createOverlayManager, type Notif } from './glass-overlay'
 import {
   buildViews,
@@ -194,6 +202,15 @@ function onOverlayEvent(e: Event): void {
   refresh()
 }
 
+// config から server source の (id, urls) を抽出し、overlay イベント long-poll を張り直す。
+// events 側が capabilities.events を広告しない source は long-poll しない (jettison/電池対策)。
+function syncEventSources(): void {
+  const sources = enabledSources(data.config)
+    .filter((s) => s.kind === 'server')
+    .map((s) => ({ id: s.id, urls: sourceUrls(s) }))
+  startEvents(sources)
+}
+
 // 時刻 HUD を毎分更新する glass-local タイマー。er-clock 式: builtin status を直接再計算して
 // refresh するだけ (store.notify を介さない = getAllStatuses/syncAll/computeVisible/buildViews を
 // 毎分走らせない)。時刻変化では構成・可視は変わらないので views/visible はキャッシュのまま。
@@ -228,6 +245,7 @@ function cleanup(): void {
     glassClock = null
   }
   overlay.clear()
+  stopEvents() // overlay イベント long-poll を全停止
   if (overlayTimer) {
     clearTimeout(overlayTimer)
     overlayTimer = null
@@ -362,6 +380,7 @@ async function onConfigChanged(): Promise<void> {
   views = buildViews(data, visible)
   if (idx >= views.length) idx = 0
   await applyImuConfig() // IMU トグル/設定変更を反映
+  syncEventSources() // source 追加/削除/URL 変更を overlay イベントループへ反映
   refresh()
 }
 
@@ -399,6 +418,7 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
     window.addEventListener('toolbar:overlay', onOverlayEvent) // overlay トリガ (再利用可能)
     window.addEventListener('beforeunload', cleanup)
   }
+  syncEventSources() // server source の overlay イベント long-poll を開始
 
   await initDeviceBattery(bridge) // HUD のグラスバッテリー (builtin に反映)
   await applyImuConfig() // config.imu.enabled なら IMU 起動 (onEvent 登録後・前提コンテナ作成後)
