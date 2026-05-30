@@ -56,11 +56,12 @@ function fullContainer(content: string): TextContainerProperty {
   })
 }
 
-// 上行 + 中央ボックス + 下行 の grid を compile (event 層は compileGrid が注入)。
+// 上2行 + 中央ボックス(6行) + 下2行 の grid を compile (event 層は compileGrid が注入)。
+// box は rows 2-7 で不変。gap 行(旧 row1/row8)を context 行に振り替え、上下2行ずつ残す。
 function framedBox(top: string, bottom: string, boxContent: string): TextContainerProperty[] {
   const layout: GridLayout = {
     cells: [
-      { id: 'top', col: 0, row: 0, colSpan: 12, rowSpan: 1, content: top },
+      { id: 'top', col: 0, row: 0, colSpan: 12, rowSpan: 2, content: top },
       {
         id: 'box',
         col: 1,
@@ -72,7 +73,7 @@ function framedBox(top: string, bottom: string, boxContent: string): TextContain
         radius: 8,
         padding: 6,
       },
-      { id: 'bottom', col: 0, row: 9, colSpan: 12, rowSpan: 1, content: bottom },
+      { id: 'bottom', col: 0, row: 8, colSpan: 12, rowSpan: 2, content: bottom },
     ],
   }
   return compileGrid(layout).map((c) => new TextContainerProperty(c))
@@ -258,7 +259,13 @@ export function createOverlayManager() {
       const top = showBanner ? (banner ?? '') : (lines[0] ?? '')
       const bottom = lines.length > 1 ? (lines[lines.length - 1] ?? '') : ''
       const k = activeKind()
-      if (k === 'notification') return notificationContainers(top, bottom, notifStack, notifIdx)
+      if (k === 'notification') {
+        // context を上下2行ずつ残す (上=banner/先頭2行、下=末尾2行)。重複は bStart で回避。
+        const top2 = [top, lines[1] ?? ''].join('\n')
+        const bStart = Math.max(2, lines.length - 2)
+        const bottom2 = lines.slice(bStart).join('\n')
+        return notificationContainers(top2, bottom2, notifStack, notifIdx)
+      }
       if (k === 'dialog' && dialog) return dialogContainers(lines[0] ?? '', bottom, dialog)
       if (k === 'toast' && toasts[0]) {
         const bl = showBanner ? [top, ...lines.slice(1)] : lines
