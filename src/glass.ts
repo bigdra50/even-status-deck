@@ -21,6 +21,8 @@ import {
   type GlassData,
   type GView,
   gridLayoutFor,
+  POPUP_BASE_TEXT,
+  POPUP_OVERLAY,
   renderGlass,
 } from './glass-render'
 import { feedImuSample, isImuStarted, setImuConfig, startImu, stopImu } from './imu'
@@ -57,6 +59,9 @@ let refreshBusy = false // bridge 書き込みを直列化 (BLE 飽和でグラ�
 let refreshPending = false
 let lastContent: string | null = null // 直近送信した content (single topology)。無変化なら upgrade 抑制
 let lastTopo: string | null = null // 直近のコンテナ構成キー。変わると rebuildPageContainer する
+let popupOn = false // popup 実験ページ: 中央の通知ボックスを表示中か
+let popupTimer: ReturnType<typeof setInterval> | null = null // popup を一定間隔で発生させる
+const POPUP_INTERVAL_MS = 5000 // popup 発生間隔
 let glassClock: ReturnType<typeof setTimeout> | null = null // 分境界の時刻更新 (store.notify を介さない)
 
 // 全面 1 text container (page1 / linear)。従来の単一コンテナと同一。
@@ -76,16 +81,30 @@ function singleContainer(content: string): TextContainerProperty {
   })
 }
 
-// view → グラスのコンテナ集合。linear (summary / GroupRef / text 実験) は単一 'toolbar' container、
-// grid 実験は compiler 出力 (event 層 + 座標配置セル群)。
+function isPopupView(view: GView): boolean {
+  return typeof view === 'object' && 'exp' in view && view.exp === 'popup'
+}
+
+// popup 実験ページのコンテナ: 表示中は overlay (上下1行 + 中央通知ボックス) を grid で、
+// 非表示時は 10 行のトップページ (base) を単一コンテナで描く。
+function popupContainers(): TextContainerProperty[] {
+  if (popupOn) return compileGrid(POPUP_OVERLAY).map((c) => new TextContainerProperty(c))
+  return [singleContainer(POPUP_BASE_TEXT)]
+}
+
+// view → グラスのコンテナ集合。popup → popupContainers、grid 実験 → compiler、
+// それ以外 (summary / GroupRef / text 実験) → 単一 'toolbar' container。
 function viewContainers(view: GView): TextContainerProperty[] {
+  if (isPopupView(view)) return popupContainers()
   const layout = gridLayoutFor(view)
   if (layout) return compileGrid(layout).map((c) => new TextContainerProperty(c))
   return [singleContainer(renderGlass(view, data, visible))]
 }
 
-// topology キー (コンテナ構成の同一性)。linear は全て 'single' (中身差し替えのみ)、grid は id ごと。
+// topology キー (コンテナ構成の同一性)。popup は base/shown で別 (toggle で rebuild)、
+// grid は id ごと、それ以外は 'single' (中身差し替えのみ)。
 function topoKey(view: GView): string {
+  if (isPopupView(view)) return popupOn ? 'popup:shown' : 'popup:base'
   return gridLayoutFor(view) ? `grid:${(view as ExpView).exp}` : 'single'
 }
 
@@ -163,6 +182,27 @@ function cycle(dir: number): void {
   if (views.length === 0) return
   idx = (idx + dir + views.length) % views.length
   refresh()
+  syncPopupDemo()
+}
+
+// popup 実験ページにいる間だけ、一定間隔で popup を発生させるタイマーを回す。
+// ページ離脱時はタイマーを止めて popup を畳む (他ページには影響しない)。
+function syncPopupDemo(): void {
+  if (isPopupView(views[idx] ?? 'summary')) {
+    if (!popupTimer)
+      popupTimer = setInterval(() => {
+        if (!popupOn) {
+          popupOn = true
+          refresh()
+        }
+      }, POPUP_INTERVAL_MS)
+  } else {
+    if (popupTimer) {
+      clearInterval(popupTimer)
+      popupTimer = null
+    }
+    popupOn = false
+  }
 }
 
 // 時刻 HUD を毎分更新する glass-local タイマー。er-clock 式: builtin status を直接再計算して
@@ -198,6 +238,11 @@ function cleanup(): void {
     clearTimeout(glassClock)
     glassClock = null
   }
+  if (popupTimer) {
+    clearInterval(popupTimer)
+    popupTimer = null
+  }
+  popupOn = false
   if (typeof window !== 'undefined') {
     window.removeEventListener('toolbar:config-changed', onConfigChangedEvent)
     window.removeEventListener('beforeunload', cleanup)
@@ -279,9 +324,14 @@ function onEvent(event: EvenHubEvent): void {
     lastClickAt = now
     if (et === OsEventTypeList.DOUBLE_CLICK_EVENT) {
       void gbridge?.shutDownPageContainer(1)
+    } else if (isPopupView(views[idx] ?? 'summary') && popupOn) {
+      // popup 表示中のタップは popup を閉じる (summary には戻らない)。
+      popupOn = false
+      refresh()
     } else {
       idx = 0
       refresh()
+      syncPopupDemo()
     }
     return
   }
@@ -361,4 +411,5 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   await initDeviceBattery(bridge) // HUD のグラスバッテリー (builtin に反映)
   await applyImuConfig() // config.imu.enabled なら IMU 起動 (onEvent 登録後・前提コンテナ作成後)
   scheduleGlassClock() // 時刻 HUD を毎分更新 (store.notify を介さない glass-local タイマー)
+  syncPopupDemo() // idx=0 (summary) では no-op。popup ページに入ると timer 開始
 }

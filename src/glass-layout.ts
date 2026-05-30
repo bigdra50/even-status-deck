@@ -19,6 +19,7 @@ export type GridCell = {
   rowSpan: number
   content: string
   border?: number // borderWidth 0-5 (既定 0)
+  radius?: number // borderRadius 0-10 (既定 0・角丸)
   padding?: number // paddingLength (既定 0)
 }
 export type GridLayout = { cols?: number; rows?: number; cells: GridCell[] }
@@ -126,7 +127,7 @@ export function compileGrid(layout: GridLayout): CompiledCell[] {
       height: h,
       borderWidth: border,
       borderColor: border > 0 ? 12 : 0,
-      borderRadius: 0,
+      borderRadius: Math.max(0, Math.min(10, c.radius ?? 0)),
       paddingLength: padding,
       containerID: id,
       containerName: `c${id}`,

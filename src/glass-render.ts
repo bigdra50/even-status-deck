@@ -339,6 +339,7 @@ export function renderGlass(view: GView, d: GlassData, visible?: VisibleMap): st
 type ExperimentPage =
   | { id: string; kind: 'text'; render: () => string }
   | { id: string; kind: 'grid'; layout: GridLayout }
+  | { id: string; kind: 'popup' } // 中央ボックスの popup demo (glass.ts が timer/tap を制御)
 
 // page2 (text): 全角 / grapheme 幅の検証。formatSegmentValue / pad の表示幅 (EAW) 修正を視認する。
 // 単一 text container の space パディングなので、proportional フォントでは |...| は揃わない (実機確認済)。
@@ -431,10 +432,47 @@ const GRID_ROWS: GridLayout = {
   ],
 }
 
+// page5 (popup): トップページ風の 10 行 (base) に、中央へ通知カードを上書きする overlay。
+// 上下 1 行 (POPUP_TOP / POPUP_BOTTOM) だけ残し、中央の status は隠れる (SDK は透過/フェード不可なので
+// rebuild で「消す」近似)。glass.ts が一定間隔で overlay を出し、タップで base へ戻す。
+const POPUP_TOP = '09:41   G2 100%   ☀ Tokyo 21°C'
+const POPUP_BOTTOM = 'Claude $12 1.9k   ·   Codex 45%'
+export const POPUP_BASE_TEXT = [
+  POPUP_TOP,
+  'TCHN  TechNova    182.45  -0.81%',
+  'SOLR  SolRise      27.85  +0.12%',
+  'BIOX  BioXel       46.12   0.00%',
+  'CPU 34%  MEM 61%  Disk 72%',
+  'Battery 88% ~6h   Net wifi',
+  'Weather くもり   AQI 42',
+  'Calendar 次の会議 25分',
+  'Tasks 今日 4件   通知 3',
+  POPUP_BOTTOM,
+].join('\n')
+export const POPUP_OVERLAY: GridLayout = {
+  cells: [
+    { id: 'top', col: 0, row: 0, colSpan: 12, rowSpan: 1, content: POPUP_TOP },
+    {
+      id: 'box',
+      col: 1,
+      row: 2,
+      colSpan: 10,
+      rowSpan: 6,
+      content:
+        'WhatsApp · Now\nElizabeth\nお母さんから連絡。玉ねぎと\nピーマンを買ってきて。\n\n(タップで閉じる)',
+      border: 2,
+      radius: 8,
+      padding: 6,
+    },
+    { id: 'bottom', col: 0, row: 9, colSpan: 12, rowSpan: 1, content: POPUP_BOTTOM },
+  ],
+}
+
 const EXPERIMENT_PAGES: ExperimentPage[] = [
   { id: 'cjk-width', kind: 'text', render: renderCjkWidthTest },
   { id: 'grid-cjk', kind: 'grid', layout: GRID_CJK },
   { id: 'grid-rows', kind: 'grid', layout: GRID_ROWS },
+  { id: 'popup', kind: 'popup' },
 ]
 
 // grid 実験なら GridLayout、それ以外 (summary / GroupRef / text 実験) は null。glass.ts の描画分岐用。
