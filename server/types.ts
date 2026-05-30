@@ -40,11 +40,28 @@ export type ProviderOpts = { enabled?: boolean } & Record<string, unknown>
 // command を持つ subprocess provider の config エントリ (ProviderOpts と合成)。
 export type SubprocessEntry = SubprocessProviderConfig & ProviderOpts
 
+// mac-notifications watcher の転送フィルタ。allow/deny は bundle identifier または
+// title に対して照合する (照合規則は shouldForward を参照)。未指定は空配列扱い (全通過)。
+// config.toml の記述例:
+//   [watchers.mac-notifications]
+//   deny = ["com.apple.AddressBook", "Slackbot"]  # 完全一致 or 部分一致 (大小無視) で除外
+//   allow = ["com.apple.iCal"]                     # 非空なら一致したものだけ転送
+export type MacNotificationsWatcherConfig = {
+  allow?: string[]
+  deny?: string[]
+}
+
+// watcher 設定。providers とは別系統 (provider ではなく副プロセス的な転送元)。任意。
+export type WatchersConfig = {
+  'mac-notifications'?: MacNotificationsWatcherConfig
+}
+
 // $XDG_CONFIG_HOME/eveng2-toolbar/config.{toml,json} の解決済み形。
 // providers[id] は command 有無で builtin/JS か subprocess かを判別する。
 export type ServerConfig = {
   port?: number
   providers: Record<string, ProviderOpts | SubprocessEntry>
+  watchers?: WatchersConfig
 }
 
 // --- provider 管理 (install/update/uninstall) の ledger 型 (tasks/provider-management-design.md) ---

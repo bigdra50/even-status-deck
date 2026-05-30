@@ -2,7 +2,14 @@ import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
-import type { Ledger, LedgerEntry, ProviderOpts, ServerConfig, SubprocessEntry } from './types.ts'
+import type {
+  Ledger,
+  LedgerEntry,
+  ProviderOpts,
+  ServerConfig,
+  SubprocessEntry,
+  WatchersConfig,
+} from './types.ts'
 
 // $XDG_CONFIG_HOME/eveng2-toolbar/ (未設定なら ~/.config/eveng2-toolbar/)。
 export const CONFIG_DIR = join(
@@ -38,6 +45,28 @@ async function readConfigFile(file: string): Promise<unknown> {
 // 正の整数のみ port として採用する。0 / 負数 / 小数 / 非数値は undefined (index.ts が解決)。
 function parsePort(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : undefined
+}
+
+// 文字列配列のみ採用する。非配列・null は undefined、要素は string のみ残す。
+function parseStringArray(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined
+  return v.filter((x): x is string => typeof x === 'string')
+}
+
+// [watchers.mac-notifications] の allow/deny を読む。未設定・不正な型は undefined を返し、
+// 既存 parse に影響させない (watchers セクション自体が無ければ ServerConfig.watchers は付かない)。
+function parseWatchers(v: unknown): WatchersConfig | undefined {
+  if (!v || typeof v !== 'object') return undefined
+  const raw = (v as Record<string, unknown>)['mac-notifications']
+  if (!raw || typeof raw !== 'object') return undefined
+  const entry = raw as Record<string, unknown>
+  const allow = parseStringArray(entry.allow)
+  const deny = parseStringArray(entry.deny)
+  if (!allow && !deny) return undefined
+  const mac: WatchersConfig['mac-notifications'] = {}
+  if (allow) mac.allow = allow
+  if (deny) mac.deny = deny
+  return { 'mac-notifications': mac }
 }
 
 // ledger エントリの最小 shape 検証。破損・改竄された provider-ledger.json で
@@ -111,7 +140,11 @@ export function mergeProviders(
 export async function loadServerConfig(): Promise<ServerConfig> {
   if (cache && Date.now() - cache.at < CONFIG_TTL_MS) return cache.data
   const parsed = ((await readConfigFile('config.toml')) ??
-    (await readConfigFile('config.json'))) as { providers?: unknown; port?: unknown } | null
+    (await readConfigFile('config.json'))) as {
+    providers?: unknown
+    port?: unknown
+    watchers?: unknown
+  } | null
   const rawProviders = parsed?.providers
   const configProviders =
     rawProviders && typeof rawProviders === 'object'
@@ -121,6 +154,8 @@ export async function loadServerConfig(): Promise<ServerConfig> {
   const data: ServerConfig = { providers }
   const port = parsePort(parsed?.port)
   if (port !== undefined) data.port = port
+  const watchers = parseWatchers(parsed?.watchers)
+  if (watchers !== undefined) data.watchers = watchers
   cache = { data, at: Date.now() }
   return data
 }
