@@ -1,7 +1,7 @@
 // 集約層。builtin provider + JS autoload provider + subprocess provider をディスパッチし、
 // /api/status のワイヤ型 StatusDoc に集約する (vite.config.ts:413-507 の移植・統合)。
 //
-// builtin: claude-code / codex / system (SYSTEM_GROUP_ID)。
+// builtin: claude-code / codex / system (SYSTEM_GROUP_ID) / weather (open-meteo)。
 // JS autoload: $XDG_CONFIG_HOME/eveng2-toolbar/providers/*.{ts,mjs,js} を pathToFileURL で動的 import。
 //   OD-2 (配布=clone + `bun run server`) のため、autoload は runtime で常に有効
 //   (compile バイナリ向けの IS_COMPILED 無効化は入れない)。
@@ -16,6 +16,7 @@ import { CONFIG_DIR, PROVIDER_DIR } from './config.ts'
 import { claudeProvider } from './providers/claude.ts'
 import { codexProvider } from './providers/codex.ts'
 import { SYSTEM_GROUP_ID, systemProvider } from './providers/system.ts'
+import { weatherProvider } from './providers/weather.ts'
 import { runSubprocess } from './subprocess.ts'
 import type {
   Group,
@@ -31,12 +32,15 @@ const BUILTINS: ProviderDef[] = [
   { id: 'claude-code', group: claudeProvider },
   { id: 'codex', group: codexProvider },
   { id: SYSTEM_GROUP_ID, group: systemProvider },
+  { id: 'weather', group: weatherProvider },
 ]
 
 // builtin provider 別の TTL (ms)。codex は 1 回 9s 程度かかる spawn なので 60s キャッシュ。
 // それ以外 (claude/system) は計算が軽いので短く保ち、主目的は inflight dedup。
 const BUILTIN_TTL_MS: Record<string, number> = {
   codex: 60_000,
+  // open-meteo は 15 分粒度で更新。HTTP fetch を毎 poll 叩かないよう長めにキャッシュする。
+  weather: 600_000,
 }
 const DEFAULT_BUILTIN_TTL_MS = 5_000
 // subprocess provider の TTL 既定 (cfg.ttlMs 未指定時)。

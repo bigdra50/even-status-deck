@@ -67,7 +67,7 @@ provider の管理は `bun run provider`（公開後は `bunx eveng2-toolbar pro
 | ソース | 種別 | 内容 |
 |---|---|---|
 | builtin local | client 算出 | 時刻 / 日付 / G2 グラス電池（SDK）|
-| ローカルサーバー | server | Claude(cost/msgs) / Codex(rate limit) / system(CPU/mem/battery/disk)（`server/` の標準 provider）|
+| ローカルサーバー | server | Claude(cost/msgs) / Codex(rate limit) / system(CPU/mem/battery/disk) / weather(open-meteo・keyless)（`server/` の標準 provider）|
 | iPhone bridge | server | iPhone の電池 / 歩数 / 再生中の曲 など（別リポジトリ `eveng2-iphone-bridge`）|
 | 任意 | server | プロトコルに従えば 3rd party サーバーも追加可 |
 
@@ -87,7 +87,7 @@ provider は「1 ソース分の `StatusDoc`（または単一 `Group`）を供�
 
 | 方式 | 形 | 言語 | 常駐 | 使いどころ |
 |---|---|---|---|---|
-| (1) builtin | 本体同梱の関数 | TS | — | claude / codex / system（標準。ユーザーは書かない）|
+| (1) builtin | 本体同梱の関数 | TS | — | claude / codex / system / weather（標準。ユーザーは書かない）|
 | (2) subprocess | config 登録の command を毎 poll 実行し stdout の JSON を読む | 任意 | 不要 | ローカル拡張の第一級。お手軽 |
 | (3) 独立 HTTP server | `/api/status` を話す常駐サーバーを URL 登録 | 任意 | 要 | 常駐 source / 別マシン / 既存サービス |
 | (4) JS plugin | `providers/*.{ts,mjs,js}` を autoload | JS/TS | — | 本体ランタイム時の手軽な拡張 |
@@ -96,7 +96,7 @@ provider は「1 ソース分の `StatusDoc`（または単一 `Group`）を供�
 
 ### (1) builtin（標準同梱）
 
-本体同梱の provider。`server/providers/{claude,codex,system}.ts` が該当し、claude(cost/msgs) / codex(rate limit) / system(CPU/mem/battery/disk) を返す。ユーザーが書くものではないが、(2)(3) を書くときの実装見本になる。
+本体同梱の provider。`server/providers/{claude,codex,system,weather}.ts` が該当し、claude(cost/msgs) / codex(rate limit) / system(CPU/mem/battery/disk) / weather(open-meteo・keyless。`[providers.weather]` に緯度経度を入れると有効化) を返す。ユーザーが書くものではないが、(2)(3) を書くときの実装見本になる。
 
 ### (2) subprocess provider（推奨・第一級）
 
@@ -313,7 +313,7 @@ phone ロック / Even App バックグラウンドでもグラスを生存さ�
 | `src/glass.ts` | glass の bridge 配線・購読・電池・keep-alive |
 | `src/companion.ts` | スマホ UI（ソース管理 + 横断 segment 設定 + プレビュー）|
 | `src/status-types.ts` | プロトコル型 + `parseStatusDoc` |
-| `server/` | standalone サーバー（provider 群 claude/codex/system + subprocess + http-server + vite dev middleware）|
+| `server/` | standalone サーバー（provider 群 claude/codex/system/weather + subprocess + http-server + vite dev middleware）|
 | `vite.config.ts` | `server/vite-plugin` を dev に挿すだけ（9 行）|
 
 ## 関連

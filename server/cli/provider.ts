@@ -15,7 +15,7 @@ import {
 import { addJs, addSubprocess, checkUpdates, fileSha, removeProvider, updateJs } from './install.ts'
 import { updateLedger } from './ledger.ts'
 
-const BUILTIN_IDS = new Set(['claude-code', 'codex', 'system'])
+const BUILTIN_IDS = new Set(['claude-code', 'codex', 'system', 'weather'])
 
 // provider id は TOML キー / ファイル名として安全な文字に限る (壊れた TOML 生成を防ぐ)。
 const ID_RE = /^[A-Za-z0-9_-]+$/

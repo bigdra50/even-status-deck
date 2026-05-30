@@ -14,6 +14,17 @@ enabled = false          # codex を止める (app-server 起動の ~数秒を�
 [providers.system]
 enabled = true           # CPU / メモリ / バッテリー / ディスク (systeminformation)
 
+# --- 気象 (builtin・open-meteo / keyless・無料) ---
+# 座標 (latitude / longitude) を入れると有効化する。未設定なら何も出さない。
+# 自動 geolocation は iOS WebView 権限が不確実なため、座標は手入力する。
+[providers.weather]
+latitude = 35.681        # 緯度 (例: 東京駅)
+longitude = 139.767      # 経度
+label = "Tokyo"          # 表示名 (省略時は "Weather")
+units = "metric"         # "metric" (°C / m/s) or "imperial" (°F / mph)。既定 metric
+# segment: temp(気温+天気・既定ON) / hilo(最高最低) / pop(降水確率) / wind(風速)。
+# 既定 OFF の segment は companion で個別に ON にする。
+
 # --- (4) JS plugin provider にオプションを渡す (group(ctx) で ctx.options として受け取る) ---
 [providers.example]
 enabled = true
@@ -21,8 +32,9 @@ label = "My Example"     # examples/provider.example.ts が ctx.options.label �
 
 # --- (2) subprocess provider を登録する (任意言語の外部コマンド) ---
 # command を書いた時点で有効。args は ${configDir} 展開のみ・絶対パス必須。
-[providers.weather]
+# id は任意 (builtin の weather と衝突しないよう別名にする)。
+[providers.myscript]
 command = "python3"
-args = ["${configDir}/providers/weather.py"]   # examples/subprocess-provider.example.py
+args = ["${configDir}/providers/myscript.py"]   # examples/subprocess-provider.example.py
 timeoutMs = 1000
 ttlMs = 30000

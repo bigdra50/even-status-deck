@@ -17,7 +17,7 @@ import { updateLedger } from './ledger.ts'
 
 const RISK_TAGS: readonly RiskTag[] = ['unofficial-api', 'terms-risk', 'account-limitation-risk']
 const ID_RE = /^[A-Za-z0-9_-]+$/
-const BUILTIN_IDS = new Set(['claude-code', 'codex', 'system'])
+const BUILTIN_IDS = new Set(['claude-code', 'codex', 'system', 'weather'])
 const MAX_PROVIDER_BYTES = 512 * 1024
 const DEFAULT_SUBPROCESS_TIMEOUT_MS = 1000
 const DEFAULT_SUBPROCESS_TTL_MS = 30_000
