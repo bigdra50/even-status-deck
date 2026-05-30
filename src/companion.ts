@@ -1621,18 +1621,45 @@ async function writeClipboard(text: string): Promise<boolean> {
   } catch {
     // フォールバックへ
   }
+  // textarea+execCommand フォールバック。select() が現在の focus/選択を奪うため、
+  // 直前の active 要素・入力カーソル・document 選択範囲を保存し finally で復元する。
+  // textarea 除去も finally に置き、例外時に DOM へ残らないようにする。
+  const prevActive = document.activeElement
+  const prevInput =
+    prevActive instanceof HTMLInputElement || prevActive instanceof HTMLTextAreaElement
+      ? prevActive
+      : null
+  const inputSel = prevInput
+    ? { start: prevInput.selectionStart, end: prevInput.selectionEnd }
+    : null
+  const sel = window.getSelection()
+  const ranges: Range[] = sel
+    ? Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i))
+    : []
+  const ta = document.createElement('textarea')
   try {
-    const ta = document.createElement('textarea')
     ta.value = text
     ta.style.position = 'fixed'
     ta.style.opacity = '0'
     document.body.appendChild(ta)
     ta.select()
-    const ok = document.execCommand('copy')
-    ta.remove()
-    return ok
+    return document.execCommand('copy')
   } catch {
     return false
+  } finally {
+    ta.remove()
+    if (sel) {
+      sel.removeAllRanges()
+      for (const r of ranges) sel.addRange(r)
+    }
+    if (prevActive instanceof HTMLElement) prevActive.focus()
+    if (prevInput && inputSel && inputSel.start != null && inputSel.end != null) {
+      try {
+        prevInput.setSelectionRange(inputSel.start, inputSel.end)
+      } catch {
+        // 一部の input type は setSelectionRange 非対応 (無視)
+      }
+    }
   }
 }
 
