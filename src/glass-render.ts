@@ -13,6 +13,7 @@ import {
   LABEL_SEG,
   type ViewGroup,
 } from './config'
+import { sanitizeGlyphs } from './glyphs'
 import type { Group, StatusDoc } from './status-types'
 import { isVisible, segKey, type VisibleMap } from './visibility'
 
@@ -91,13 +92,16 @@ function padLeft(s: string, n: number): string {
 // 超えれば末尾 … で省略 (合計表示幅 ≤ widthChars)。切り詰めは code point 単位で全角を 2 桁と数え、
 // サロゲートペア / 絵文字を割らない。widthChars 未設定 (server 等) は無加工。
 export function formatSegmentValue(value: string, widthChars?: number, isNumeric = false): string {
-  if (!widthChars) return value
-  if (displayWidth(value) <= widthChars) {
-    return isNumeric ? padLeft(value, widthChars) : pad(value, widthChars)
+  // 幅計算 (省略/pad) の前に sanitize する。後段で sanitize すると ✅→OK の幅変化が
+  // 切り詰め枠を超え、グラスで折り返し → 2 ページ目へ溢れる回帰を起こすため (issue #11)。
+  const v = sanitizeGlyphs(value)
+  if (!widthChars) return v
+  if (displayWidth(v) <= widthChars) {
+    return isNumeric ? padLeft(v, widthChars) : pad(v, widthChars)
   }
   let w = 0
   let out = ''
-  for (const ch of value) {
+  for (const ch of v) {
     const cw = isWide(ch.codePointAt(0) ?? 0) ? 2 : 1
     if (w + cw > widthChars - 1) break // … 1 桁分を残す
     out += ch
@@ -129,7 +133,9 @@ function groupLine(
     parts.push(seg.label ? `${seg.label} ${seg.value}` : seg.value)
   }
   if (!parts.length) return null
-  return g.label ? `${g.label}  ${parts.join('  ')}` : parts.join('  ')
+  // summary は値を素のまま連結する (formatSegmentValue を通さない) ため、行全体を sanitize する。
+  // 切り詰めが無くグラスの折り返しに任せる経路なので、出力段の sanitize で幅問題は起きない。
+  return sanitizeGlyphs(g.label ? `${g.label}  ${parts.join('  ')}` : parts.join('  '))
 }
 
 // group ラベルテキスト (builtin は code-owned、server は status group.label or source label)。
@@ -185,7 +191,9 @@ function renderKeys(items: string[], d: GlassData, visible?: VisibleMap): string
     }
     prevGroup = groupId
   }
-  return parts.length ? parts.join('  ') : ''
+  // 値は formatSegmentValue で sanitize 済 (切り詰め前)。ラベル/custom テキストはここで sanitize する。
+  // justify は本関数の出力(クラスタ文字列)を px 計測するので、出力段で sanitize すれば幅は整合する。
+  return parts.length ? sanitizeGlyphs(parts.join('  ')) : ''
 }
 
 // 1 行を @right 区切りで左右クラスタの key 配列に分ける。@right が無ければ全て左。
@@ -280,15 +288,18 @@ export function summaryBody(d: GlassData, visible?: VisibleMap): string[] {
 function detailBody(d: GlassData, ref: GroupRef, visible?: VisibleMap): string[] {
   const g = findGroup(d, ref)
   if (!g) return summaryBody(d, visible)
-  const lines: string[] = g.label ? [g.label] : []
+  const lines: string[] = g.label ? [sanitizeGlyphs(g.label)] : []
   for (const seg of g.segments) {
     if (!isVisible(visible, segKey(ref.sourceId, ref.groupId, seg.id))) continue
-    const v = formatSegmentValue(seg.value, seg.widthChars, seg.isNumeric ?? false)
+    const v = formatSegmentValue(seg.value, seg.widthChars, seg.isNumeric ?? false) // 値は sanitize 済
+    // ラベルは pad(幅計算) の前に sanitize する。reset も同様にグラスへ渡る前に通す。
+    const label = seg.label ? sanitizeGlyphs(seg.label) : ''
     if (typeof seg.percent === 'number') {
-      const name = seg.label ? pad(seg.label, 8) : ''
-      lines.push(`${name} ${bar(seg.percent)} ${v}${seg.reset ? ` ${seg.reset}` : ''}`.trim())
+      const name = label ? pad(label, 8) : ''
+      const reset = seg.reset ? ` ${sanitizeGlyphs(seg.reset)}` : ''
+      lines.push(`${name} ${bar(seg.percent)} ${v}${reset}`.trim())
     } else {
-      lines.push(seg.label ? `${pad(seg.label, 8)} ${v}` : v)
+      lines.push(label ? `${pad(label, 8)} ${v}` : v)
     }
   }
   return lines

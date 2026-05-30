@@ -30,7 +30,6 @@ import {
   type GView,
   renderGlass,
 } from './glass-render'
-import { sanitizeGlyphs } from './glyphs'
 import { feedImuSample, isImuStarted, setImuConfig, startImu, stopImu } from './imu'
 import { activateKeepAlive, deactivateKeepAlive } from './keep-alive'
 import {
@@ -108,8 +107,8 @@ function refresh(): void {
   overlay.tick(Date.now()) // toast の expiry を進める (空になることもある)
   scheduleOverlayWake() // 次の自動消去をスケジュール
   const view = views[idx] ?? 'summary'
-  // グラスへ渡る最終文字列は絵文字 tofu 対策で sanitize する (overlay の content も後段で通す)。
-  const base = sanitizeGlyphs(renderGlass(view, data, visible))
+  // 絵文字 tofu 対策の sanitize は glass-render(値/ラベル段) と glass-overlay(本文段) が担う。
+  const base = renderGlass(view, data, visible)
 
   if (overlay.isActive()) {
     // 現在ビューの上に active overlay を重ねる (内容/選択が変われば rebuild)。
@@ -117,11 +116,7 @@ function refresh(): void {
     if (key !== lastTopo) {
       lastTopo = key
       lastContent = null
-      // emit 由来の通知文に絵文字が混じるため各 container.content も sanitize する。
-      const containers = overlay.containers(base).map((c) => {
-        if (c.content) c.content = sanitizeGlyphs(c.content)
-        return c
-      })
+      const containers = overlay.containers(base)
       bridge
         .rebuildPageContainer(
           new RebuildPageContainer({

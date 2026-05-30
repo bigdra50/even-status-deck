@@ -17,10 +17,13 @@ const GLYPH_MAP = new Map<number, string>([
   [0x2753, '?'], // ❓ black question mark ornament
 ])
 
-// 除去対象の不可視結合子/修飾子 (単一 code point)。ZWJ・異体字セレクタ。
+// 除去対象の不可視結合子/修飾子と emoji シーケンス残骸 (単一 code point)。
+// 絵文字本体を除去しても結合記号だけがグラスへ残らないよう、ここで一緒に落とす。
 function isInvisibleModifier(cp: number): boolean {
   if (cp === 0x200d) return true // ZWJ (zero width joiner)
   if (cp === 0xfe0e || cp === 0xfe0f) return true // 異体字セレクタ (text/emoji)
+  if (cp === 0x20e3) return true // 結合囲みキーキャップ (例: 1️⃣ の囲み。基底の数字 1 は残す)
+  if (cp === 0xe0001 || (cp >= 0xe0020 && cp <= 0xe007f)) return true // タグ文字 (旗の地域サブタグ等)
   return false
 }
 

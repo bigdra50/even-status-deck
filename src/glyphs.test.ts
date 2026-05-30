@@ -35,6 +35,15 @@ test('不可視結合子/修飾子を除去 (ZWJ・異体字セレクタ・肌�
   expect(sanitizeGlyphs('⚠️')).toBe('!')
 })
 
+test('emoji シーケンス残骸 (keycap / tag) を除去し基底文字は残す', () => {
+  // キーキャップ 1️⃣ = 1 + FE0F + U+20E3。囲み記号だけ残さず数字 1 を残す。
+  expect(sanitizeGlyphs('1️⃣')).toBe('1')
+  expect(sanitizeGlyphs('1⃣')).toBe('1') // FE0F 無しでも囲みを落とす
+  expect(sanitizeGlyphs('#️⃣')).toBe('#')
+  // タグシーケンス (スコットランド旗 = 黒旗 + 地域タグ + 終端 E007F) は丸ごと消える。
+  expect(sanitizeGlyphs('\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}')).toBe('')
+})
+
 test('サロゲートを割らない (ペアを 1 code point として扱う)', () => {
   // 🎉 (U+1F389) はサロゲートペア。前後の latin を壊さず除去できる。
   expect(sanitizeGlyphs('x🎉y')).toBe('xy')
