@@ -21,6 +21,7 @@ import { TextContainerProperty } from '@evenrealities/even_hub_sdk'
 import { getTextWidth } from '@evenrealities/pretext'
 import { compileGrid, type GridLayout } from './glass-layout'
 import { GLASS_HEIGHT, GLASS_PADDING, GLASS_WIDTH } from './glass-render'
+import { sanitizeGlyphs } from './glyphs'
 
 export type Notif = { app: string; sender: string; body: string }
 export type ToastOpts = { durationMs?: number }
@@ -155,23 +156,34 @@ export function createOverlayManager() {
   }
 
   return {
+    // emit 由来テキストに絵文字が混じるため、状態へ入る本文を必ず 1 回 sanitize する
+    // (グラスへ渡る前に tofu を除去・置換する。sanitizeGlyphs は冪等)。
     notify(n: Notif): void {
-      if (notifStack.length < NOTIF_MAX) notifStack.push(n)
+      if (notifStack.length >= NOTIF_MAX) return
+      notifStack.push({
+        app: sanitizeGlyphs(n.app),
+        sender: sanitizeGlyphs(n.sender),
+        body: sanitizeGlyphs(n.body),
+      })
     },
     toast(text: string, opts: ToastOpts = {}): void {
-      toasts.push({ text, durationMs: opts.durationMs ?? DEFAULT_TOAST_MS, expiresAt: null })
+      toasts.push({
+        text: sanitizeGlyphs(text),
+        durationMs: opts.durationMs ?? DEFAULT_TOAST_MS,
+        expiresAt: null,
+      })
     },
     dialog(title: string, message: string, actions: string[], opts: DialogOpts = {}): void {
       dialog = {
-        title,
-        message,
-        actions: actions.length ? actions : ['OK'],
+        title: sanitizeGlyphs(title),
+        message: sanitizeGlyphs(message),
+        actions: (actions.length ? actions : ['OK']).map(sanitizeGlyphs),
         sel: 0,
         onResult: opts.onResult,
       }
     },
     setBanner(text: string): void {
-      banner = text
+      banner = sanitizeGlyphs(text)
     },
     clearBanner(): void {
       banner = null

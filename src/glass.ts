@@ -107,6 +107,7 @@ function refresh(): void {
   overlay.tick(Date.now()) // toast の expiry を進める (空になることもある)
   scheduleOverlayWake() // 次の自動消去をスケジュール
   const view = views[idx] ?? 'summary'
+  // 絵文字 tofu 対策の sanitize は glass-render(値/ラベル段) と glass-overlay(本文段) が担う。
   const base = renderGlass(view, data, visible)
 
   if (overlay.isActive()) {
