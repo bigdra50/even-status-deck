@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "bin": {
+    "eveng2-toolbar": "./server/index.ts",
     "eveng2-toolbar-server": "./server/index.ts"
   },
   "exports": {
