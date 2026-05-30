@@ -468,7 +468,13 @@ export const POPUP_DEMO_NOTIFS: PopupNotif[] = [
 export function buildPopupOverlay(stack: PopupNotif[], idx: number): GridLayout {
   const cur = Math.max(0, Math.min(idx, stack.length - 1))
   const n = stack[cur]
-  const dots = stack.map((_, i) => (i === cur ? '●' : '·')).join('\n')
+  // 現在=● は大きすぎ / 他=· は小さすぎたので、字幅の近い bullet 系へ (中心も揃いやすい)。
+  // 現在 = 塗りつぶし • / 他 = 中抜き ◦。
+  const dots = stack.map((_, i) => (i === cur ? '•' : '◦')).join('\n')
+  // 1 行目 = タイトル (字下げなし)、2 行目以降 (sender + body) は 2 文字インデントする。
+  const box = n
+    ? [`${n.app} · Now`, ...`${n.sender}\n${n.body}`.split('\n').map((l) => `  ${l}`)].join('\n')
+    : ''
   return {
     cells: [
       { id: 'top', col: 0, row: 0, colSpan: 12, rowSpan: 1, content: POPUP_TOP },
@@ -479,7 +485,7 @@ export function buildPopupOverlay(stack: PopupNotif[], idx: number): GridLayout 
         row: 2,
         colSpan: 10,
         rowSpan: 6,
-        content: n ? `${n.app} · Now\n${n.sender}\n${n.body}` : '',
+        content: box,
         border: 2,
         radius: 8,
         padding: 6,
