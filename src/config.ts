@@ -13,6 +13,8 @@ export const BUILTIN_SOURCE_ID = 'builtin.local'
 // 暗黙の既定サーバ (同一オリジン) の決定的 ID。起動毎にランダム ID で再追加すると groupOrder が
 // 孤立蓄積するため、固定 ID にして二重 init / 再起動でも同一ソースに収束させる。
 export const LOCAL_SOURCE_ID = 'server.local'
+// 気象 client source の決定的 ID。位置は companion WebView の geolocation で取る(SDK に GPS 無し)。
+export const WEATHER_SOURCE_ID = 'client.weather'
 export const DEFAULT_PROFILE_ID = 'default'
 
 // glass layout の「ラベル chip」を表す予約 segId。items の key が `src|grp|@label` のとき、
@@ -60,7 +62,7 @@ export const BUILTIN_SEG_LABELS: Record<string, string> = {
   eta: 'Estimated time left',
 }
 
-export type SourceKind = 'builtin' | 'server'
+export type SourceKind = 'builtin' | 'server' | 'client'
 // urls: 複数経路 (LAN / VPN 等。到達順に試行、先頭優先)。MVP では urls を正とし、旧 url? は
 //   後方互換で読み migrate で urls[0] へ正規化する。machineId: 同一マシン判定キー (Phase 3 で採用)。
 export type SourceDef = {
@@ -283,6 +285,21 @@ function ensureBuiltin(cfg: Config): void {
   migrateBuiltinGroups(cfg)
 }
 
+// 気象 client source (現在地ベース)。SDK に GPS が無いため位置は companion WebView の
+// geolocation で取得する。既定は無効 (opt-in): enabledSourceIds に入れず、ユーザーが
+// "Add source" で有効化したとき初めて位置許可を求める。素材 group は status sync が補充する。
+function ensureClientWeather(cfg: Config): void {
+  const existing = cfg.sources.find((s) => s.id === WEATHER_SOURCE_ID)
+  if (existing) {
+    existing.kind = 'client'
+    existing.label = 'Weather'
+    existing.urls ??= []
+  } else {
+    cfg.sources.push({ id: WEATHER_SOURCE_ID, kind: 'client', label: 'Weather', urls: [] })
+  }
+  cfg.groups[WEATHER_SOURCE_ID] ??= {}
+}
+
 // 旧 builtin group 'hud' (時刻/電池を 1 group に詰めていた) を clock/g2 へ再構成する。
 // segment は id が変わる (g2→level, drain→rate, est→eta) ため旧トグルは引き継がず、
 // sync が status から既定 ON で補充する。builtin の表示順 (先頭) は維持する。
@@ -316,6 +333,7 @@ export function emptyConfig(): Config {
     imu: defaultImuConfig(),
   }
   ensureBuiltin(c)
+  ensureClientWeather(c)
   return c
 }
 
@@ -398,6 +416,7 @@ function migrateV4Same(c: Config): Config {
   c.sources ??= []
   for (const s of c.sources) normalizeSourceUrls(s)
   ensureBuiltin(c)
+  ensureClientWeather(c)
   c.imu ??= defaultImuConfig()
   delete (c as Record<string, unknown>).batteryRate
   delete (c as Record<string, unknown>).glassHints
@@ -518,6 +537,7 @@ function migrateV3ToV4(old: V3Config): Config {
   def.enabledSourceIds = cfg.sources.map((s) => s.id)
   // builtin が先頭に来るよう ensureBuiltin を再適用 (順序 + enabledSourceIds)。
   ensureBuiltin(cfg)
+  ensureClientWeather(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
   consolidateClock(cfg)
@@ -582,6 +602,7 @@ function migrateLegacyToV4(parsed: Record<string, unknown>): Config {
   }
   def.enabledSourceIds = cfg.sources.map((s) => s.id)
   ensureBuiltin(cfg)
+  ensureClientWeather(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
   pruneOrphans(cfg)

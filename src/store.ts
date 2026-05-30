@@ -2,9 +2,16 @@
 // glass / companion は購読して描画する。取得は 1 系統 (二重ポーリングなし)。
 // 失敗ソースは直近成功値を stale 保持。revision + abort で遅延応答を破棄。
 import { localStatus } from './builtins'
-import { type Config, enabledSources, type SourceDef, sourceUrls } from './config'
+import {
+  type Config,
+  enabledSources,
+  type SourceDef,
+  sourceUrls,
+  WEATHER_SOURCE_ID,
+} from './config'
 import { fetchStatusFromUrls } from './data'
 import type { StatusDoc } from './status-types'
+import { weatherStatus } from './weather'
 
 type Listener = () => void
 
@@ -184,25 +191,9 @@ function statusSig(d: StatusDoc): string {
     .join(';')
 }
 
-async function refreshSource(def: SourceDef): Promise<void> {
-  if (def.kind === 'builtin') {
-    statuses.set(def.id, localStatus())
-    notify()
-    return
-  }
-  const urls = sourceUrls(def)
-  if (!urls.length) return
-  const rev = (revisions.get(def.id) ?? 0) + 1
-  revisions.set(def.id, rev)
-  inflight.get(def.id)?.abort()
-  const ctl = new AbortController()
-  inflight.set(def.id, ctl)
-  // 複数経路を到達順に試す (先頭優先・失敗で次)。成功した経路を defs の先頭へ寄せ、次 poll で
-  // 同経路を優先する (永続化はしない: config の urls 順はユーザー指定を尊重する)。
-  const hit = await fetchStatusFromUrls(urls, ctl.signal)
-  if (rev !== revisions.get(def.id)) return // 遅延応答は破棄
-  const next = hit?.status ?? null
-  if (hit) preferUrl(def.id, hit.url)
+// fetch/produce 結果 (StatusDoc|null) の共通後処理。成功は status 更新 + 鮮度リセット + 変化時 notify、
+// 失敗は failCount++ + retry。server (URL fetch) と client (producer) の両方から呼ぶ。
+function applyResult(def: SourceDef, next: StatusDoc | null): void {
   if (next) {
     const wasUnhealthy = (failCount.get(def.id) ?? 0) > 0
     statuses.set(def.id, next)
@@ -223,6 +214,53 @@ async function refreshSource(def: SourceDef): Promise<void> {
   // health 遷移時のみ notify: online->stale (n=1) / stale->offline (n=RETRY_MAX+1)。
   // 中間 retry 失敗 (n=2..RETRY_MAX) は health 不変なので無通知で churn 抑制。
   if (n === 1 || n === RETRY_MAX + 1) notify()
+}
+
+// client source の producer (現状 weather のみ)。位置は WebView の geolocation でしか取れないため
+// server ではなく client 側で計算する。store は kind==='client' でこれを呼ぶ。
+const clientProducers: Record<string, (signal: AbortSignal) => Promise<StatusDoc | null>> = {
+  [WEATHER_SOURCE_ID]: weatherStatus,
+}
+
+async function refreshSource(def: SourceDef): Promise<void> {
+  if (def.kind === 'builtin') {
+    statuses.set(def.id, localStatus())
+    notify()
+    return
+  }
+  // client: producer (geolocation→open-meteo 等) を呼ぶ。server と同じ revision/abort で
+  // 遅延応答を破棄し、applyResult で鮮度/notify を共通処理する。producer 内で TTL キャッシュする。
+  if (def.kind === 'client') {
+    const produce = clientProducers[def.id]
+    if (!produce) return
+    const rev = (revisions.get(def.id) ?? 0) + 1
+    revisions.set(def.id, rev)
+    inflight.get(def.id)?.abort()
+    const ctl = new AbortController()
+    inflight.set(def.id, ctl)
+    let next: StatusDoc | null = null
+    try {
+      next = await produce(ctl.signal)
+    } catch {
+      next = null
+    }
+    if (rev !== revisions.get(def.id)) return // 遅延応答は破棄
+    applyResult(def, next)
+    return
+  }
+  const urls = sourceUrls(def)
+  if (!urls.length) return
+  const rev = (revisions.get(def.id) ?? 0) + 1
+  revisions.set(def.id, rev)
+  inflight.get(def.id)?.abort()
+  const ctl = new AbortController()
+  inflight.set(def.id, ctl)
+  // 複数経路を到達順に試す (先頭優先・失敗で次)。成功した経路を defs の先頭へ寄せ、次 poll で
+  // 同経路を優先する (永続化はしない: config の urls 順はユーザー指定を尊重する)。
+  const hit = await fetchStatusFromUrls(urls, ctl.signal)
+  if (rev !== revisions.get(def.id)) return // 遅延応答は破棄
+  if (hit) preferUrl(def.id, hit.url)
+  applyResult(def, hit?.status ?? null)
 }
 
 export async function refreshAll(): Promise<void> {
