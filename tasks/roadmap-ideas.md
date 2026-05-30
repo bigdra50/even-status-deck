@@ -273,4 +273,8 @@ type ImageSource =
 - グラスを「メニューで操作するアプリ」にするなら 2 方式: (1) `ListContainer`（FW がハイライト/スクロール管理・native・推奨）、(2) bordered text + `>` カーソルの自前メニュー（レイアウト自由だが選択移動ごとに `rebuildPageContainer`=ちらつき）。サブ階層はどちらも `rebuildPageContainer` で次ページへ、戻りは `DOUBLE_CLICK`/`SCROLL` に割り当て、スタックは JS 管理。現状は status line 描画なので、メニュー化は描画モデルの追加が要る。
 - Widget グリッド構想との関係: コンテナは座標配置 + 枠描画ができるので**グリッドは実装可能**。ただし 1 ページ最大 12（text/list 8 + image 4）がセル数の上限。詳細は「UI 拡張アイデア」の実現性を参照。
 
+### アニメーション 実機検証（2026-05-30, 0.1.62〜64）
+- **滑らかな fade / scroll アニメは SDK 経由では不可**（確定）。理由: `TextContainerProperty` に**テキストの輝度/色フィールドが無い**（`borderColor` のみ）→ 文字をフェードできない。`animation`/`transition`/`opacity`/`duration` API も無い。コマ送りは `rebuildPageContainer`（ちらつき）か画像（1 枚 0.5〜2s/BLE）で BLE 律速→カクつく。標準ダッシュボードの fade/scroll は firmware ネイティブ UI で別物。
+- 唯一のネイティブな動き = `ListContainer` のスクロール。**実機で試した（page6 list 実験, 0.1.63/64）が、ListContainer 単体ページが正しく描画されず断念（ボツ）**。`ListContainerProperty` には `isEventCapture` フィールドが無く、event 用 text 層との両立も不明。→ **通知 UI は custom card（popup, page4）のまま**。滑らかスクロール/フェードは諦め、必要なら dissolve（文字を空白化, `textContainerUpgrade` でちらつき無し）程度。
+
 出典: Even Hub Docs（getting-started/first-app・architecture、guides/display・input-events）。
