@@ -13,6 +13,7 @@ import {
   LABEL_SEG,
   type ViewGroup,
 } from './config'
+import type { GridLayout } from './glass-layout'
 import type { Group, StatusDoc } from './status-types'
 import { isVisible, segKey, type VisibleMap } from './visibility'
 
@@ -21,7 +22,8 @@ import { isVisible, segKey, type VisibleMap } from './visibility'
 // HUD (時刻/電池) は builtin local の group (clock / g2) として groupOrder に含まれる。
 // 素材 (config.groups: GroupMeta) が segment の存在・順序・format を持ち、可視性 (enabled /
 // segment ON-OFF / align / showDefaultLabel) は active profile の view (ViewGroup) を読む。
-export type GView = 'summary' | GroupRef
+export type ExpView = { exp: string } // 実験ページ (page2+, 実機検証用)
+export type GView = 'summary' | GroupRef | ExpView
 export type GlassData = {
   config: Config
   statuses: Record<string, StatusDoc | null>
@@ -45,19 +47,65 @@ export function bar(percent: number, width = 12): string {
   return '━'.repeat(filled) + '─'.repeat(width - filled)
 }
 
-function pad(s: string, n: number): string {
-  return s.length >= n ? s : s + ' '.repeat(n - s.length)
+// East Asian Width: 全角 (CJK / かな / Hangul / 全角形 / 絵文字) を 2 桁、その他を 1 桁で数える。
+// フォントは proportional なので厳密幅ではないが、文字数 (.length = UTF-16 code unit) より遥かに
+// 視覚幅へ近く、全角での列ズレ / サロゲート分断を防ぐ。行全体の overflow 防止は justifyClusters の
+// px 計測 (getTextWidth) が担う。これにより widthChars は「表示桁 (全角=2)」の意味になる。
+function isWide(cp: number): boolean {
+  return (
+    (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
+    (cp >= 0x2e80 && cp <= 0x303e) || // CJK 部首 / 康熙 / CJK 記号・句読点
+    (cp >= 0x3041 && cp <= 0x33ff) || // ひらがな〜CJK 互換
+    (cp >= 0x3400 && cp <= 0x4dbf) || // CJK Ext A
+    (cp >= 0x4e00 && cp <= 0x9fff) || // CJK 統合漢字
+    (cp >= 0xa000 && cp <= 0xa4cf) || // Yi
+    (cp >= 0xac00 && cp <= 0xd7a3) || // ハングル音節
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK 互換漢字
+    (cp >= 0xfe30 && cp <= 0xfe4f) || // CJK 互換形
+    (cp >= 0xff00 && cp <= 0xff60) || // 全角形
+    (cp >= 0xffe0 && cp <= 0xffe6) || // 全角記号
+    (cp >= 0x1f000 && cp <= 0x1f0ff) || // 麻雀 / 牌 / トランプ
+    (cp >= 0x1f300 && cp <= 0x1faff) || // 絵文字
+    (cp >= 0x20000 && cp <= 0x3fffd) // CJK Ext B 以降
+  )
 }
 
-// segment 値を widthChars 枠に合わせる。短ければ pad (数値=右寄せ / 文字列=左寄せ) で枠確保、
-// 超えれば末尾 … で省略 (合計 widthChars)。widthChars 未設定 (server 等) は無加工。
+// 文字列の表示幅 (全角=2 / 半角=1)。code point 単位で走査しサロゲートペアを割らない。
+export function displayWidth(s: string): number {
+  let w = 0
+  for (const ch of s) w += isWide(ch.codePointAt(0) ?? 0) ? 2 : 1
+  return w
+}
+
+// 表示幅 n まで右側を半角 space で埋める (左寄せ)。
+function pad(s: string, n: number): string {
+  const w = displayWidth(s)
+  return w >= n ? s : s + ' '.repeat(n - w)
+}
+
+// 表示幅 n まで左側を半角 space で埋める (右寄せ・数値用)。
+function padLeft(s: string, n: number): string {
+  const w = displayWidth(s)
+  return w >= n ? s : ' '.repeat(n - w) + s
+}
+
+// segment 値を widthChars 枠 (表示桁) に合わせる。短ければ pad (数値=右寄せ / 文字列=左寄せ)、
+// 超えれば末尾 … で省略 (合計表示幅 ≤ widthChars)。切り詰めは code point 単位で全角を 2 桁と数え、
+// サロゲートペア / 絵文字を割らない。widthChars 未設定 (server 等) は無加工。
 export function formatSegmentValue(value: string, widthChars?: number, isNumeric = false): string {
   if (!widthChars) return value
-  if (value.length <= widthChars) {
-    return isNumeric ? value.padStart(widthChars, ' ') : pad(value, widthChars)
+  if (displayWidth(value) <= widthChars) {
+    return isNumeric ? padLeft(value, widthChars) : pad(value, widthChars)
   }
-  const head = Math.max(1, widthChars - 1)
-  return `${value.slice(0, head)}…`
+  let w = 0
+  let out = ''
+  for (const ch of value) {
+    const cw = isWide(ch.codePointAt(0) ?? 0) ? 2 : 1
+    if (w + cw > widthChars - 1) break // … 1 桁分を残す
+    out += ch
+    w += cw
+  }
+  return `${out}…`
 }
 
 function findGroup(d: GlassData, ref: GroupRef): Group | undefined {
@@ -268,6 +316,7 @@ function frame(body: string[], hint: string | null): string {
 export function renderGlass(view: GView, d: GlassData, visible?: VisibleMap): string {
   const budget = MAX_ROWS
 
+  if (typeof view === 'object' && 'exp' in view) return renderExperiment(view.exp)
   if (view !== 'summary') return frame(clampRows(detailBody(d, view, visible), budget), null)
 
   // custom layout: 固定行を絶対位置で描画 (空行も保持)。
@@ -284,17 +333,85 @@ export function renderGlass(view: GView, d: GlassData, visible?: VisibleMap): st
   return frame([...top, ...Array<string>(gap).fill(''), ...bottom], null)
 }
 
-// 表示するビュー: summary + 表示可能な segment が 1 つ以上ある有効 group (groupOrder 順)。
-// 全 segment が条件で隠れた group は detail も出さない (groupLine が null)。
-export function buildViews(d: GlassData, visible?: VisibleMap): GView[] {
-  const view = activeView(d.config)
-  const out: GView[] = ['summary']
-  for (const ref of view.groupOrder) {
-    const vg = view.groups[ref.sourceId]?.[ref.groupId]
-    const meta = d.config.groups[ref.sourceId]?.[ref.groupId]
-    if (!vg?.enabled || !meta) continue
-    const g = findGroup(d, ref)
-    if (g && groupLine(g, meta, vg, ref, visible)) out.push(ref)
-  }
-  return out
+// --- 実験ページ (page2+) -------------------------------------------------------------
+// 実機検証用の差し替え可能なページ群。検証内容に応じて中身を変える。page1 (summary) には影響しない。
+// TODO(release): 公開前に EXPERIMENT_PAGES を空にする (または dev gate)。
+type ExperimentPage =
+  | { id: string; kind: 'text'; render: () => string }
+  | { id: string; kind: 'grid'; layout: GridLayout }
+
+// page2 (text): 全角 / grapheme 幅の検証。formatSegmentValue / pad の表示幅 (EAW) 修正を視認する。
+// 単一 text container の space パディングなので、proportional フォントでは |...| は揃わない (実機確認済)。
+function renderCjkWidthTest(): string {
+  const W = 10
+  return [
+    'CJK / 全角 幅テスト',
+    `ruler |${'.'.repeat(W)}|`,
+    `ja    |${pad('日本語', W)}|`,
+    `en    |${pad('abc', W)}|`,
+    `num全 |${padLeft('１２３', W)}|`,
+    `切詰  |${formatSegmentValue('あいうえおかきくけこさ', W)}|`,
+    '絵文字 ☀ ☁ ☂ 😀 🎉 🔥',
+    '混在  全角abc 半角 123円',
+    `bar   ${bar(50)} 50%`,
+    '行高  アガサ Agatha gjpq',
+  ]
+    .slice(0, MAX_ROWS)
+    .join('\n')
+}
+
+// page3 (grid): 同じ値を「座標配置の text セル」で組む。値セルを col3(x=144) に枠付きで並べると、
+// 線形の space パディングと違い左端が px で厳密に揃う (compiler が座標配置)。page2 との対比用。
+const GRID_CJK: GridLayout = {
+  cells: [
+    { id: 'title', col: 0, row: 0, colSpan: 12, rowSpan: 2, content: 'grid PoC: 列が px で揃う' },
+    { id: 'l1', col: 0, row: 2, colSpan: 3, rowSpan: 2, content: 'ja' },
+    { id: 'v1', col: 3, row: 2, colSpan: 9, rowSpan: 2, content: '日本語', border: 1, padding: 2 },
+    { id: 'l2', col: 0, row: 4, colSpan: 3, rowSpan: 2, content: '全角' },
+    {
+      id: 'v2',
+      col: 3,
+      row: 4,
+      colSpan: 9,
+      rowSpan: 2,
+      content: '１２３ＡＢＣ',
+      border: 1,
+      padding: 2,
+    },
+    { id: 'l3', col: 0, row: 6, colSpan: 3, rowSpan: 2, content: '天気' },
+    {
+      id: 'v3',
+      col: 3,
+      row: 6,
+      colSpan: 9,
+      rowSpan: 2,
+      content: '☀ 21°C くもり',
+      border: 1,
+      padding: 2,
+    },
+  ],
+}
+
+const EXPERIMENT_PAGES: ExperimentPage[] = [
+  { id: 'cjk-width', kind: 'text', render: renderCjkWidthTest },
+  { id: 'grid-cjk', kind: 'grid', layout: GRID_CJK },
+]
+
+// grid 実験なら GridLayout、それ以外 (summary / GroupRef / text 実験) は null。glass.ts の描画分岐用。
+export function gridLayoutFor(view: GView): GridLayout | null {
+  if (typeof view !== 'object' || !('exp' in view)) return null
+  const p = EXPERIMENT_PAGES.find((e) => e.id === view.exp)
+  return p?.kind === 'grid' ? p.layout : null
+}
+
+function renderExperiment(id: string): string {
+  const p = EXPERIMENT_PAGES.find((e) => e.id === id)
+  return p?.kind === 'text' ? p.render() : '(grid view)'
+}
+
+// 表示するビュー。page1 = summary (従来どおり: リグレッション防止のため不変)。
+// page2 以降 = 実験ページ (実機検証用)。旧 group detail ページは仕様再考のため休止 —
+// detailBody / GroupRef 描画パスはコードに残し、ここで列挙しないだけ (復活は容易)。
+export function buildViews(_d: GlassData, _visible?: VisibleMap): GView[] {
+  return ['summary', ...EXPERIMENT_PAGES.map((p): ExpView => ({ exp: p.id }))]
 }
