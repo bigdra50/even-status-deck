@@ -392,9 +392,49 @@ const GRID_CJK: GridLayout = {
   ],
 }
 
+// page4 (grid): 1 行ずつ (rowSpan=1) のグリッドを描けるか実機検証。border 有/無を交互にして
+// 薄い行 (innerH: border1=27px / border0=29px) が描けるか対比する。8 コンテナ上限
+// (text 8 = event 1 + cell 7) のため 10 行ぜんぶをセル化はできない = 自由グリッドは最大 7〜8 行。
+const GRID_ROWS: GridLayout = {
+  cells: [
+    {
+      id: 'r0',
+      col: 0,
+      row: 0,
+      colSpan: 12,
+      rowSpan: 1,
+      content: '1行グリッド (border1)',
+      border: 1,
+    },
+    { id: 'r1', col: 0, row: 1, colSpan: 12, rowSpan: 1, content: '日本語 abc 123 (border0)' },
+    {
+      id: 'r2',
+      col: 0,
+      row: 2,
+      colSpan: 12,
+      rowSpan: 1,
+      content: '全角 ＡＢＣ１２３ (b1)',
+      border: 1,
+    },
+    { id: 'r3', col: 0, row: 3, colSpan: 12, rowSpan: 1, content: '天気 ☀ 21°C (b0)' },
+    { id: 'r4', col: 0, row: 4, colSpan: 12, rowSpan: 1, content: 'bar ━━━━──── (b1)', border: 1 },
+    { id: 'r5', col: 0, row: 5, colSpan: 12, rowSpan: 1, content: 'row5 テスト (b0)' },
+    {
+      id: 'r6',
+      col: 0,
+      row: 6,
+      colSpan: 12,
+      rowSpan: 1,
+      content: 'row6 上限 7/10 (b1)',
+      border: 1,
+    },
+  ],
+}
+
 const EXPERIMENT_PAGES: ExperimentPage[] = [
   { id: 'cjk-width', kind: 'text', render: renderCjkWidthTest },
   { id: 'grid-cjk', kind: 'grid', layout: GRID_CJK },
+  { id: 'grid-rows', kind: 'grid', layout: GRID_ROWS },
 ]
 
 // grid 実験なら GridLayout、それ以外 (summary / GroupRef / text 実験) は null。glass.ts の描画分岐用。
