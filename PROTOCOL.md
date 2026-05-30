@@ -179,8 +179,13 @@ StatusDoc 形で表現し、server ソースと完全に同等に扱う (設定�
   (公開プロトコルで 3rd party ソースを受け入れるため)。ソースは markup を埋め込まない。
   ※ グラス描画はプレーンテキスト (LVGL container) なので XSS 経路にならないが、companion の
   プレビュー UI は DOM なので escape 必須。
-- loopback / LAN 利用のみ。CORS ヘッダは不要 (EvenApp WebView は実測でランタイム CORS 強制をしておらず、
-  store インストール版アプリ + ユーザー起動サーバーの LAN 直結も動作確認済み)。付けても害はないが必須ではない。
+- loopback / LAN 利用のみ。**GET (simple request)** は CORS 不要 (EvenApp WebView は GET ではランタイム
+  CORS 強制をせず、store 版アプリ + ユーザー起動サーバーの LAN 直結も動作確認済み)。応答に
+  `Access-Control-Allow-Origin: *` は付けてある。
+- ただし **非 simple な cross-origin POST (例 §11 `/api/action`)** は WebView が **CORS preflight(OPTIONS)** を
+  投げる。対策は2系統で両方入れている: (1) server が OPTIONS を 204 + CORS ヘッダで返す、(2) client は
+  POST の `Content-Type` を `text/plain` にして simple request 化する (server は content-type を見ず
+  body を JSON.parse する)。preflight 未対応だと glass からの応答 POST が握り潰される (実機で確認した罠)。
 
 ## 8. 実装例
 
@@ -251,6 +256,9 @@ export default {
 
 ### `POST /api/action` + `machine.capabilities`（予約）
 
+> 一部正規化済み: `POST /api/action` の `type:"dialog.result"`（dialog 応答）は §11 で normative。
+> 本節で予約のままなのは、下記の glass gesture からの任意 source 遠隔操作（`type:"source.action"` 等）。
+
 glass 入力（click / scroll / double-click / IMU はすでに `onEvenHubEvent` で受信済み）から
 ソースを遠隔操作する拡張点。namespace（path + `capabilities`）だけ押さえ、挙動契約は未確定。
 
@@ -265,3 +273,116 @@ glass 入力（click / scroll / double-click / IMU はすでに `onEvenHubEvent`
 
 未確定な理由: gesture mapping UI も実 action UX も未着手で、request 形・params・sync/async・gesture binding を
 今 normative に固定すると推測を外したまま stable v1 を縛るため。実装が出てから §2 へ昇格する。
+
+## 11. overlay イベント（source → client、transient）
+
+source が client へ **一過性の overlay**（通知 / トースト / バナー）を push する経路。
+§2-3 の `StatusDoc`（永続状態）とは別軸: イベントは **fire-once** で、再取得しても再表示しない（client が dedupe）。
+代表ユースケース = Mac ネイティブ通知をグラスへ転送する。**v1 互換の追加**（別 path・既存 `StatusDoc` を変えない）。
+client は `GET /api/machine` の `capabilities.events === true` を見て対応 source だけ long-poll する。
+
+```
+provider/watcher → POST /api/emit (loopback) → server buffer → GET /api/events (long-poll) → client overlay
+```
+
+`dialog`（modal の質問）は **往復**する: source が選択肢付きで push し、ユーザーの選択を client が `POST /api/action` で返す（下記「dialog 往復」）。`notification`/`toast`/`banner` は一方向（fire-and-forget）。
+
+### `GET /api/events?since=<seq>&waitMs=<ms>`（long-poll）
+
+`since` 以降のイベントを返す。pending か `reset` があれば即返し、無ければ `waitMs`（既定 25000・上限 30000）まで保留して空で返る。
+client は応答後すぐ次の long-poll を張る。idle churn は ~`waitMs` に 1 回、イベント時の latency ≈ RTT。
+
+```jsonc
+{
+  "version": 1,
+  "sourceId": "macbook",          // 任意。machineId
+  "cursor": 130,                  // 次回 since に渡す (= 最大 seq)
+  "reset": false,                 // true = since が古すぎ/server 再起動。client は連続性を仮定しない
+  "events": [
+    {
+      "seq": 124,                 // source-local 単調増加
+      "ts": 1779800000000,
+      "providerId": "mac-notifications",
+      "id": "mac:42",             // (providerId,id) で dedupe
+      "kind": "notification",     // "notification" | "toast" | "banner" | "dialog"
+      "app": "Slack", "sender": "#general", "body": "デプロイ完了 🎉",
+      "ttlMs": 20000
+    }
+  ]
+}
+```
+
+- client は `(providerId, id)` で重複排除し、`cursor` を次の `since` にする。`reset:true` は連続性破棄の合図。
+- イベントは server で `ttlMs`（既定 15000）保持。失効分は配送されない（古い通知を蒸し返さない）。
+
+### `POST /api/emit`（loopback 限定）
+
+イベントを投入する。**`127.0.0.1` / `::1` からのみ受理**（同一ホストの watcher に限定し通知偽装を防ぐ）。LAN からは 403。
+
+```jsonc
+// 入力 (seq/ts は server が付与)
+{ "providerId": "mac-notifications", "id": "mac:42", "kind": "notification",
+  "app": "Slack", "sender": "#general", "body": "...", "ttlMs": 20000 }
+// 応答
+{ "ok": true, "seq": 124 }                  // 受理
+{ "ok": false, "reason": "duplicate" }       // 同 (providerId,id) 既出 (再送不要)
+{ "ok": false, "reason": "rate" }            // providerId 単位の rate 超過
+```
+
+| kind | 必須フィールド | client overlay |
+|---|---|---|
+| `notification` | `app`/`sender`/`body` のいずれか | 中央カード |
+| `toast` | `text` | 下端 1 行・`durationMs` で自動消去 |
+| `banner` | `text` | 上 1 行常駐 |
+| `dialog` | `title`/`message` のいずれか + `actions[]` | 中央 modal・scroll で選択 + tap で確定 |
+
+`dialog` を emit すると server が `requestId` を払い出して応答に返し、配送イベントにも載せる:
+
+```jsonc
+// 入力
+{ "providerId": "ask-cli", "id": "ask:1", "kind": "dialog",
+  "title": "確認", "message": "本番にデプロイ?", "actions": ["はい","いいえ"], "ttlMs": 60000 }
+// 応答 (requestId 追加)
+{ "ok": true, "seq": 131, "requestId": "act_b6bda837809b4ad33b9f8a3e" }
+```
+
+### dialog 往復（質問と応答）
+
+```
+watcher → POST /api/emit{kind:dialog} (loopback) → requestId
+        → GET /api/action-result?requestId= (loopback long-poll) で結果を待つ
+client  ← GET /api/events で dialog{requestId,actions} を受け、modal 表示
+        → ユーザー選択 → POST /api/action{requestId,index,action} (LAN)
+server  → 相関し completed。待っている action-result を起こす
+```
+
+#### `POST /api/action`（LAN 受理）
+
+dialog の選択結果を返す。client（グラス＝iPhone, LAN 側）から届くので **loopback でなく LAN を受理**する。正当性は **`requestId`（unguessable な server 生成トークン）を知っていること + `index`/`action` 検証 + 単一受理**で守る（confirmation は UX 安全弁であって認証ではない / §10）。
+
+```jsonc
+// 入力
+{ "type": "dialog.result", "requestId": "act_...", "index": 0, "action": "はい" }
+// 応答
+{ "ok": true }
+{ "ok": false, "reason": "not_found"|"expired"|"already_completed"|"bad_index"|"action_mismatch" }
+```
+
+#### `GET /api/action-result?requestId=<id>&waitMs=<ms>`（loopback 限定・long-poll）
+
+質問した watcher が結果を待つ。pending なら `waitMs` か TTL 期限まで保留。
+
+```jsonc
+{ "ok": true, "requestId": "act_...", "status": "completed",  // pending|completed|dismissed|expired
+  "result": { "index": 0, "action": "はい", "ts": 1779800000000 } }
+```
+
+- `requestId` は server 生成・`act_` 接頭・accept-once。TTL（既定 60000・上限 300000）= 表示有効期限 兼 受理期限。
+- 未回答で TTL 到達 → `expired`。`/api/action` の二重送信 → `already_completed`。
+- 動作確認/利用は `bun run server ask "<質問>" <選択1> <選択2>`（選択ラベルを stdout に出す）。
+
+### バリデーション / セキュリティ
+
+- 入力は untrusted として検証・サニタイズ（`src/event-types.ts` の `parseEmitInput`）。文字列長 clip・`durationMs`/`ttlMs` clamp・kind allowlist・空通知破棄。body 上限超過は POST を弾く。
+- `value`/`label` 同様、`app`/`sender`/`body`/`text` も untrusted。glass はプレーンテキストで XSS 経路にならないが、companion の DOM プレビューは escape する。token は §7 どおり source 内に留め、表示文字列だけ載せる。
+- 洪水対策: `providerId` 単位 rate limit + server リングバッファ + `ttlMs`。emit は loopback 限定なので脅威は同一ホストのプロセスに限られる。

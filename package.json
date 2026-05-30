@@ -23,6 +23,8 @@
     "lint": "biome check src/",
     "lint:fix": "biome check --write src/",
     "format": "biome format --write src/",
+    "watch:mac": "bun run server/index.ts watch mac-notifications",
+    "test:unit": "bun test server src",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:headed": "playwright test --headed"

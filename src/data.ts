@@ -1,5 +1,6 @@
 // データ層 API。URL を明示し timeout / abort 付きで取得する純粋関数 (マルチソース集約用)。
 // 可変 base グローバルは廃止 (store が接続先を保持し revision で遅延応答を破棄する)。
+import { type EventsDoc, parseEventsDoc } from './event-types'
 import { parseStatusDoc, type StatusDoc } from './status-types'
 
 // machineId は同一マシン判定 (id 安定化・合流) のキーなので非空 string であることを保証する。
@@ -9,6 +10,8 @@ export type MachineInfo = {
   machineId: string
   label: string
   availableSources: string[]
+  /** 機能発見 (PROTOCOL §10/§11)。events=/api/events long-poll、dialogResults=/api/action dialog 応答。 */
+  capabilities?: { events?: boolean; dialogResults?: boolean }
 }
 
 const MAX_MACHINE_ID_LEN = 128
@@ -52,7 +55,15 @@ export function parseMachineInfo(x: unknown): MachineInfo | null {
         .filter((s): s is string => typeof s === 'string')
         .slice(0, MAX_AVAILABLE_SOURCES)
     : []
-  return { machineId, label, availableSources }
+  const out: MachineInfo = { machineId, label, availableSources }
+  const caps = d.capabilities
+  if (caps && typeof caps === 'object') {
+    const c = caps as { events?: unknown; dialogResults?: unknown }
+    const events = c.events === true
+    const dialogResults = c.dialogResults === true
+    if (events || dialogResults) out.capabilities = { events, dialogResults }
+  }
+  return out
 }
 
 // status は受信時に検証・サニタイズする (不正データで描画を壊さない)。
@@ -67,6 +78,64 @@ export const fetchMachineFrom = async (
   signal?: AbortSignal,
 ): Promise<MachineInfo | null> =>
   parseMachineInfo(await getJsonFrom<unknown>(url, '/api/machine', signal))
+
+// overlay イベントの long-poll (PROTOCOL §11)。timeout は waitMs + 通常 margin。
+// pending か reset があれば server が即返し、無ければ waitMs まで保留して空で返る。
+// 解析失敗 / HTTP エラー / abort は null (= caller が backoff して再試行)。
+export const fetchEventsFrom = async (
+  url: string,
+  since: number,
+  waitMs: number,
+  signal?: AbortSignal,
+): Promise<EventsDoc | null> => {
+  const clean = url.replace(/\/+$/, '')
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), waitMs + FETCH_TIMEOUT_MS)
+  if (signal) {
+    if (signal.aborted) ctl.abort()
+    else signal.addEventListener('abort', () => ctl.abort(), { once: true })
+  }
+  try {
+    const res = await fetch(`${clean}/api/events?since=${since}&waitMs=${waitMs}`, {
+      signal: ctl.signal,
+    })
+    if (!res.ok) return null
+    return parseEventsDoc(await res.json())
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// dialog の選択結果を source へ返す (PROTOCOL §11)。client → POST /api/action。
+// 失敗(HTTP/abort/解析)は false。fire-and-forget 寄りだが、成否は呼び出し側が必要なら使う。
+export const postDialogResult = async (
+  url: string,
+  requestId: string,
+  index: number,
+  action: string,
+): Promise<boolean> => {
+  const clean = url.replace(/\/+$/, '')
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS)
+  try {
+    // Content-Type を text/plain にして CORS preflight(OPTIONS) を回避する。glass は別オリジン
+    // (アプリ → LAN サーバー) なので application/json だと preflight が走る。body は JSON 文字列の
+    // ままで、server は content-type を見ず JSON.parse する。simple request にして確実に届かせる。
+    const res = await fetch(`${clean}/api/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+      body: JSON.stringify({ type: 'dialog.result', requestId, index, action }),
+      signal: ctl.signal,
+    })
+    return res.ok
+  } catch {
+    return false
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 // 同一マシンの複数経路 (LAN / VPN 等) を到達順に試す (先頭優先、失敗で次へ)。
 // 成功した経路の status とその url を返す。全滅なら null。abort されたら即中断する。

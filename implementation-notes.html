@@ -1,655 +1,201 @@
 <!doctype html>
 <html lang="ja">
   <head>
-    <meta charset="UTF-8" />
-    <title>eveng2-toolbar — 実装ノート（電池レート / 表示条件 / IMU）</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>実装ノート — overlay イベント搬送路 (PROTOCOL §11)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'
+      mermaid.initialize({ startOnLoad: true, theme: 'dark' })
+    </script>
     <style>
-      :root { color-scheme: dark; }
-      body { font-family: -apple-system, "Hiragino Sans", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #d4d4d4; background: #1a1a1a; }
-      h1 { font-size: 1.4rem; color: #f0f0f0; } h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #3a3a3a; padding-bottom: .2rem; color: #f0f0f0; }
-      h3 { color: #e8e8e8; }
-      a { color: #6cb6ff; }
-      table { border-collapse: collapse; width: 100%; margin: .5rem 0; }
-      th, td { border: 1px solid #3a3a3a; padding: .4rem .6rem; text-align: left; vertical-align: top; font-size: .9rem; }
-      th { background: #262626; }
-      code { background: #2d2d2d; padding: .1rem .3rem; border-radius: 4px; font-family: "Menlo", monospace; font-size: .85rem; color: #e6c07b; }
-      .open { color: #ff9e64; font-weight: 600; } .done { color: #7ec77e; } .warn { color: #ff7b72; }
-      details { margin: .4rem 0; } summary { cursor: pointer; font-weight: 600; }
-      hr { border-color: #3a3a3a !important; }
+      body { background: #0b0f14; color: #d6deeb; }
+      .badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; font-weight: 600; }
+      .decided { background: #14432a; color: #7ee2a8; border: 1px solid #2f8f5b; }
+      .deviation { background: #4a2a14; color: #f2b27e; border: 1px solid #b5703a; }
+      .tradeoff { background: #2a2f4a; color: #9fb0f2; border: 1px solid #5b6bb5; }
+      .open { background: #4a1f2a; color: #f29faf; border: 1px solid #b53a5b; }
+      code { color: #9fe6c8; }
+      summary { cursor: pointer; }
+      table { border-collapse: collapse; width: 100%; }
+      td, th { border: 1px solid #24303d; padding: 6px 10px; text-align: left; vertical-align: top; }
+      th { background: #111923; }
+      a { color: #7ec8f2; }
     </style>
   </head>
-  <body>
-    <h1>eveng2-toolbar — 実装ノート</h1>
-    <p>
-      ロードマップ 2 機能の設計・実装ノート。
-      <strong>機能1</strong>: バッテリー消耗レート表示（G2 電池の 1% 消費にかかる時間をローカルログから算出し HUD 併記）。
-      <strong>機能2</strong>: 表示タイミング条件（<strong>segment 単位</strong>・閾値 / 更新時 n 秒。将来「上下を向いたら n 秒表示」= IMU consumer もこの上に乗る）。
-      設計は gpt-5.5 レビュー + ユーザー承認済み。フェーズ分割で実装する。
-    </p>
-    <table>
-      <tr><th>Phase</th><th>内容</th><th>状況</th></tr>
-      <tr><td>A</td><td>機能1 バッテリー消耗レート（<code>src/battery/</code> + HUD 併記 + companion トグル/表記）</td><td class="done">実装済み</td></tr>
-      <tr><td>B</td><td><code>src/visibility/</code> evaluator + <code>threshold</code> + <code>visibleMap</code> 注入 + mac disk <code>percent</code> 追加</td><td class="done">実装済み</td></tr>
-      <tr><td>C</td><td><code>onChange</code>（transient: prevValue 比較 + activeUntil + wakeAt 再描画）</td><td class="done">実装済み</td></tr>
-      <tr><td>D</td><td>companion 条件エディタ UI（self 参照）</td><td class="done">実装済み</td></tr>
-      <tr><td>E</td><td>条件の粒度を group → <strong>segment 単位</strong>に変更（最新仕様）</td><td class="done">実装済み</td></tr>
-    </table>
+  <body class="max-w-5xl mx-auto px-6 py-8 leading-relaxed">
+    <header class="mb-6">
+      <h1 class="text-2xl font-bold text-white">overlay イベント搬送路 (PROTOCOL §11)</h1>
+      <p class="text-sm text-slate-400">
+        provider/watcher → server → glass で通知/トースト/バナーを push する。代表例 = Mac 通知転送。
+      </p>
+      <p class="text-xs text-slate-500 mt-1">最終更新: 2026-05-30 ・ ステータス:
+        <span class="badge decided">forward + dialog 往復 実機確認済</span>
+        <span class="badge decided">notification/toast/banner + dialog はい/いいえ往復 OK</span> ・ gpt-5.5 と設計確定
+      </p>
+      <p class="text-xs mt-2 p-2 rounded" style="background:#3a1420;border:1px solid #b53a5b;">
+        <b style="color:#f29faf;">実機で判明した罠 (修正済 0.1.74):</b>
+        glass は別オリジンから <code>application/json</code> で <code>POST /api/action</code> するため
+        WKWebView が <b>CORS preflight(OPTIONS)</b> を投げる。server が OPTIONS 未対応(404)だと本 POST が
+        握り潰され dialog 応答が返らない (GET=simple は preflight 無しなので forward は動き症状が分かりにくい)。
+        → client を <code>text/plain</code> で simple request 化 + server で OPTIONS 対応。一時診断
+        <code>/api/_debug/inbound</code> で glass(LAN IP) の POST 到達→completed を観測し確証 (診断は撤去済)。
+      </p>
+    </header>
 
-    <h2 class="done">最新仕様 (2026-05-28 追加): 条件の AND/OR 複合化 + Battery を segment 化</h2>
-    <p>ユーザー要望「segment ごとの条件を AND/OR で複合できるようにしたい」「Battery drain rate を builtin segment の 1 つにし、
-      G2 Battery % に加え EST(残り時間) も segment として加えたい」を実装。設計は gpt-5.5 と議論済み、drain 表記固定はユーザー確認済み。
-      未リリース機能の刷新のため後方互換は最小限（既存実機 localStorage の単一条件データだけ migrate で正規化）。</p>
-    <h3>Design decisions</h3>
-    <table>
-      <tr><th>項目</th><th>決定</th></tr>
-      <tr><td>条件モデル</td><td>leaf + 単一 combinator のフラットリスト。<code>VisibilityLeaf = threshold{op,value} | onChange{holdMs}</code>、<code>VisibilityCond = {combinator:'and'|'or'; conditions: VisibilityLeaf[]}</code>。<code>conditions</code> 空 / <code>visibility</code> 未設定 = 常時表示。<strong>ネスト木は YAGNI で却下</strong>、UI 上限 4 件。</td></tr>
-      <tr><td>tri-state 評価</td><td>各 leaf を <code>true|false|'na'</code> に。threshold で <code>percent</code> 不在 = <code>'na'</code>。<code>'na'</code> 除外後 0 個なら fail-open(<code>true</code>)、それ以外 and=全 true / or=いずれか true。<strong>これで <code>OR(threshold欠落, onChange)</code> が常時表示にならず onChange が死なない</strong>（gpt-5.5 指摘の修正）。</td></tr>
-      <tr><td>onChange 状態</td><td>leaf 単位キー <code>`${segKey}#${i}`</code> で transient 状態を保持。並べ替え/編集で index がずれても transient なので自己回復（stable id は YAGNI）。<code>wakeAt</code> = 活性中 onChange leaf の <code>activeUntil</code> 最小値。</td></tr>
-      <tr><td>Battery segment 化</td><td><code>builtins.localStatus()</code> の hud group を <code>time / date / g2('45%', percent) / drain('↓12%/h') / est('6h')</code> に分割。drain/est は独立に toggle/並び替え/条件を持つ。</td></tr>
-      <tr><td>emit-only-when-available</td><td>drain/est は算出可能時（level あり・非充電・rate&gt;0 / eta あり）のみ emit。充電/データ不足では segment 不在 → 非描画。既存「server が segment を一時 drop」と同じ経路で、config entry は sync 済みなら温存（toggle/順/条件を保持）。</td></tr>
-      <tr><td>drain 表記固定</td><td>ユーザー確認で <code>config.batteryRate</code>（enabled/format 循環）を<strong>全廃</strong>。drain=<code>↓N%/h</code>、est=<code>Xh</code> 固定。Home の "Battery drain rate" 行・<code>.fmt-btn</code> も撤去。表記制御は各 segment の toggle/条件に一本化。</td></tr>
-      <tr><td>UI</td><td>各 metric 行サブ行に複合エディタ。0 件=<code>Show always</code> + "+ Add condition"。1 件=<code>Show when [leaf] [×]</code>。2 件以上で <code>All of</code>/<code>Any of</code>(=and/or) select。threshold は <code>percent</code> を持つ segment のみ候補（drain/est は onChange のみ）。</td></tr>
-    </table>
-    <h3 class="warn">Deviations / Tradeoffs</h3>
-    <table>
-      <tr><th>箇所</th><th>内容と理由</th></tr>
-      <tr><td><code>CONFIG_VERSION</code> 据え置き（3 のまま）</td><td>bump すると <code>migrate()</code> が既存 v3 を破壊的に再 migrate するため。同バージョン分岐に <code>normalizeVisibilityAll()</code> を足し、旧 <code>{kind:'always'}</code>→undefined / <code>{kind:'threshold'|'onChange'}</code>→<code>{combinator:'and', conditions:[leaf]}</code> へ正規化、旧 <code>batteryRate</code> フィールドは delete。</td></tr>
-      <tr><td>cross-metric 条件は非対応</td><td>条件 metric は self のみ。drain/est は <code>percent</code> を持たないため「G2 電池 % を条件に EST を出す」はできず onChange のみ。self-only を維持する既存方針（[[eveng2-toolbar-roadmap]]）と YAGNI による。将来 <code>metric:'selfPercent'|'g2Battery'</code> 拡張余地あり（gpt-5.5 提案）。</td></tr>
-      <tr><td>drain/est の表示ラベル</td><td>暫定 <code>Drain</code>/<code>EST</code>（companion items 表示名）+ 値 <code>↓12%/h</code>/<code>6h</code>。glass summary では <code>label value</code> 連結で <code>Drain ↓12%/h</code> とやや冗長。</td></tr>
-    </table>
-    <h3 class="open">Open questions</h3>
-    <ul>
-      <li>drain/est の glass 上の表示ラベル/書式（<code>Drain ↓12%/h</code> の冗長さ、EST の <code>~</code> 有無）は実機で要確認。</li>
-      <li>onChange を含む複合（特に AND で複数 onChange）の時間遷移は実機 .ehpk で要確認。</li>
-      <li>cross-metric 条件（EST を電池 % でゲート）の需要が出たら metric 拡張を検討。</li>
-    </ul>
+    <section class="mb-8">
+      <h2 class="text-lg font-semibold text-white mb-2">データフロー</h2>
+      <pre class="mermaid">
+flowchart LR
+  N["Mac ネイティブ通知"] --> W["watcher<br/>sqlite3 + plutil"]
+  W -->|"POST /api/emit<br/>(loopback 127.0.0.1)"| B["server<br/>ring buffer<br/>seq / id dedupe / ttl"]
+  B -->|"GET /api/events?since&waitMs<br/>(long-poll, LAN)"| C["client src/events.ts<br/>id で dedupe"]
+  C -->|"window 'toolbar:overlay'"| O["glass overlay<br/>notification / toast / banner"]
+      </pre>
+    </section>
 
-    <h2 class="done">機能2 旧仕様: 表示条件は segment 単位（group 単位から変更）</h2>
-    <p>当初 Phase B〜D で <strong>group 単位</strong>の表示条件を実装したが、ユーザー要望
-      「条件を細かい要素ごとに（memory は memory の値がこうなったら表示）」により
-      <strong>segment 単位に置換</strong>した（未リリースのため後方互換不要）。下の Phase B/C/D 節は group 単位時の実装履歴。</p>
-    <table>
-      <tr><th>項目</th><th>最新仕様</th></tr>
-      <tr><td>粒度</td><td><strong>segment 単位</strong>。各 segment を自身の値で個別に表示/非表示。<code>SegCfg.visibility?</code>（<code>GroupCfg.visibility</code> は撤去）</td></tr>
-      <tr><td>metric</td><td>常に self（その segment 自身）。条件型から <code>segId</code> を drop → <code>always | threshold{op,value} | onChange{holdMs}</code></td></tr>
-      <tr><td>評価</td><td><code>computeVisibleMap</code> が segment をループ。<code>VisibleMap</code>/<code>VisStates</code> のキーは <code>"src|grp|seg"</code>（<code>segKey</code>）</td></tr>
-      <tr><td>描画</td><td><code>groupLine</code> が enabled かつ可視な segment だけ連結（全部隠れたら group 行は消える）。detail も同様に隠す。<code>buildViews</code> は可視 segment がある group のみ</td></tr>
-      <tr><td>UI</td><td>各 metric 行のサブ行に条件エディタ（self なので segment 選択無し）。threshold は percent を持つ segment のみ候補</td></tr>
-      <tr><td>検証</td><td class="done">lint/build PASS（132KB）。純粋コア単体 18/18（segment キー・独立性・onChange transient）。ブラウザ end-to-end: mem≥99 で <strong>mem だけ</strong>消え CPU は残る / 更新時で mem だけ hidden。コンソールエラー無し</td></tr>
-    </table>
+    <section class="mb-8">
+      <h2 class="text-lg font-semibold text-white mb-2">dialog 往復チャネル <span class="text-xs text-slate-500">(はい/いいえ応答を source へ返す・gpt-5.5 と確定)</span></h2>
+      <p class="text-sm text-slate-400 mb-2">forward の逆。source が質問を push → ユーザーがリングで選択 → 結果を source へ返す request/response。§10 reserved の <code>POST /api/action</code> を <code>type:"dialog.result"</code> のみ正規化。</p>
+      <pre class="mermaid">
+sequenceDiagram
+  participant W as watcher(Mac,loopback)
+  participant S as server
+  participant G as glass(client,LAN)
+  W->>S: POST /api/emit {kind:dialog, actions:[はい,いいえ]}
+  S-->>W: {ok, seq, requestId:R}
+  W->>S: GET /api/action-result?requestId=R (loopback long-poll)
+  G->>S: GET /api/events (long-poll)
+  S-->>G: dialog{R, actions}
+  Note over G: overlay.dialog → ユーザー選択 i
+  G->>S: POST /api/action {requestId:R, index:i, action} (LAN)
+  S-->>W: {status:completed, result:{index:i, action}}
+  Note over W: 結果を受けて動作
+      </pre>
+      <div class="space-y-2 mt-2">
+        <details class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge decided">decided</span> <b class="ml-2">結果 endpoint は LAN 受理（forward の emit と非対称）</b></summary>
+          <p class="mt-2 text-sm text-slate-300">結果は client（iPhone, LAN）から来るので <code>POST /api/action</code> は loopback でなく LAN を受理。安全性 = <b>server 生成の unguessable requestId（capability token）+ index/action 検証 + accept-once</b>。<code>GET /api/action-result</code>（質問側 watcher の受信）は loopback 限定。</p>
+        </details>
+        <details class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge decided">decided</span> <b class="ml-2">requestId は server 払い出し・相関ストアは ring buffer と別</b></summary>
+          <p class="mt-2 text-sm text-slate-300"><code>server/actions.ts</code> が pending(<code>requestId/providerId/actions/expiresAt/status/result</code>)を保持。TTL（既定60s）= 表示有効期限 兼 受理期限。event ring buffer は配送、action store は相関で役割分離。</p>
+        </details>
+        <details class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge tradeoff">tradeoff</span> <b class="ml-2">範囲は dialog.result のみ正規化</b></summary>
+          <p class="mt-2 text-sm text-slate-300">glass gesture からの任意 source 遠隔操作（<code>type:"source.action"</code>）は §10 reserved のまま。今回は「source の質問への応答」だけを固める。確認 CLI = <code>bun run server ask "..." はい いいえ</code>（選択ラベルを stdout）。</p>
+        </details>
+      </div>
+    </section>
 
-    <h2 class="done">Phase A: バッテリー消耗レート（実装済み）</h2>
-    <p>G2 電池の level 変化イベントをローカルに蓄積し、直近の単調減少 run から消耗レートと ETA を算出して
-      HUD の g2 segment に併記する（例 <code>G2 74% 12%/h ~6h</code>）。IMU と同じ Functional Core / Imperative Shell 構成。</p>
-    <table>
-      <tr><th>ファイル</th><th>役割</th></tr>
-      <tr><td><code>src/battery/rate.ts</code></td><td>純粋コア: <code>appendBatteryEvent</code> / <code>computeDrainRate</code> / <code>formatDrainRate</code> + 型</td></tr>
-      <tr><td><code>src/battery/log.ts</code></td><td>Shell: bridge 永続(<code>toolbar.batteryLog</code>) + cached rate。<code>recordBatteryLevel</code> / <code>getDrainRateText</code> / <code>setBatteryRateConfig</code></td></tr>
-      <tr><td><code>src/battery/index.ts</code></td><td>公開 API バレル</td></tr>
-    </table>
-    <h3>Design decisions</h3>
-    <table>
-      <tr><th>項目</th><th>決定</th></tr>
-      <tr><td>対象電池</td><td>G2 のみ。phone 電池は SDK 非対応（<code>device-state</code> の方針踏襲）。</td></tr>
-      <tr><td>ログ形式</td><td>level <strong>変化時のみ</strong> <code>{level, ts}</code> をリングバッファ(上限 64)に追記し <code>bridge.setLocalStorage</code> 永続。同 level は無視。</td></tr>
-      <tr><td>レート算出</td><td>末尾から後方走査で直近の単調減少 run を取り、<code>run 区間の平均</code>（総 drop / 総 span × 3.6e6）= %/h。<code>level 上昇(充電)</code> か <code>gap&gt;2h</code> で run 打ち切り、<code>span&lt;60s</code> はノイズとして null。</td></tr>
-      <tr><td>ETA</td><td><code>currentLevel / (%/h)</code> 時間。<code>~6h</code> / <code>~1h20m</code> 形式。</td></tr>
-      <tr><td>表記カスタム</td><td><code>config.batteryRate.format</code>: <code>rate</code>(↓12%/h) / <code>mPerPct</code>(↓8m/%) / <code>eta</code>(~6h) / <code>rateEta</code>(併記, 既定)。companion で循環選択。</td></tr>
-      <tr><td>充電/データ不足</td><td>suffix を出さない（<code>''</code>）。充電判定は描画時の現在値で live ゲート（cached とは独立）。</td></tr>
-    </table>
-    <h3 class="warn">Deviations（計画/素朴な期待から外した点）</h3>
-    <table>
-      <tr><th>箇所</th><th>変更と理由</th></tr>
-      <tr><td><code>CONFIG_VERSION</code> 据え置き（4 にしない）</td><td>計画では v4 だったが、<code>migrate()</code> は <code>version!==CONFIG_VERSION</code> を旧 machines 形式として扱うため、bump すると<strong>既存 v3 config が破壊的に再 migrate され sources/groups を失う</strong>。<code>imu</code> と同じく additive optional + <code>??=</code> 補完で後方互換を保つ。</td></tr>
-      <tr><td>レート = 中央値 → 区間平均</td><td>計画は「直近 N 個の 1% 間隔の中央値」。実装は run 全体の平均レート（簡素・堅牢）。外れ値耐性が要れば後で中央値 / EWMA へ。</td></tr>
-      <tr><td><code>computeDrainRate</code> から <code>now</code> 引数を削除</td><td>未使用（ETA は最新 level から算出）。シグネチャ簡素化。</td></tr>
-      <tr><td>companion <code>applyBatteryRate</code></td><td>トグル/表記変更時に <code>setBatteryRateConfig</code> + <code>refreshBuiltins</code> を呼び、共有 battery モジュールへ即反映 + プレビュー更新（glass 不在のブラウザでも config を適用）。</td></tr>
-    </table>
-    <h3>影響ファイル</h3>
-    <table>
-      <tr><th>ファイル</th><th>種別</th><th>内容</th></tr>
-      <tr><td><code>src/battery/{rate,log,index}.ts</code></td><td>新規</td><td>純粋コア + Shell + バレル</td></tr>
-      <tr><td><code>src/config.ts</code></td><td>編集</td><td><code>batteryRate?</code> 追加 + <code>defaultBatteryRateConfig()</code> 補完（version 据え置き）</td></tr>
-      <tr><td><code>src/glass.ts</code></td><td>編集</td><td><code>initGlass</code> で bridge/config/log 復元、<code>initDeviceBattery</code> で level 変化を <code>recordBatteryLevel</code></td></tr>
-      <tr><td><code>src/builtins.ts</code></td><td>編集</td><td>g2 segment 値に <code>getDrainRateText(charging)</code> を併記</td></tr>
-      <tr><td><code>src/companion.ts</code> / <code>src/styles.css</code></td><td>編集</td><td>"Battery drain rate" トグル + 表記循環ボタン（<code>.fmt-btn</code>）</td></tr>
-    </table>
-    <h3>検証</h3>
-    <table>
-      <tr><th>項目</th><th>状況</th></tr>
-      <tr><td><code>npm run lint</code> (biome)</td><td class="done">PASS（22 files, no errors）</td></tr>
-      <tr><td><code>npm run build</code></td><td class="done">PASS（129KB、型エラーなし）</td></tr>
-      <tr><td>純粋コア単体（合成データ）</td><td class="done">10/10 PASS（減少 run=6%/h・充電境界で run 分割・gap&gt;2h・データ不足 null・ring 上限・eta 形式）</td></tr>
-      <tr><td>ブラウザ no-regression</td><td class="done">companion に "Battery drain rate" 行、表記 4 種循環・トグル動作、glass preview に g2 suffix 無し（電池データ無し）、コンソールエラー無し</td></tr>
-      <tr><td>実機（.ehpk）</td><td class="open">未実施。実機で消耗レートの精度と <code>MIN_SPAN(60s)</code>/<code>MAX_GAP(2h)</code>/上限 64 の妥当性を要確認。</td></tr>
-    </table>
-    <p class="open">Open: レート算出窓と平滑（区間平均 → 中央値/EWMA）の調整は実機ログ取得後に判断。</p>
+    <section class="mb-8">
+      <h2 class="text-lg font-semibold text-white mb-3">Design decisions <span class="text-xs text-slate-500">(gpt-5.5 と確定)</span></h2>
+      <div class="space-y-2">
+        <details open class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge decided">decided</span> <b class="ml-2">D1 搬送 = cursor 付き long-poll（別 path）</b></summary>
+          <p class="mt-2 text-sm text-slate-300"><code>GET /api/events?since=&lt;seq&gt;&amp;waitMs=25000</code>。pending か reset で即返し、無ければ waitMs まで保留。<code>StatusDoc</code> に混ぜない（fire-once と永続状態の混在回避）。SSE/WS は WKWebView の jettison/電池が未検証なので MVP では賭けない。idle churn ~25s/回・イベント時 latency ≈ RTT。</p>
+        </details>
+        <details class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge decided">decided</span> <b class="ml-2">D2 取り込み = POST /api/emit（loopback 限定）</b></summary>
+          <p class="mt-2 text-sm text-slate-300">外部 watcher が同一ホストから投入。native watcher を server に抱えず分離（OS 依存を隔離）。NDJSON 常駐 provider は後付け adapter で追加可。</p>
+        </details>
+        <details class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge decided">decided</span> <b class="ml-2">D3 配送 = source-local seq + (providerId,id) dedupe + ttl ring buffer</b></summary>
+          <p class="mt-2 text-sm text-slate-300">client は <code>since</code> cursor と seenId で重複排除。古すぎ/再起動は <code>reset:true</code> で連続性破棄。失効分は配送しない（古い通知を蒸し返さない）。</p>
+        </details>
+        <details class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge decided">decided</span> <b class="ml-2">D4 dialog はリモート非対応</b></summary>
+          <p class="mt-2 text-sm text-slate-300">notification/toast/banner のみ。dialog は onResult の往復が要るので §10 の <code>POST /api/action</code> 方向で別途扱う。</p>
+        </details>
+        <details class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge decided">decided</span> <b class="ml-2">D5 security = loopback emit + rate limit + sanitize</b></summary>
+          <p class="mt-2 text-sm text-slate-300">emit は <code>127.0.0.1</code>/<code>::1</code> のみ受理（LAN は 403）。providerId 単位 rate limit、body size 上限、文字列 clip/clamp、kind allowlist、空通知破棄。</p>
+        </details>
+      </div>
+    </section>
 
-    <h2 class="done">Phase B: 表示タイミング条件エンジン（threshold）（実装済み）</h2>
-    <p>group 単位で「閾値を満たすときだけ表示」を可能にするエンジン。条件は pure 評価し、可視マップ
-      <code>visibleMap</code> を shell(glass/companion) が算出して pure render に注入する。<strong>本フェーズは UI を持たない</strong>
-      （threshold/onChange の条件エディタは Phase D に集約）。</p>
-    <table>
-      <tr><th>ファイル</th><th>役割</th></tr>
-      <tr><td><code>src/visibility/conditions.ts</code></td><td>純粋コア: <code>VisibilityCond</code> / <code>VisibleMap</code>、<code>isGroupVisible</code> / <code>evaluateVisibility</code> / <code>isVisible</code> / <code>visKey</code></td></tr>
-      <tr><td><code>src/visibility/index.ts</code></td><td>公開 API バレル</td></tr>
-    </table>
-    <h3>Design decisions</h3>
-    <table>
-      <tr><th>項目</th><th>決定</th></tr>
-      <tr><td>条件モデル</td><td><code>VisibilityCond = always | threshold{segId,op:'lte'|'gte',value} | onChange{segId,holdMs}</code>。onChange は Phase C で評価実装（B では常に true）。</td></tr>
-      <tr><td>metric 参照</td><td>self（同一 group 内 segment の <code>percent</code>）。<code>lte</code>=<code>&lt;=value</code>、<code>gte</code>=<code>&gt;=value</code>。</td></tr>
-      <tr><td>fail-open</td><td>metric segment 不在 / <code>percent</code> 無しは <strong>true（表示）</strong>。データ欠落で勝手に隠さない。</td></tr>
-      <tr><td>pure / shell 分離</td><td>threshold は状態なし pure。<code>evaluateVisibility(config, statuses)</code> を glass/companion が呼び <code>visibleMap</code> を算出 → <code>summarySections</code>/<code>buildViews</code>/<code>renderGlass</code> に optional 引数で渡す（未指定=全可視で後方互換）。Phase C で shell(タイマー) を足す前提の設計。</td></tr>
-      <tr><td>非表示の扱い</td><td>threshold 非充足の group は <code>buildViews</code> からも除外 → summary からもスワイプ詳細からも消える。</td></tr>
-      <tr><td>map を小さく保つ</td><td><code>evaluateVisibility</code> は always / status 未到着の group を map に載せない（<code>isVisible</code> 既定 true）。</td></tr>
-    </table>
-    <h3>影響ファイル</h3>
-    <table>
-      <tr><th>ファイル</th><th>種別</th><th>内容</th></tr>
-      <tr><td><code>src/visibility/{conditions,index}.ts</code></td><td>新規</td><td>純粋コア + バレル</td></tr>
-      <tr><td><code>src/config.ts</code></td><td>編集</td><td><code>GroupCfg.visibility?</code> 追加（version 据え置き、未指定=always）</td></tr>
-      <tr><td><code>src/glass-render.ts</code></td><td>編集</td><td><code>summarySections</code>/<code>summaryBody</code>/<code>buildViews</code>/<code>renderGlass</code> に <code>visible?</code> 引数を thread</td></tr>
-      <tr><td><code>src/glass.ts</code></td><td>編集</td><td>module <code>visible</code> を init/store/config 更新で再計算し描画に渡す</td></tr>
-      <tr><td><code>src/companion.ts</code></td><td>編集</td><td>プレビューに <code>visible</code> 反映（Items リストは編集用に全 group 表示のまま）</td></tr>
-      <tr><td><code>vite.config.ts</code></td><td>編集</td><td>mac <code>disk</code> に使用率 <code>percent</code> 追加（<code>df</code> Capacity 列）。value は空き GB のまま</td></tr>
-    </table>
-    <h3>検証</h3>
-    <table>
-      <tr><th>項目</th><th>状況</th></tr>
-      <tr><td><code>npm run lint</code> / <code>build</code></td><td class="done">PASS（24 files、130KB、型エラーなし）</td></tr>
-      <tr><td>純粋コア単体（合成データ）</td><td class="done">18/18 PASS（threshold lte/gte 境界・fail-open・evaluateVisibility map・isVisible 既定 true）</td></tr>
-      <tr><td><code>/api/status</code> disk percent</td><td class="done">PASS（<code>disk</code> に <code>percent:28</code>、value <code>46.2G</code>）</td></tr>
-      <tr><td>ブラウザ no-regression</td><td class="done">全 group 表示・プレビュー描画・コンソールエラー無し（render 引数追加で破綻なし）</td></tr>
-      <tr><td>条件 hide/show の UI 経由検証</td><td class="done">Phase D で end-to-end 検証済み（下記）</td></tr>
-    </table>
+    <section class="mb-8">
+      <h2 class="text-lg font-semibold text-white mb-3">Deviations <span class="text-xs text-slate-500">(gpt 案からの逸脱・補強)</span></h2>
+      <div class="space-y-2">
+        <details open class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge deviation">deviation</span> <b class="ml-2">emit はトークンでなく loopback 限定で守る</b></summary>
+          <p class="mt-2 text-sm text-slate-300">gpt は「shared/boot token」も挙げたが、watcher は同一 Mac 常駐なので <b>loopback バインドチェックだけ</b>で偽装を防げ、トークン配布の運用を消せる。<code>/api/events</code> は LAN 公開のまま。</p>
+        </details>
+        <details class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge deviation">deviation</span> <b class="ml-2">events loop は capability 広告 source のみ</b></summary>
+          <p class="mt-2 text-sm text-slate-300">補強: client は <code>/api/machine</code> の <code>capabilities.events:true</code> を出す source だけ long-poll する。対応しない source に余計な held 接続を張らない（jettison/電池対策）。</p>
+        </details>
+        <details class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge deviation">deviation</span> <b class="ml-2">watcher は bun:sqlite でなく sqlite3/plutil CLI</b></summary>
+          <p class="mt-2 text-sm text-slate-300"><code>bun:sqlite</code> は bun 専用で型/ランタイムが結合する。macOS 標準の <code>sqlite3</code>（<code>immutable=1</code> でロックせず読む）+ <code>plutil</code>（binary plist → JSON、失敗時 XML 正規表現フォールバック）にして node/bun 両対応・型問題なしにした。</p>
+        </details>
+      </div>
+    </section>
 
-    <h2 class="done">Phase C + D: onChange transient + 条件エディタ UI（実装済み）</h2>
-    <p><strong>Phase C</strong>: <code>onChange</code> = metric segment の <code>value</code> が更新されたとき <code>holdMs</code> だけ表示。
-      pure ロジックは状態受け渡しの <code>computeVisibleMap</code> に保ち、shell singleton <code>runtime.ts</code> が transient 状態
-      （前回値 / 活性期限）と窓終了の再描画タイマーを持つ。<strong>Phase D</strong>: companion の group 展開部に条件エディタ
-      （Always / 閾値 / 更新時）。これで機能2は完成。</p>
-    <table>
-      <tr><th>ファイル</th><th>変更</th></tr>
-      <tr><td><code>src/visibility/conditions.ts</code></td><td>編集: <code>evaluateVisibility</code> を <code>computeVisibleMap(config, statuses, prevStates, now) → {map, states, wakeAt}</code>（pure）へ発展。<code>OnChangeState</code>/<code>VisStates</code> 追加</td></tr>
-      <tr><td><code>src/visibility/runtime.ts</code></td><td>新規: shell singleton。<code>computeVisible</code>（状態保持 + <code>wakeAt</code> に <code>setTimeout</code>→<code>pokeListeners</code>）/ <code>resetVisibility</code></td></tr>
-      <tr><td><code>src/store.ts</code></td><td>編集: <code>pokeListeners()</code> 公開（窓終了で全 subscriber 再描画）</td></tr>
-      <tr><td><code>src/glass.ts</code> / <code>src/companion.ts</code></td><td>編集: <code>evaluateVisibility</code> → <code>computeVisible</code>。glass <code>cleanup</code> に <code>resetVisibility</code></td></tr>
-      <tr><td><code>src/companion.ts</code> / <code>src/styles.css</code></td><td>編集: group 展開部に条件エディタ（<code>vis-kind</code>/<code>vis-seg</code>/<code>vis-op</code>/<code>vis-value</code>/<code>vis-hold</code>）+ <code>change</code> 委譲リスナ + <code>.vis-*</code> CSS</td></tr>
-    </table>
-    <h3>Design decisions</h3>
-    <table>
-      <tr><th>項目</th><th>決定</th></tr>
-      <tr><td>pure / shell 分離</td><td><code>computeVisibleMap</code>（状態入出力 pure）と <code>runtime</code>（singleton 状態 + timer）。onChange を決定的にテスト可能。</td></tr>
-      <tr><td>onChange 既定</td><td>初回観測 = 非表示（フラッシュ防止）。value 変化時のみ <code>now+holdMs</code> まで表示。</td></tr>
-      <tr><td>多重ドライブの冪等性</td><td>glass / companion が同一 <code>store.notify</code> で各々 <code>computeVisible</code> を呼ぶが、prevValue 即更新 + 絶対時刻 <code>activeUntil</code> + timer clear/再設定で同じ結果。</td></tr>
-      <tr><td>再描画トリガ</td><td>窓終了の <code>wakeAt</code> に <code>setTimeout</code> → <code>pokeListeners()</code>（store.notify）→ glass/companion 再評価で hide。runtime→store の一方向依存（循環なし）。</td></tr>
-      <tr><td>UI（self 参照）</td><td>threshold は同一 group の <code>percent</code> segment、onChange は全 segment を候補に。<code>&lt;select&gt;</code>+number、<code>change</code> 委譲。Always 選択で <code>visibility</code> 未設定化。</td></tr>
-    </table>
-    <h3>検証</h3>
-    <table>
-      <tr><th>項目</th><th>状況</th></tr>
-      <tr><td><code>npm run lint</code> / <code>build</code></td><td class="done">PASS（25 files、133KB、型エラーなし）</td></tr>
-      <tr><td>純粋コア単体（<code>computeVisibleMap</code>）</td><td class="done">15/15 PASS（onChange 初回 hidden・変化で visible・窓終了で hidden・<code>wakeAt</code> 最小・stale キー破棄・多重呼び出し冪等・threshold 継続）</td></tr>
-      <tr><td>ブラウザ end-to-end（UI 操作）</td><td class="done">Mac group: 展開→エディタ表示 / 閾値 mem≥99 で消える・≥1 で出る / 更新時で既定 hidden / Always で復帰。コンソールエラー無し</td></tr>
-      <tr><td>transient 表示の時間遷移（実機・実 value 変化）</td><td class="open">server メトリックの実変化が要るため単体テストで担保。実機 .ehpk で Session 更新時の数秒表示を確認予定</td></tr>
-    </table>
-    <p>将来の IMU「上下を向いたら n 秒表示」は <code>runtime</code> に <code>direction</code> cond
-      （<code>onDirectionChange</code> 購読→<code>activeUntil</code> 設定）を足すだけで乗る。</p>
+    <section class="mb-8">
+      <h2 class="text-lg font-semibold text-white mb-3">Tradeoffs</h2>
+      <div class="space-y-2">
+        <details class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge tradeoff">tradeoff</span> <b class="ml-2">long-poll vs SSE/短間隔 poll</b></summary>
+          <p class="mt-2 text-sm text-slate-300">long-poll は held 接続だが WKWebView では通常 fetch で、切断時は graceful に再張り。SSE は churn を更に減らすが挙動未検証。短間隔 poll は latency が間隔に律速。→ long-poll を採用、問題が出たら SSE/短 poll に切替可能（別 path なので局所差し替え）。</p>
+        </details>
+        <details class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge tradeoff">tradeoff</span> <b class="ml-2">Mac 通知の文面マッピング</b></summary>
+          <p class="mt-2 text-sm text-slate-300">overlay の <code>{app,sender,body}</code> に <code>{titl, subt, body}</code> を割当てた。投稿アプリ名（bundle id → 表示名）は引かず、通知の <code>titl</code> を先頭行にした（実用上は送信者/アプリ名が入る）。</p>
+        </details>
+      </div>
+    </section>
 
-    <hr style="margin:2.5rem 0;border:none;border-top:2px solid #ccc;" />
-    <h2>—— IMU 方向検出 基盤（完了・参考）——</h2>
+    <section class="mb-8">
+      <h2 class="text-lg font-semibold text-white mb-3">Open questions <span class="text-xs text-slate-500">(確認/今後)</span></h2>
+      <ul class="space-y-2">
+        <li class="bg-slate-900/40 rounded p-3 text-sm"><span class="badge open">open</span> <b class="ml-2">Full Disk Access の付与 UX。</b> watcher を動かすプロセス（ターミナル/bun）に手動付与が要る。案内文は出すが、自動化はしない。</li>
+        <li class="bg-slate-900/40 rounded p-3 text-sm"><span class="badge open">open</span> <b class="ml-2">ノイズの多いアプリの除外。</b> 現状は全通知転送。providerId/bundle id 単位の allowlist/denylist は未実装（必要なら config 化）。</li>
+        <li class="bg-slate-900/40 rounded p-3 text-sm"><span class="badge open">open</span> <b class="ml-2">since の reload 永続化。</b> WKWebView reload(=jettison) で loop が since=0 から再開し、TTL 内の通知を再表示しうる。実害小なので未対応。</li>
+        <li class="bg-slate-900/40 rounded p-3 text-sm"><span class="badge open">open</span> <b class="ml-2">usernoted スキーマ依存。</b> macOS 版で <code>record</code>/<code>app</code> 構造や plist キーが変わると watcher が黙って空振りしうる。読めない行はスキップ。</li>
+      </ul>
+    </section>
 
-    <h2 class="done">現状: ライブラリ化済み (src/imu/) + UI 撤去</h2>
-    <p>up/down/forward は実機で良好（「問題なし」）。すぐ使わないため検出ロジックを
-      <code>src/imu/</code> の自己完結ライブラリに整理し、IMU 関連 UI は撤去した（コア + 有効化 API のみ残す）。</p>
-    <table>
-      <tr><th>ファイル</th><th>役割</th></tr>
-      <tr><td><code>src/imu/orientation.ts</code></td><td>純粋コア（classify/step/anglesOf、型）</td></tr>
-      <tr><td><code>src/imu/controller.ts</code></td><td>bridge 制御 + 購読: startImu/stopImu/feedImuSample/onDirectionChange/setImuConfig/isImuStarted</td></tr>
-      <tr><td><code>src/imu/config.ts</code></td><td>ImuConfig + defaultImuConfig（実測キャリブ値: pitch=x/roll=y, offset -3/-5.4, up10/down-13）</td></tr>
-      <tr><td><code>src/imu/index.ts</code></td><td>公開 API バレル</td></tr>
-    </table>
-    <p><strong>撤去したもの</strong>: glass の Look group・imu-debug overlay、companion の IMUトグル/Reset/capture/ライブ表示、dev server の <code>/imu-log</code> endpoint、<code>config.imu.debug</code>、capture/log scaffolding。
-      <strong>残した薄いアダプタ</strong>（glass.ts）: <code>onEvent</code> の <code>IMU_DATA_REPORT</code>→<code>feedImuSample</code>（潜在バグ修正 + 供給）、<code>applyImuConfig</code>（config.imu.enabled 駆動 start/stop）、cleanup の stopImu。</p>
-    <p><strong>有効化 (将来の「上下を向いたら n 秒表示」consumer)</strong>:
-      <code>config.imu.enabled=true</code> で glass アダプタが startImu → feedImuSample 供給。consumer は
-      <code>onDirectionChange((e)=&gt; …)</code>（e.direction / e.phase 'enter'|'hold'）を購読するだけ。現状 consumer 未配線で休眠。</p>
-    <p class="open">left/right は capture UI 撤去で当面再キャリブ不可（roll 値は provisional）。必要時に capture を一時復活させて roll 再取得 → defaultImuConfig を更新。</p>
+    <section class="mb-8">
+      <h2 class="text-lg font-semibold text-white mb-3">変更ファイル</h2>
+      <table class="text-sm">
+        <tr><th>ファイル</th><th>役割</th></tr>
+        <tr><td><code>src/event-types.ts</code> <i>(新)</i></td><td>ワイヤ型 + <code>parseEmitInput</code>/<code>parseEventsDoc</code>（共有・サニタイズ）</td></tr>
+        <tr><td><code>server/events.ts</code> <i>(新)</i></td><td>ring buffer + dedupe/rate + long-poll（<code>emitEvent</code>/<code>pollEvents</code>）</td></tr>
+        <tr><td><code>server/http-server.ts</code></td><td><code>GET /api/events</code> + <code>POST /api/emit</code>（loopback 判定・body 上限）</td></tr>
+        <tr><td><code>server/machine.ts</code> / <code>src/data.ts</code></td><td><code>capabilities.events</code> 広告 + 受信</td></tr>
+        <tr><td><code>src/events.ts</code> <i>(新)</i></td><td>client long-poll loop（capability gate・dedupe・<code>toolbar:overlay</code> 配線）</td></tr>
+        <tr><td><code>src/glass.ts</code></td><td>init/config変更/cleanup で <code>startEvents</code>/<code>stopEvents</code></td></tr>
+        <tr><td><code>server/watchers/mac-notifications.ts</code> <i>(新)</i></td><td>通知センター DB → <code>/api/emit</code> 転送</td></tr>
+        <tr><td><code>server/actions.ts</code> <i>(新)</i></td><td>dialog 往復の相関ストア（requestId 払い出し・結果 long-poll）</td></tr>
+        <tr><td><code>server/cli/ask.ts</code> <i>(新)</i></td><td><code>ask</code> CLI（dialog を出して選択を待つ）</td></tr>
+        <tr><td><code>server/index.ts</code></td><td><code>watch</code> / <code>ask</code> サブコマンド</td></tr>
+        <tr><td><code>*.test.ts</code> <i>(新)</i></td><td>buffer/parse/dialog のユニットテスト（<code>bun test</code> 29 件）</td></tr>
+      </table>
+    </section>
 
-    <h2>Design decisions（仕様が曖昧な箇所での選択）</h2>
-    <table>
-      <tr><th>項目</th><th>決定</th></tr>
-      <tr><td>アーキテクチャ</td><td>Functional Core / Imperative Shell。純粋コア <code>src/orientation.ts</code>（分類 + hold 状態機械）と bridge シェル <code>src/imu.ts</code>（lifecycle + 購読 + debug）に分離。コアは実機なしでも合成ベクトルで検証可能。</td></tr>
-      <tr><td>imuData の解釈</td><td>SDK 未定義のため <strong>重力ベクトル(加速度)</strong> と仮定。tilt 公式で pitch/roll を算出し分類。<code>IMU_Report_Data.x/y/z</code> は optional のため <code>?? 0</code> で補正。</td></tr>
-      <tr><td>方向の規約</td><td>pitch&gt;0→up / &lt;0→down、roll&gt;0→right / &lt;0→left。符号・軸は <code>AxisConfig</code> で反転調整可能。両方超過時は絶対値が大きい方を採用。</td></tr>
-      <tr><td>hold 検出</td><td>同一 direction が <code>holdMs</code> 継続で <code>phase:'hold'</code> を 1 回 emit。向いた瞬間は <code>phase:'enter'</code>。両方を未定アクションへ供給。</td></tr>
-      <tr><td>ノイズ対策</td><td>EMA 平滑(<code>emaAlpha</code>) + <code>forwardDeg</code> デッドバンド（forward と up/down/left/right の間に <code>unknown</code> 余白）でフリッカ抑制。</td></tr>
-      <tr><td>既定 ON/OFF</td><td><code>enabled:false</code>。アクション未定で消費電力/BLE 負荷を避けるため。companion トグルと config 永続で有効化。</td></tr>
-      <tr><td>config 移行</td><td><code>imu?</code> を optional 追加（version 据え置き=3）。<code>emptyConfig</code>/<code>migrate</code> で <code>defaultImuConfig()</code> 補完。旧 config は壊さない。</td></tr>
-      <tr><td>デバッグ表示</td><td>glass のビュー巡回に <code>imu-debug</code> view を追加（<code>debug:true</code> 時のみ末尾）。raw x/y/z・pitch/roll・direction・hold を表示。再描画は <strong>≤2Hz に throttle</strong> し、active view が debug のときだけ更新（BLE 飽和防止）。</td></tr>
-      <tr><td>イベント供給経路</td><td>別 <code>onEvenHubEvent</code> を張らず、既存 <code>glass.ts onEvent</code> 内で <code>IMU_DATA_REPORT</code> を <code>feedImuSample</code> へ供給（二重購読回避）。</td></tr>
-    </table>
+    <section class="mb-8">
+      <h2 class="text-lg font-semibold text-white mb-3">検証</h2>
+      <ul class="list-disc ml-6 text-sm space-y-1 text-slate-300">
+        <li>tsc（src/ + server/）・biome（src/）green、e2e 29 / unit 16 pass。</li>
+        <li>HTTP スモーク: capabilities.events 広告 / emit→events / duplicate / toast / since cursor / <b>loopback 403</b> / long-poll 待機(0.77s) / reset / 300ms 後 emit で即 wake(0.33s)。</li>
+        <li>実機（グラス）での Mac 通知転送は次の upload で確認。watcher は要 Full Disk Access。</li>
+      </ul>
+    </section>
 
-    <h2 class="warn">Deviations（意図的に仕様/素朴な期待から外した点）</h2>
-    <table>
-      <tr><th>箇所</th><th>変更と理由</th></tr>
-      <tr><td>「左右」= 首かしげ(roll)</td><td>水平に首を振る yaw は重力ベクトルから<strong>原理的に検出不可</strong>（ジャイロ積分=ドリフト or フュージョンが必要）。左右は首かしげ(roll)として実装。</td></tr>
-      <tr><td>軸/しきい値はプレースホルダ</td><td>imuData の軸の向き・スケールが不明なため <code>defaultImuConfig()</code> の値は仮。実機の imu-debug 表示でキャリブレーション前提。</td></tr>
-      <tr><td>潜在バグ修正を同梱</td><td>既存 <code>onEvent</code> は未知 sysEvent を全てシングルクリック扱い（<code>idx=0; refresh()</code>）。IMU 有効化で <code>IMU_DATA_REPORT</code> がこれに落ちると<strong>ビューリセット + BLE 洪水</strong>。click fallback より前に IMU 分岐を追加して遮断。</td></tr>
-    </table>
+    <section class="mb-4">
+      <h2 class="text-lg font-semibold text-white mb-3">使い方</h2>
+      <pre class="bg-black/40 rounded p-3 text-sm overflow-auto"><code># 1) サーバー起動 (claude/codex のある Mac)
+bun run server          # → http://0.0.0.0:8723 (LAN IP を表示)
 
-    <h2>Tradeoffs（検討した代替案）</h2>
-    <ul>
-      <li>ユニットテスト vs on-glass デバッグ: 後者を採用（ユーザー選択）。テストランナー未導入のため追加せず。コアは純粋に保ち将来テスト可能。</li>
-      <li>pace 変更のランタイム反映: <code>setImuConfig</code> で axis/thresholds は即反映するが、pace 変更は OFF→ON で再起動が必要（edge、簡素優先）。</li>
-      <li>debug view を巡回に統合 vs 専用モード: 既存のスワイプ巡回機構を再利用（実装簡素）。</li>
-      <li class="done">電池対策の範囲: <strong>設定トグル（既定 OFF）のみで十分</strong>とユーザー決定（2026-05）。auto-stop タイマー・フォアグラウンド限定・UI 警告ラベルは入れない。電池消費が大きいことは把握済みで、常時 ON を避けるのは利用者の明示 opt-in に委ねる。将来 consumer（向いたときのアクション）を設計する段階で、起動方式（イベント駆動で短時間だけ / R1 Ring トリガ等）を併せて検討する。</li>
-    </ul>
+# 2) Mac 通知 watcher 起動 (別ターミナル。要 Full Disk Access)
+bun run server watch mac-notifications
 
-    <h2>影響ファイル</h2>
-    <table>
-      <tr><th>ファイル</th><th>種別</th><th>内容</th></tr>
-      <tr><td><code>src/orientation.ts</code></td><td>新規</td><td>純粋コア（<code>classify</code>/<code>step</code>/<code>anglesOf</code>/型）</td></tr>
-      <tr><td><code>src/imu.ts</code></td><td>新規</td><td>bridge シェル（<code>startImu</code>/<code>stopImu</code>/<code>feedImuSample</code>/<code>onDirectionChange</code>/<code>getDebugSnapshot</code>）</td></tr>
-      <tr><td><code>src/config.ts</code></td><td>編集</td><td><code>ImuConfig</code> + <code>defaultImuConfig</code> + 補完</td></tr>
-      <tr><td><code>src/glass.ts</code></td><td>編集</td><td>バグ修正 + IMU 供給 + 起動/停止/トグル反映 + cleanup</td></tr>
-      <tr><td><code>src/glass-render.ts</code></td><td>編集</td><td><code>imu-debug</code> view</td></tr>
-      <tr><td><code>src/companion.ts</code></td><td>編集</td><td>設定トグル 2 つ（Detect orientation / IMU debug overlay）</td></tr>
-    </table>
-
-    <h2>検証状況</h2>
-    <table>
-      <tr><th>項目</th><th>状況</th></tr>
-      <tr><td><code>npm run lint</code> (biome)</td><td class="done">PASS（16 files, no errors）</td></tr>
-      <tr><td><code>npm run build</code> (tsc + vite)</td><td class="done">PASS（built, 型エラーなし）</td></tr>
-      <tr><td>シミュレータ</td><td class="warn">IMU 不可。<code>imuData</code> を常に null にするため方向検出は <strong>実機のみ検証可能</strong>。sim では「壊れていない」確認止まり。</td></tr>
-      <tr><td>実機 (.ehpk)</td><td class="open">未実施（ユーザー）。下記キャリブレーション手順参照。</td></tr>
-    </table>
-
-    <h2>コミュニティ/公式 調査結果（2026-05）</h2>
-    <p>Zenn・GitHub・公式ドキュメントを調査。<strong>未知点は公式・コミュニティとも未文書化</strong>で、今回の実装方針（加速度=重力ベクトル前提 + 自前 pitch/roll + 実機キャリブレーション + yaw 非対応）を裏付ける結果だった。</p>
-    <table>
-      <tr><th>論点</th><th>調査結果</th><th>本実装への含意</th></tr>
-      <tr><td>imuData の正体</td><td>公式は「3 つの float」とのみ。Zenn 記事(bigdra)はセクション名を「IMU（加速度センサ）」とし <strong>accelerometer として扱う</strong>。SDK d.ts に gyro/mag/orientation 等の語・別ストリームは無く、単一 <code>{x,y,z}</code> のみ。</td><td>重力ベクトル前提は妥当。</td></tr>
-      <tr><td>軸/単位/スケール</td><td>公式・記事とも<strong>記載なし</strong>（座標系・g/m·s⁻²・生値の別すべて非公開）。</td><td>実機キャリブレーション必須は不可避。</td></tr>
-      <tr><td>ImuReportPace</td><td>公式「protocol pacing codes, not literal Hz」。Zenn 記事の実測で報告間隔 100ms/500ms/1000ms を確認（非公式）。</td><td>pace=500 は妥当。</td></tr>
-      <tr><td>pitch/roll 算出</td><td>コミュニティ標準は <code>atan2(-x, hypot(y,z))</code> / <code>atan2(y,z)</code>。G2 専用のヘルパーや姿勢検出サンプルは公式・GitHub とも<strong>存在せず</strong>自前計算。</td><td>本実装の <code>anglesOf</code>（atan2 を AxisConfig で一般化）と一致。</td></tr>
-      <tr><td>yaw / heading</td><td>G2 ハードウェアは加速度+ジャイロ+地磁気(コンパス)を搭載（公式ブログ）だが、<strong>SDK は単一 {x,y,z} しか公開せず</strong>ジャイロ/磁気の個別ストリーム無し。加速度のみでは yaw 不可。</td><td>左右=roll の判断が妥当。将来 SDK が磁気/ジャイロを公開すれば yaw 検出の余地あり。</td></tr>
-      <tr><td class="warn">バッテリー消費</td><td><strong>IMU 有効化は電池を大きく消費</strong>。Zenn スクラップ(gpsnmeajp)実測で <code>P1000</code>(1s間隔)でも <strong>10 分で約 10%</strong>。常時待機は非現実的。「イベント時に 1 分だけ起動」「R1 Ring 活用」等の工夫が必要との指摘。加えてアプリ稼働中は画面非表示でも消費が増える印象との gotcha も。</td><td><strong>既定 OFF + 設定トグルで明示 opt-in は必須</strong>(実装済)。常時 ON は避ける設計が要る。</td></tr>
-    </table>
-    <p>出典(電池): <code>zenn.dev/gpsnmeajp/scraps/beb45043a2d731</code></p>
-    <p>出典: <code>zenn.dev/bigdra/articles/eveng2-sdk-features</code> / <code>hub.evenrealities.com/docs/guides/device-apis</code> / evenrealities.com ブログ（G2 センサ解説）。</p>
-
-    <h2 class="done">キャリブレーション実測</h2>
-    <p>軸: gravity=z(+)、pitch=x、roll=y（実測確定。当初 placeholder は pitch/roll が逆だった）。センサーは加速度・1g 正規化（\|v\|≈1.00）。</p>
-    <h3>up/down/forward（確定）</h3>
-    <p>forward→up→forward→down→forward の交互キャプチャ（各 3-5s 静止）で確定:</p>
-    <table>
-      <tr><th>pose</th><th>pitch</th><th>forward 基準 rel</th></tr>
-      <tr><td>forward</td><td>-3.0°</td><td>0</td></tr>
-      <tr><td>up</td><td>+15.9°</td><td><strong>+18.9°</strong></td></tr>
-      <tr><td>down</td><td>-29.8°</td><td><strong>-26.8°</strong></td></tr>
-    </table>
-    <p><code>defaultImuConfig()</code> 確定値: <code>pitchOffsetDeg:-3, rollOffsetDeg:-5.4, pitchUpDeg:10, pitchDownDeg:-13, forwardDeg:6</code>（rollDeg は暫定 15）。app.json → 0.1.10。</p>
-    <h3 class="warn">left/right（yaw は検出不可）</h3>
-    <p>左右を<strong>水平に首を振る(yaw)</strong>で行ったため rel_roll が left -0.6°/right +2.7° とノイズ同然で<strong>検出不可</strong>だった（重力ベクトルが変わらない=加速度の原理的限界）。決定: 左右は<strong>首かしげ(roll, 耳を肩へ)</strong>で再キャプチャし roll(y) を反応させる。</p>
-    <p class="open">次: clear log → forward→left(かしげ)→forward→right(かしげ)→forward を各 3-5s 静止でキャプチャ → roll 符号・<code>rollDeg</code>・roll offset を確定。ログは生値なので 0.1.10 .ehpk でそのまま取得可。スマホ <code>#imu-live</code> で値を見ながら可能。</p>
-
-    <h2 class="open">Open questions（確認・調整してほしい点）</h2>
-    <ol>
-      <li><strong>imuData の正体</strong>: 加速度(重力)か、ジャイロか、フュージョン姿勢か。実機の imu-debug で静止時に重力軸へ ~1g 相当が乗るかを確認してほしい。ジャイロなら本コアの前提（重力ベクトル）が崩れる。</li>
-      <li><strong>軸キャリブレーション</strong>: imu-debug を見ながら、正面静止で pitch≈0/roll≈0、上を向く→pitch が増える、右にかしげる→roll が増える、になるよう <code>defaultImuConfig()</code> の <code>axis</code>（from/sign）を確定してほしい。</li>
-      <li><strong>しきい値</strong>: <code>pitchUpDeg/pitchDownDeg/rollDeg/forwardDeg/holdMs/emaAlpha</code> を実機の体感で調整。</li>
-      <li><strong>yaw が必要か</strong>: 左右に首を振る検出が要るなら、imuData がジャイロを含むか実機確認 → 別途積分/フュージョン設計が必要。</li>
-      <li><strong>向いたときのアクション</strong>: 未定。<code>onDirectionChange((e) =&gt; ...)</code> でフックできる。</li>
-    </ol>
-
-    <h2 class="done">推奨: データキャプチャ → AI 分析（dev server）</h2>
-    <p>目視より確実な方法。ラベル付き IMU サンプルを dev server に集めて、Claude に <code>imu-log.jsonl</code> を分析させ、軸/符号/しきい値を算出する。</p>
-    <table>
-      <tr><th>要素</th><th>内容</th></tr>
-      <tr><td>収集経路</td><td>アプリ(WebView) → <code>fetch POST {base}/imu-log</code> → Vite plugin(<code>imuLogPlugin</code>) → <code>imu-log.jsonl</code> 追記。ACAO/OPTIONS 対応済み（.ehpk は別オリジンのため）。<strong>base = companion の設定済みサーバー source の url</strong>（= dev server origin、status fetch と同一）。<code>.ehpk</code> では相対 <code>/imu-log</code> が Mac に届かないため絶対 URL を使う。dev server 直配信時は base 無しで相対送信。</td></tr>
-      <tr><td>ラベル付け</td><td>companion の <strong>IMU capture</strong> セクションのポーズボタン[forward/up/down/left/right]。タップで <code>setCaptureLabel</code>、サンプルに label が付く。ポーズ選択時は IMU を自動 ON。</td></tr>
-      <tr><td>送信</td><td><code>imu.ts</code> がキャプチャ中サンプルをバッファし <code>LOG_FLUSH_MS</code>(750ms) ごとに配列で POST。stop / clear log ボタンあり。</td></tr>
-      <tr><td>分析</td><td>Claude が <code>imu-log.jsonl</code> を Read → 各 label の x/y/z 平均から gravity/pitch/roll 軸と符号、pitch/roll レンジ → しきい値を提案 → <code>defaultImuConfig()</code> に反映。</td></tr>
-    </table>
-    <h3>キャプチャ手順（.ehpk）</h3>
-    <ol>
-      <li>Mac で <code>npm run dev</code> を起動したまま（<code>/imu-log</code> と <code>/api/status</code> を提供）。</li>
-      <li>実機に <code>.ehpk</code> をインストール。companion で <strong>Mac の dev server URL をサーバー source として登録</strong>（status fetch と同じ URL。これがログ送信先 base になる）。capture セクションに <code>log → &lt;url&gt;/imu-log</code> が表示されることを確認。</li>
-      <li>IMU capture で「clear log」→ 各ポーズボタンをタップし、そのポーズで <strong>3-5 秒静止</strong>（forward → up → down → left → right）。最後に「stop」。</li>
-      <li>各ポーズ 1 回で十分。迷ったら同じポーズを再タップして追記してよい（label で区別される）。</li>
-      <li>「<code>imu-log.jsonl</code> を分析して」と Claude に依頼 → 確定した axis/thresholds を <code>defaultImuConfig()</code> に反映 → rebuild/pack → companion「Reset IMU calibration」で適用。</li>
-    </ol>
-    <p>dev server から直接配信（QR）する場合は base 不要で相対 <code>/imu-log</code> に届くが、ユーザー報告では QR は実機で不安定なため <code>.ehpk</code> + 絶対 URL 経路を推奨。</p>
-
-    <h2>実機キャリブレーション手順（手動・overlay 目視）</h2>
-    <p>capture を使わない場合の代替。imu-debug overlay の raw x/y/z と pitch/roll を見ながら、軸特定 → デフォルト編集 → Reset 反映 → 体感調整 のループを回す。</p>
-
-    <h3>Step 1. 軸特定（最重要）</h3>
-    <p>各ポーズで 2-3 秒静止し、imu-debug overlay の値を読む。</p>
-    <table>
-      <tr><th>ポーズ</th><th>観察</th><th>設定（<code>defaultImuConfig().axis</code>）</th></tr>
-      <tr><td>直立・正面静止</td><td>x/y/z のうち <strong>1 つだけ大きい値</strong>（重力が乗ってる軸）</td><td>その軸 → <code>gravityFrom</code>。値が負なら <code>gravitySign: -1</code>、正なら <code>1</code></td></tr>
-      <tr><td>上を向く（後ろに ~30°）</td><td>残り 2 軸のうち動く方</td><td>その軸 → <code>pitchFrom</code>。<code>pitch</code> が正に増えたら <code>pitchSign: 1</code>、負に行ったら <code>-1</code></td></tr>
-      <tr><td>右かしげ（耳を右肩へ）</td><td>最後に残った軸</td><td>その軸 → <code>rollFrom</code>。<code>roll</code> が正なら <code>rollSign: 1</code>、負なら <code>-1</code></td></tr>
-    </table>
-    <p>規約: pitch&gt;0→up / &lt;0→down、roll&gt;0→right / &lt;0→left、<code>gravityFrom</code> 軸は直立で正に乗る前提（サインで揃える）。</p>
-
-    <h3>Step 2. 反映方法（持続化の落とし穴）</h3>
-    <p><code>config.imu</code> はトグルした瞬間に localStorage に永続化されるため、<code>defaultImuConfig()</code> をコード編集してリビルドしても、<strong>既存の永続化された値が優先</strong>されて新デフォルトが反映されない。</p>
-    <p>→ companion の <strong>「Reset IMU calibration」ボタン</strong> をクリックして <code>config.imu</code> を新しい <code>defaultImuConfig()</code> で上書き保存する。<code>enabled</code>/<code>debug</code> トグル状態は維持される。<code>saveConfig</code> が <code>toolbar:config-changed</code> を発火し、glass 側の <code>onConfigChanged</code>→<code>applyImuConfig</code>→<code>setImuConfig</code> で即座にランタイム反映される。</p>
-    <p>反復ループ: <em>軸/値を src/config.ts で編集 → npm run build → deploy → Reset クリック → 確認</em>。</p>
-
-    <h3>Step 3. しきい値調整（体感）</h3>
-    <table>
-      <tr><th>パラメータ</th><th>既定</th><th>調整指針</th></tr>
-      <tr><td><code>forwardDeg</code></td><td>15°</td><td>「正面」と判定する余白。揺れで up/down にこぼれるなら拡げ、正面が出にくいなら狭める。<strong><code>forwardDeg &lt; pitchUpDeg/rollDeg</code></strong> を必ず守る（間がヒステリシス余白）</td></tr>
-      <tr><td><code>pitchUpDeg</code> / <code>pitchDownDeg</code></td><td>±25°</td><td>深め(±35°) = 意識的に向いたときだけ発火 / 浅め(±18°) = 軽い動きでも</td></tr>
-      <tr><td><code>rollDeg</code></td><td>25°</td><td>左右かしげの発火閾値</td></tr>
-      <tr><td><code>holdMs</code></td><td>800ms</td><td>hold までの保持時間。短すぎ=誤発火、長すぎ=レスポンス悪い</td></tr>
-      <tr><td><code>emaAlpha</code></td><td>0.3</td><td>平滑の追従性。フリッカするなら下げる(0.2)、応答が遅いなら上げる(0.4-0.5)</td></tr>
-    </table>
-
-    <h3>Step 4. 検証</h3>
-    <ul>
-      <li>正面静止で <code>dir: forward</code> が安定（フリッカなし）。</li>
-      <li>各方向を 800ms+ 保持して <code>HELD x.xs</code> が出る。</li>
-      <li>devtools 接続時は <code>[IMU] enter|hold &lt;dir&gt; pitch=… roll=…</code> が console に出る。</li>
-    </ul>
-
-    <h1 style="margin-top:3rem;border-top:3px solid #333;padding-top:1rem">白画面修正 — Plan A (実装済) / Plan B (worktree で着手)</h1>
-    <p>
-      症状: 実機 iPhone (iOS18.7, Even App 内 WKWebView)・<strong>前面・画面ON・放置</strong>で
-      約数分後に companion が白画面 + グラス更新停止。原因は WKWebView の
-      <strong>WebContent プロセス強制終了 (jettison)</strong>。JS 例外でも lifecycle でもなく、JS 文脈ごと死ぬため
-      JS からは検知・自己回復不可。詳細な bisect ログは issue <code>#4</code> に集約。
-    </p>
-    <table>
-      <tr><th>確定事項 (bisect)</th><th>結論</th></tr>
-      <tr><td>周期処理ゼロ (0.1.19)</td><td class="done">安定 (10分超)</td></tr>
-      <tr><td>毎分 clock のみでも (0.1.20 / 0.1.23)</td><td class="warn">停止</td></tr>
-      <tr><td>DOM 再描画 / bridge(textContainerUpgrade) / network / AudioContext / footprint</td><td>各々<strong>無罪</strong></td></tr>
-      <tr><td>残る差分</td><td>toolbar 固有の「毎 notify で pub-sub 集約 (<code>getAllStatuses</code>/<code>syncAll</code>/<code>computeVisible</code>/<code>buildViews</code>) + companion DOM 再描画」</td></tr>
-      <tr><td>落ちない兄弟 (er-clock / wareki / even-toolkit)</td><td>最小の<strong>直接描画</strong>のみ (store 集約も companion 周期再描画も無し)</td></tr>
-    </table>
-
-    <h2 class="done">Plan A (実装済み・実機検証待ち) — er-clock 式の最小更新に寄せる</h2>
-    <p>main ブランチ。commit <code>a46764a</code> (fix) + <code>2693ef0</code> (release 0.1.26)。
-      <code>eveng2-toolbar.ehpk</code> を pack 済み。<strong>実機での放置安定性をユーザーが検証する。</strong></p>
-    <table>
-      <tr><th>ファイル</th><th>変更</th></tr>
-      <tr><td><code>src/store.ts</code></td><td><code>tickClock</code>/<code>startClock</code>/<code>clockTimer</code> を撤去 (時刻 tick は glass が所有)。<code>refreshSource</code> に内容シグネチャ diff を追加し、無変化 poll の <code>notify</code> を抑制。<code>refreshBuiltins</code> は電池 (低頻度) 用に残す。</td></tr>
-      <tr><td><code>src/glass.ts</code></td><td>glass-local の分境界タイマー (<code>scheduleGlassClock</code>/<code>glassTick</code>) で <code>builtins.localStatus()</code> を直接再計算し <code>refresh</code> するだけ (<code>store.notify</code> を介さない)。<code>refresh</code> に content-diff を入れ、無変化なら <code>textContainerUpgrade</code> をスキップ。<code>onStoreUpdate</code>/<code>initGlass</code> で builtin の時刻を上書きし poll 時も最新化。</td></tr>
-      <tr><td><code>src/companion.ts</code></td><td><code>startClock</code> 呼び出しを撤去。<code>onStoreUpdate</code> の毎 tick <code>updatePreview()</code> を撤去し、構成変化 (<code>visibleSig</code> 変化) 時の <code>render()</code> のみに。<code>updatePreview</code> は drag ハンドラ用に関数は残す。</td></tr>
-    </table>
-    <h3>Design decisions</h3>
-    <table>
-      <tr><th>項目</th><th>決定 / 理由</th></tr>
-      <tr><td>clock の所有者</td><td>store の pub-sub から glass-local の自走タイマーへ移管。無サーバ時 (再現条件) は毎分 <code>localStatus()+renderGlass+textContainerUpgrade(diff)</code> のみ = er-clock 相当。</td></tr>
-      <tr><td>集約の発火条件</td><td>poll 成功かつ<strong>実データ変化時</strong>だけ <code>notify</code> → 集約。サーバが同値を返す poll は内容シグネチャで握り潰す。</td></tr>
-      <tr><td>companion preview</td><td>放置中はライブ更新しない (設定モックなので値追従はユーザー編集/構成変化/並べ替えで十分)。実機グラスは glass-local clock で毎分更新。</td></tr>
-    </table>
-    <h3 class="open">Open questions / 既知の挙動変化</h3>
-    <ul>
-      <li>builtin に対する時刻依存の表示条件は非対応 (clock tick では visibility を再評価せず cache 利用)。電池条件は notify 経由で評価される。実用上、時刻 threshold は設定されない前提。</li>
-      <li><span class="open">本質検証は実機放置のみ。</span>ブラウザでは bridge が無く glass-local clock は走らない (lint/build + companion 動作 + console エラー無しまで確認済み)。</li>
-      <li>これで直らなければ Plan B (even-toolkit 全面移行) へ。根治の保険はホスト側 (Even App が <code>webViewWebContentProcessDidTerminate</code> で reload) で、これは Even Realities 製のため web 側では対処不可。</li>
-    </ul>
-
-    <h2>Plan B (worktree で B-0 着手) — even-toolkit (React + useGlasses) へ全面移行</h2>
-    <p>
-      A が効かない場合の保険。落ちない er-clock と同じスタック (even-toolkit の
-      <code>useGlasses</code> + <code>EvenHubBridge</code> + keep-alive) へ移行する。
-      worktree <code>../eveng2-toolbar-plan-b</code> / branch <code>plan-b/even-toolkit</code> / commit <code>0dd134c</code>。
-      gpt-5.5 と議論し「最初から feature parity を狙わず、白画面仮説を検証する最小縦スライス (B-0) から」を採用。
-    </p>
-    <table>
-      <tr><th>MS</th><th>目的</th><th>含む</th><th>状況</th></tr>
-      <tr><td>B-0</td><td>白画面仮説を even-toolkit 経路で検証</td><td>時刻/電池/消耗レート + 単一サーバ status を useGlasses で表示</td><td class="done">実装済み (browser smoke 済 / 実機未)</td></tr>
-      <tr><td>B-1</td><td>HUD として最低限</td><td>複数ソース横断 / スワイプ巡回 / 既存 config 読込</td><td class="open">未着手</td></tr>
-      <tr><td>B-2</td><td>companion parity</td><td>source 追加 / drag 並べ替え / 表示タイミング条件編集 (even-toolkit web components)</td><td class="open">未着手</td></tr>
-      <tr><td>B-3</td><td>周辺機能</td><td>IMU / 詳細表示 / UX</td><td class="open">未着手</td></tr>
-    </table>
-    <h3>B-0 の構成</h3>
-    <table>
-      <tr><th>ファイル</th><th>役割</th></tr>
-      <tr><td><code>src/state.ts</code></td><td>immutable snapshot ストア。内容シグネチャで dedup し、変化時だけ新参照を <code>commit</code>。時刻 tick (毎分) / server poll (60s) / G2 電池購読 (生 SDK <code>waitForEvenAppBridge</code>) を所有。pub-sub store は廃止。</td></tr>
-      <tr><td><code>src/glass/render.ts</code></td><td>snapshot → <code>DisplayData</code> (10行) の純粋関数 (even-toolkit の <code>line</code>/<code>separator</code>)。</td></tr>
-      <tr><td><code>src/glass/AppGlasses.tsx</code></td><td><code>useGlasses</code> ホスト。<code>getSnapshot</code> を 100ms 参照比較し変化時だけ <code>bridge.updateHomeText</code>。<code>getPageMode=home</code> で double-click 終了。</td></tr>
-      <tr><td><code>src/companion/Companion.tsx</code></td><td>単一サーバ URL 設定 + 接続テスト + 状態表示。<code>useSyncExternalStore</code> で snapshot 購読 (毎 tick の DOM 再描画なし)。</td></tr>
-      <tr><td>core 流用</td><td><code>data.ts</code> / <code>builtins.ts</code> / <code>battery/</code> / <code>device-state.ts</code> / <code>status-types.ts</code> はそのまま。vite に React plugin 追加、既存 dev API (<code>/api/status</code>) は維持。</td></tr>
-    </table>
-    <h3>Design decisions / Tradeoffs</h3>
-    <table>
-      <tr><th>項目</th><th>決定 / 理由</th></tr>
-      <tr><td>開始スコープ</td><td>feature parity ではなく検証用縦スライス (gpt-5.5 推奨)。A が実機で効けば B は破棄しうるため、不要作業 (companion 編集 UI / DnD / 条件編集) を最初から巻き込まない。</td></tr>
-      <tr><td>状態管理</td><td>旧 pub-sub store (notify→全 subscriber 集約) を廃し、immutable snapshot + 参照比較 (useGlasses の前提) + <code>useSyncExternalStore</code>。これが「毎 tick の重い集約/再描画」を構造的に起こさない。</td></tr>
-      <tr><td>電池取得</td><td><code>EvenHubBridge</code> は device info/status を公開しないため、表示は useGlasses の bridge、電池は生 SDK bridge を併用 (同一チャネル)。</td></tr>
-      <tr><td>old vanilla 残置</td><td><code>store.ts</code>/<code>glass.ts</code>/<code>companion.ts</code> 等の旧実装は worktree に残置 (tsc は通る dead code)。B-1/B-2 で順次置換・削除。</td></tr>
-    </table>
-    <h3 class="open">Open questions</h3>
-    <ul>
-      <li><span class="open">app.json の bump / pack は未実施。</span>A と B は同一 <code>package_id</code> で実機に同時共存できないため、A の実機検証を優先。A が不採用と決まった時点で B のバージョンを bump (例 0.2.0) して pack する。</li>
-      <li>バンドルは 328KB (gzip 109KB) と A (134KB) より大きいが、footprint は bisect で無罪・er-clock も同スタックで安定のため B-0 の検証対象ではない。</li>
-      <li>B-0 の<strong>完了条件は「便利さ」ではなく、実機 WKWebView で周期 fetch + glass 更新を走らせても白画面化しないこと</strong>。これが満たされて初めて全面移行の根拠になる。</li>
-    </ul>
-
-    <h1 style="margin-top:3rem;border-top:3px solid #333;padding-top:1rem">表示要素の情報アーキテクチャ刷新（Plan A 本線の改善）</h1>
-    <p>
-      白画面が Plan A で解決した後、companion の表示を整理する。gpt-5.5 と 2 回議論して合意。
-      方針: <strong>group は「素材」(編集・ON/OFF・条件の単位)、glass の行は「表示レシピ」(配置の単位)</strong> として分離する。
-      group は実装都合 (builtin/server) でなく<strong>意味単位</strong>で切る。
-    </p>
-    <table>
-      <tr><th>#</th><th>内容</th><th>状況</th></tr>
-      <tr><td>0</td><td>companion の overscroll (端の白い余白) 抑制</td><td class="done">済 (0.1.28)</td></tr>
-      <tr><td>1</td><td>builtin を Clock / G2 Battery に再構成 + ラベル明確化 + code-owned 化</td><td class="done">実装済 (実機検証待ち)</td></tr>
-      <tr><td>2</td><td>glass layout 分離 (<code>rows</code> モデル)</td><td class="open">設計済・未実装</td></tr>
-      <tr><td>3</td><td>Network 要素</td><td class="warn">不採用 (iOS WKWebView で速度計測不可)</td></tr>
-    </table>
-
-    <h2 class="done">#1 builtin 再構成（commit edf6f3c）</h2>
-    <p><strong>「本体(時刻/電池)」という日本語ラベルの根本原因</strong>: config 全体 (sources 配列を含む) を localStorage に保存しており、builtin source の label もそこに永続化される。
-      i18n commit (<code>6f42e6d</code>) で default を <code>'Device'</code> に変えたが、<code>ensureBuiltin</code> は「無ければ追加」だけで既存 label を上書きしないため、実機の旧日本語ラベルが残っていた。
-      companion の group 行はラベルが空のとき source label にフォールバックするので、それが表示されていた。</p>
-    <table>
-      <tr><th>group</th><th>segment (内部ID)</th><th>glass 短縮</th><th>companion 説明的</th></tr>
-      <tr><td rowspan="2"><strong>Clock</strong></td><td>time</td><td><code>12:34</code> (値のみ)</td><td>Time</td></tr>
-      <tr><td>date</td><td><code>Thu 05-28</code></td><td>Date</td></tr>
-      <tr><td rowspan="3"><strong>G2 Battery</strong></td><td>level</td><td><code>Bat 82%</code></td><td>Battery level</td></tr>
-      <tr><td>rate (旧 drain)</td><td><code>↓12%/h</code></td><td>Rate</td></tr>
-      <tr><td>eta (旧 est)</td><td><code>Left 6h</code></td><td>Estimated time left</td></tr>
-    </table>
-    <h3>Design decisions</h3>
-    <table>
-      <tr><th>項目</th><th>決定 / 理由</th></tr>
-      <tr><td>グルーピング軸</td><td>「Phone」でなく <strong>Clock</strong>。「Phone で計算」は実装都合の名前で <code>builtin</code> と同じ失敗をする。中の segment が Time/Date なので group=Clock が階層明確 (Time&gt;Time の衝突回避)。</td></tr>
-      <tr><td>ラベルの所在</td><td>builtin の表示ラベルは <strong>code-owned</strong> (<code>BUILTIN_GROUP_LABELS</code>/<code>BUILTIN_SEG_LABELS</code>)。localStorage に保存せず、companion はこれで行名を出す。永続 source label にフォールバックしない。</td></tr>
-      <tr><td>glass / companion 分離</td><td>glass は狭いので短縮ラベル (builtins.ts の <code>seg.label</code>)、companion は説明的ラベル (config の map)。同一 <code>StatusDoc</code> から両表示を出し分ける。</td></tr>
-      <tr><td>source 非表示</td><td>builtin は SOURCES 一覧から除外 (サーバ設定専用に純化)。ITEMS にのみ Clock/G2 Battery として出す。</td></tr>
-      <tr><td>移行 (migrate)</td><td>旧 <code>hud</code> group を <code>clock</code>/<code>g2</code> へ再構成。segment id が変わる (g2→level, drain→rate, est→eta) ため旧トグルは引き継がず既定 ON で sync 補充。builtin の表示順 (先頭) は維持。<strong>CONFIG_VERSION は bump しない</strong> (additive な正規化。bump すると else 分岐が v3 config を破壊する既知の罠)。</td></tr>
-      <tr><td>Network 不採用</td><td>iOS WKWebView は <code>navigator.connection</code> 非対応で回線速度を常時計測できない (実測は帯域消費で HUD 不適)。速度実測は Mac 側のみ可だが、ユーザー判断で今回は見送り。</td></tr>
-    </table>
-    <h3 class="open">挙動変化</h3>
-    <ul>
-      <li>glass の HUD が <strong>1 行 → 2 行</strong>になる (Clock 行 + G2 Battery 行)。#2 の layout 分離で 1 行に混ぜることも可能になる。</li>
-      <li>実機の旧 builtin segment トグル (time/date/g2 等の ON/OFF) はリセットされ既定 ON に戻る (id 変更のため)。</li>
-    </ul>
-
-    <h2 class="done">#2 glass layout 分離（実装済・ブラウザ検証済 / 実機未）</h2>
-    <p>論理 group (素材) と glass の行 (表示レシピ) を分離。companion で行を編集し、複数 group の segment を 1 行に混在できる（例: 時計 + 電池）。設計は gpt-5.5 合意 + 1 点改良（後述）。</p>
-    <table>
-      <tr><th>項目</th><th>実装</th></tr>
-      <tr><td>内部モデル</td><td><code>config.glassLayout?: { rows: { id; anchor:'top'|'bottom'; items: segKey[] }[] }</code>。segment 側に行 hint は持たせない。row.id 必須 (sortablejs の移動/削除で index 管理は破綻するため)。</td></tr>
-      <tr><td>deferred finalize (gpt案からの改良)</td><td>gpt 案は「loadConfig で rows 生成」だが、それだと<strong>新規ユーザーが空 rows = glass 空</strong>になる穴がある。→ <code>glassLayout</code> が <strong>未設定の間は従来の group=1行 自動描画</strong>、companion の「Customize layout」押下時に現状の groupOrder から rows を生成して固定する。既存/新規とも見た目不変で開始でき、「rows は status で自動変更しない」も守れる。</td></tr>
-      <tr><td>renderer</td><td><code>summarySections</code> が <code>glassLayout</code> 有無で <code>layoutSections</code>(rows) / <code>groupSections</code>(従来) を切替。<code>rowLine</code> は items を解決し group.enabled / segment.enabled / 表示条件 / status 欠落 を<strong>描画時フィルタ</strong>。<strong>行内が単一 group のみなら group ラベルを接頭辞</strong>（単一行は従来の見た目維持、混在行はラベル無し）。builtin の group ラベルは '' なので時計/電池は値のみ。<code>buildViews</code>/detail は素材 group 単位のまま。</td></tr>
-      <tr><td>companion UI</td><td>「Glass layout」セクション: Customize で rows 生成、行の anchor 切替 / 行削除 / 行追加、segment を行間でドラッグ (sortablejs 共有 group)、× で unplaced へ、未配置リスト、1 行長すぎ警告 (概算 40 字)、Reset to auto。</td></tr>
-      <tr><td>同期 (gpt 警告厳守)</td><td><code>syncSourceWithStatus</code> で rows を補正しない。新規 group/segment は未配置リストに出すのみ。status から消えた segment は rows から消さず描画時 skip。<code>sanitizeGlassLayout</code> で壊れた永続値は undefined (=自動描画) に落とす。</td></tr>
-      <tr><td>後方互換 / version</td><td>CONFIG_VERSION は bump しない (glassLayout は optional・additive)。既存ユーザーは undefined のまま従来描画で開始。</td></tr>
-    </table>
-    <p class="open">ブラウザ検証済: Customize / ラベル整合 (preview パリティ) / item-remove / anchor / reset。<strong>ドラッグ merge は MCP(desktop) では HTML5 DnD を模擬できず未自動検証</strong>だが、recompute は検証済みの save+render と同経路 + DOM 属性確認済みで、実機タッチでは動く想定。実機確認推奨。</p>
-
-    <h2 class="done">#2b WYSIWYG プレビュー編集 — 固定行グリッド（実装済・ブラウザ検証済 / 実機未）</h2>
-    <p>ユーザー選択により、抽象的な行リストエディタを廃し <strong>GLASS PREVIEW を edit/view 切替の編集面</strong>に。さらに「フォント固定＝glass は固定行」というユーザー指摘を受け、<strong>可変 rows + Add row を廃止し固定 MAX_ROWS 行スロットに segment を配置する</strong>テキストエディタ／ゲーム UI 風グリッドへ再設計（gpt-5.5 と 2 度合意）。anchor(top/bottom) は廃止＝行番号 = 絶対行位置。</p>
-    <table>
-      <tr><th>項目</th><th>実装</th></tr>
-      <tr><td>データモデル</td><td><code>GlassLayout = { rows: string[][] }</code>（長さ MAX_ROWS=10）。<code>rows[i]</code> = i 行目の segKey 並び（空行可）。anchor / unplaced フィールド廃止。未配置は「enabled かつ どの行にも無い」を導出（新規 segment も自動で棚に出る）。</td></tr>
-      <tr><td>編集 UI</td><td>固定 10 行グリッド。左に<strong>行番号ガター(ghost 1..10)</strong>、各行=ドロップセル。segment chip をセル/棚へ D&D。<strong>ドラッグ中はドロップ先セルをハイライト</strong>(<code>onMove</code>→<code>.drop-hot</code>)。× で未配置へ、Reset to auto、Edit/Done。<strong>Add/削除/anchor は廃止</strong>。</td></tr>
-      <tr><td>hint 予約</td><td>glass hints ON のとき最下行(10)を <strong>reserved 表示＋drop 不可</strong>(SortableJS <code>put:false</code>)。budget = MAX_ROWS - (hints?1:0) = 9/10。reserved 行に内容が残る場合は「hint に隠れる」警告（サイレント破棄せず、hints OFF で復活）。</td></tr>
-      <tr><td>renderer</td><td>glass-render <code>layoutLines</code> が <code>rows.slice(0,budget)</code> を絶対行描画（空行も保持＝上の空行が下へ押し下げる）。hint は最下段。単一 group のみの行は group ラベル接頭辞。<code>summarySections</code> は auto(未カスタマイズ)専用。</td></tr>
-      <tr><td>migrate</td><td><code>normalizeGlassLayout</code> が旧 anchor 形式 ({rows:[{anchor,items}]}) を絶対行へ移行（top は上から / bottom は下から）。新形式はそのまま正規化。壊れていれば undefined=自動描画。CONFIG_VERSION bump なし。</td></tr>
-    </table>
-    <p class="open">ブラウザ検証済: 固定10行グリッド / 行番号 / Row10 reserved(hints ON↔OFF で切替) / Customize 全配置 / view プレビュー = 絶対行 / item-remove。<strong>chip ドラッグ＋ハイライトは MCP(desktop) では HTML5 DnD を模擬できず未自動検証</strong>（recompute は検証済み save+render と同経路、実機タッチ前提）。既知: server データ読込前に Customize すると Clock だけで生成され、後続 group は棚に出る（通常はデータが揃ってから Customize）。溢れ実測 scrollWidth は次段階(step 5)。</p>
-    <p class="done">追修正: custom モードの view プレビューが旧 <code>summarySections</code>(group/上詰め) を使い固定行 rows を無視していた（下の行に置いても Done 後に上詰めになる）バグを <code>layoutLines</code> の絶対行描画 (空行保持) に統一して修正。位置は固定行グリッドで決まるため、group 行の上詰め/下詰め(<code>align</code>)トグルも廃止。</p>
-    <p class="done">追修正2: <strong>glass hints を glass から撤去</strong>（10 行は貴重なので操作ヒントで 1 行消費しない）。<code>config.glassHints</code> / Show glass hints トグル / reserved 行を廃止し budget = MAX_ROWS=10 常時に。操作説明 (tap=サマリ / swipe=ビュー切替 / double-tap=終了) は companion の Glass セクションに常設。あわせて <strong>edit の chip を実機の表示文字列 (label value / value) で表示</strong>し WYSIWYG を忠実に（例 "Session 12%" / "12:34" / "Bat 82%"）。</p>
-    <p class="done">追修正3 (group ラベルの扱い, gpt-5.5 と合意): 旧仕様の<strong>「単一 group 行は自動でラベル接頭辞 / 混在で消える」を廃止</strong>（chip 1つで出たり消えたり直感に反する）。<strong>「glass に出るのは置いた要素だけ」</strong>に統一。group ラベルを<strong>配置可能なヘッダ chip</strong> (<code>LABEL_SEG='@label'</code> = key <code>src|grp|@label</code>) にし、各 group 分を未配置棚に用意・好きな行へドラッグ配置。glass の <code>rowText</code> は LABEL_SEG を group ラベルテキストに解決。曖昧さ回避のため editor の値 chip には group 名を小さく添える（glass には出ない）。検証: 未配置にラベル chip / 値 chip の group 小表示 / preview に自動接頭辞が出ない。</p>
-    <p class="done">追修正4 (任意ラベルの追加・削除, gpt-5.5 と合意): ユーザー定義の<strong>自由テキストラベル</strong>(見出し / 区切り 等) を追加・削除可能に。<code>glassLayout.customLabels: Record&lt;id,{text}&gt;</code> に本文を持ち、rows には key <code>@customLabel:&lt;id&gt;</code> だけ置く (key にテキストを入れない = '|' 衝突回避)。<code>rowText</code> は <code>@customLabel:</code> を <code>customLabels[id].text</code> に解決。companion: 棚に inline input + 「Add label」、custom chip は専用スタイル (.wys-custom-chip)、× は完全削除 (customLabels と全 rows の参照を除去。group/値 chip の × は unplace と区別)。<code>genLabelId</code>/<code>customLabelKey</code>/<code>isCustomLabelKey</code> ヘルパ。recompute は rows のみ再構築し customLabels を保持。migrate は既存 {rows} を {rows, customLabels:{}} へ正規化。検証: 追加で custom chip 出現 / 削除で消失。glass への配置・表示はロジック検証済 (drag は実機)。 また Claude Code → Claude / Session → 5h / G2 Battery → G2 にラベル短縮 (id 維持)。</p>
-    <p class="done">追修正5 (スマホ操作性): (1) Edit Layout 展開時に一番下までスクロールできない問題 = 実機タッチで SortableJS のドラッグがスワイプ(スクロール)を奪っていた (desktop では到達可=CSS clip ではないと診断)。全 Sortable に <code>delay:200 + delayOnTouchOnly:true</code> を付与し「素早いスワイプ=スクロール / 長押し=ドラッグ」に分離。(2) スクロール/ドラッグ時に文字が選択されて煩わしい問題 = body に <code>user-select:none</code> + <code>-webkit-touch-callout:none</code>、入力欄 (input/textarea) のみ <code>user-select:text</code> で除外。検証: chip/行番号=none, 入力欄=text。</p>
-    <p class="done">追修正6 (行境界の可読性): chip 数の多い行が 2 行に折り返すと、行番号が中央寄せで隣の行に食い込んで見えた。各行セル (<code>.wys-cell</code>) を常時<strong>枠線 + 薄い背景の box</strong> にし、行番号 (<code>.wys-ln</code>) を<strong>行の上端 (align-self:flex-start)</strong> に揃えた。折り返した chip も同じ box に収まり、どの行に属すか一目で分かる。不要になった reserved 用 CSS を除去。検証: モバイル幅スクショで row2 (3 chip 折返し) が単一 box に収まり番号が上端に来ることを確認。</p>
-    <hr>
-    <h2 class="done">default-label + 隣接 dedup (Phase 1 / gpt-5.5 と合意。配置式 @label を置換)</h2>
-    <p>ユーザー提案: 各 segment が所属 group を「デフォルトラベル」として持ち、表示/非表示トグル可能。横並びで同じ group ラベルが続く場合は最初の 1 回だけ表示 (例 <code>G2 Bat 82% Left 6h</code>)。直前に gpt 助言で導入した配置式 @label chip を<strong>置換</strong>する (自動・dedup・トグルで賄えるので chip は冗長)。custom 自由テキストラベルは残す。</p>
-    <table>
-      <tr><th>論点</th><th>決定</th></tr>
-      <tr><td>トグル粒度</td><td><strong>group 単位</strong> <code>GroupCfg.showDefaultLabel</code> (per-segment にすると "G2 Bat" 有・"G2 Left" 無しの不整合が作れてしまう)</td></tr>
-      <tr><td>既定値 (案A)</td><td>builtin <strong>clock のみ OFF</strong> (時刻に 'Clock' は不要)、他は ON。<code>defaultShowGroupLabel(groupId)</code></td></tr>
-      <tr><td>dedup 範囲</td><td><strong>隣接 run のみ</strong>。<code>rowText</code> が直前 segment と groupId が変わった時だけ group 名を前置。<code>G2…Mac…G2</code> の後ろの G2 は再表示 (意味の区切り)。custom テキストラベルは run を切る</td></tr>
-      <tr><td>@label 廃止</td><td>棚から group ラベル chip を除去 (allPlaceableKeys)、wysChip の @label 分岐削除。既存 rows の <code>|@label</code> キーは <code>normalizeGlassLayout</code> で除去 (default-label が group 名を出すので表示は保たれる)</td></tr>
-      <tr><td>UI トグル</td><td>Items の各 group 行に tag アイコンの <code>.label-btn</code> (ON=accent / OFF=薄い)。<code>toggle-grouplabel</code> ハンドラ</td></tr>
-      <tr><td>editor 可視化</td><td>値 chip の薄い group 名 (<code>.wys-grp</code>) は <strong>showDefaultLabel ON の group のみ</strong>表示 (実機の前置と一致)。「置いた要素だけ出る」原則は「ラベルは segment の表示属性」と再定義</td></tr>
-      <tr><td>migrate</td><td>既存 group に <code>showDefaultLabel ??= defaultShowGroupLabel</code> を補完 (additive, bump 不要)</td></tr>
-    </table>
-    <p class="done">検証 (ブラウザ): 棚に @label chip 無し / label-btn 既定 clock=OFF・他=ON / preview dedup (<code>Claude 5h 1% Weekly 2% Cost $797</code>, <code>Mac CPU 28% Mem 79%</code>, 時刻に Clock 前置なし) / Mac トグル OFF で <code>CPU 28% Mem 79%</code> に。drag は実機。</p>
-    <hr>
-    <h2 class="done">Phase 2 widthChars + Phase 3 clock format (5-agent blueprint + gpt-5.5 で確定)</h2>
-    <p>段階設計を 5 エージェント並列ワークフローで実コード根拠の blueprint 化 → 統合。矛盾 (clock-engine『builtins 再整形→実機反映』 vs clock-ui『preview のみ』) は <strong>builtins 再整形を採用</strong>。循環依存リスクは『<code>SegCfg.format</code> 未設定→builtins がロケール既定を適用 (migrate backfill しない)』で回避 (config→builtins import 不要)。</p>
-    <h3 class="done">Phase 3: clock フォーマット指定 + datetime 統合</h3>
-    <table>
-      <tr><th>項目</th><th>実装</th></tr>
-      <tr><td>プリセット</td><td>builtins <code>CLOCK_PRESETS</code> (kind=time/date/datetime, format 文字列, label, width)。time <code>HH:mm</code>/<code>h:mm A</code>、date <code>MM-DD</code>/<code>ddd MM-DD</code>/<code>YYYY-MM-DD</code>、datetime <code>HH:mm ddd MM-DD</code>/<code>h:mm A ddd MM-DD</code>。</td></tr>
-      <tr><td>統合 (datetime)</td><td>time/date は<strong>維持</strong>し結合用 <code>datetime</code> segment を新設 (defaultEnabled=false の opt-in)。別行配置の自由を失わない・migration 不要。</td></tr>
-      <tr><td>フォーマッタ</td><td><code>formatClock(date, fmt)</code> トークン置換 (YYYY/HH=24h/MM/DD/mm/A=AM-PM/<strong>h=常に12h</strong>/ddd は最後)。外部 lib なし。</td></tr>
-      <tr><td>永続/既定</td><td><code>SegCfg.format?: string</code> (フォーマット文字列を直接保存)。未設定は <code>defaultClockFormat(segId)</code> がロケール (formatProfile の 12/24h・日付順) から導出。</td></tr>
-      <tr><td>実機反映</td><td><code>localStatus(config?)</code> が各 clock SegCfg.format で value 整形。<code>glass.ts</code> は 3 箇所 <code>localStatus(data.config)</code> 化 = 実機描画に効く。store は config なし=既定。</td></tr>
-      <tr><td>UI</td><td>Items の clock group 配下 time/date/datetime 行に <code>.format-select</code> dropdown。<code>onChange</code> が <code>seg-format</code>→<code>onSegFormatChange</code> と <code>seg-vis-</code>→<code>onSegVisChange</code> を振り分け。companion は <code>statusGroup/glassData</code> で builtin を <code>localStatus(config)</code> live 上書き → プレビュー/Items が選択に追従。</td></tr>
-    </table>
-    <h3 class="done">Phase 2: widthChars (表示枠)</h3>
-    <table>
-      <tr><th>項目</th><th>実装</th></tr>
-      <tr><td>モデル</td><td><code>Segment.widthChars?</code> + <code>isNumeric?</code> (status-types)。builtin のみ設定、server は undefined=無加工。SegCfg には持たせない。</td></tr>
-      <tr><td>整形</td><td>glass-render <code>formatSegmentValue(value, widthChars?, isNumeric)</code>: 短ければ pad (数値=右寄せ padStart / 文字列=左寄せ)、超えれば末尾 <code>…</code> で省略 (合計 widthChars)。rowText/detailBody から呼ぶ。</td></tr>
-      <tr><td>既定幅</td><td>clock=プリセット幅、level=5(<code>100%+</code>,右寄せ)、rate=7(<code>↓100%/h</code>)、eta=6(<code>23h59m</code>)。blueprint の rate=2/eta=7 は実 formatRate/formatEta と不一致のため補正。</td></tr>
-      <tr><td>editor 折返し判定</td><td>companion <code>rowOverflow</code> を概算40字→<strong>widthChars 合計 + default-label 前置桁 (run 先頭) + custom label 長</strong>で算出、閾値 50。既存 <code>.wys-over</code> 警告を再利用。</td></tr>
-    </table>
-    <p class="done">検証 (ブラウザ): clock dropdown (time/date/datetime・正しいプリセット) / format 変更→Items 値+preview 即追従 / <strong>12h バグ修正</strong> (h トークンが h24 を使っていた→常に h12 に) / datetime 行追加 / Customize で全 chip が整形済値表示 / overflow 誤検知なし / lint・build クリーン。</p>
-    <p class="done">敵対的レビュー (26 エージェント, 23 指摘→検証で 1 件のみ確定): <code>rowOverflow</code> が無効 segment (SegCfg.enabled=false) をスキップせず幅を過大評価 (rowText は除外)。行に置いた後トグル OFF で再現。修正済 (gc から SegCfg を引き enabled チェック)。他 22 件は誤検知 (formatClock トークン順序・循環依存・統合経路の健全性を確認)。</p>
-    <p class="open">実機確認待ち: widthChars プリセット値が SDK 等幅フォント (27px) の実枠と整合するか / pad 右寄せ・<code>…</code> 省略の見た目 / overflow 閾値 50 の妥当性 / format 選択後 glass-local タイマー次 tick で実機反映。ブラウザは bridge 無しで reload すると選択リセット (memory のみ) = dev 想定挙動。</p>
-    <hr>
-    <h2 class="done">clock 完全統合 (Time/Date → 単一 datetime segment, 合成フォーマット) [ユーザー選択]</h2>
-    <p>ユーザー要望: 日付/時刻形式を自由に選べるようにし time/date を 1 segment に統合 (IBM 形式リファレンス参照)。AskUserQuestion で『完全統合 (Time/Date 廃止)』を選択。gpt-5.5 は『2-dropdown 合成 UX』を支持しつつ time/date 完全削除には慎重 (別行配置喪失・移行データ損失) だったが、ユーザー判断を優先。</p>
-    <table>
-      <tr><th>項目</th><th>実装</th></tr>
-      <tr><td>モデル</td><td>clock group は<strong>単一 segment</strong> (<code>CLOCK_SEG='datetime'</code>)。表示 = Time 部 + Date 部を合成した 1 フォーマット文字列 (<code>SegCfg.format</code>, 区切り 2 スペース)。</td></tr>
-      <tr><td>合成/逆解析</td><td><code>composeClockFormat(time,date,order)</code> / <code>parseClockFormat(fmt)</code> (':' を含む部分=Time)。Time/Date 各 Off で片方のみ。順序トグル。</td></tr>
-      <tr><td>プリセット</td><td>Time: Off/<code>HH:mm</code>/<code>h:mm A</code> (秒は分更新 glass のため非対応)。Date: Off/<code>MM-DD</code>/<code>MM/DD</code>/<code>DD-MM</code>/<code>DD/MM</code>/<code>ddd MM-DD</code>/<code>MMM DD</code>/<code>ddd MMM DD</code>/<code>YYYY-MM-DD</code>/<code>YY/MM/DD</code>/<code>MM/DD/YYYY</code>/<code>DD/MM/YYYY</code>。</td></tr>
-      <tr><td>トークン拡張</td><td><code>formatClock</code> に <code>YY</code>(2桁年)/<code>MMM</code>(月名) を追加。置換順で接頭辞衝突回避 (YYYY→YY, MMM→MM, HH→h, ddd 最後)。</td></tr>
-      <tr><td>UI</td><td>companion <code>clockFormatControls</code>: Time/Date/Order の 3 select。<code>onChange</code> が <code>clock-*</code>→<code>onClockFormatChange</code> で再合成して保存。</td></tr>
-      <tr><td>移行</td><td><code>consolidateClock(c)</code> (同 v3 additive, bump 無): SegCfg の time/date を除去し datetime 有効化。glassLayout の <code>|clock|time</code>/<code>|date</code>/旧 datetime を単一 dtKey へ remap (全行通じ 1 つに集約)。別行配置は喪失 (ユーザー承知)。</td></tr>
-      <tr><td>widthChars</td><td>選択フォーマットの最大長を <code>clockFormatWidth(WIDE_SAMPLE)</code> で算出。</td></tr>
-    </table>
-    <p class="done">検証 (ブラウザ): clock 1 segment 化 / Time-Date-Order の合成 (<code>1:32 PM  Fri May 29</code>) / 順序入替 / Time Off→日付のみ / Date Off→時刻のみ / MMM 月名 / 12h / parse 往復 / preview 追従 / lint・build クリーン。</p>
-    <p class="done">敵対的レビュー (30 エージェント, 確定 15 = 実バグ 2 + 健全確認 12 + 設計指摘 1): (1) <code>consolidateClock</code> が旧 time/date の format を datetime に引き継がず黙って消える → 旧 format を合成 (区切り 2 スペース) して継承。(2) else 分岐が datetime.enabled を毎ロード true に上書きし OFF 選択を破棄 → 上書き廃止、新規作成時のみ enabled を旧 time/date から継承 (両 OFF は OFF 維持)。round-trip/UI 復元/onChange routing/esc/CSS/widthChars 等 12 件は健全と確認。</p>
-    <hr>
-
-    <h2 class="done">glass の segment 単位 左右配置 (iOS ステータスバー型) + UI 小修正 [2026-05-29]</h2>
-    <p>ユーザー要望: (1)「Add server」→「Add Sources」、(2) その追加ボタンを小さく、(3) glass は現状すべて左詰めだが
-      <strong>segment ごと</strong>に右詰めもできるようにしたい。具体例「同一行で時計関連=左 / バッテリー等デバイス状態=右」(iOS 風 justify-between)。
-      設計の粒度・実装は gpt-5.5 (copilot) と 2 ラウンド議論し確定。</p>
-
-    <h3>Design decisions <span class="done">[decided]</span></h3>
-    <table>
-      <tr><th>項目</th><th>採用</th><th>根拠</th></tr>
-      <tr><td>粒度</td><td>custom layout の<strong>行内 左右クラスタ</strong> (各行 = 左クラスタ + 右クラスタ)</td><td>ユーザー指定の iOS 例 (同一行で時計左/電池右) は cross-group 配置 = custom layout でのみ成立。auto モードは 1 group=1 行のため据え置き。</td></tr>
-      <tr><td>データモデル</td><td>案S: <code>glassLayout.rows: string[][]</code> 据え置き。予約キー <code>RIGHT_DIVIDER='@right'</code> を行内に 1 個挿み、前=左 / 後=右。無ければ全左 (後方互換)。</td><td>移行/正規化/生成/DOM 読み戻しが <code>string[][]</code> 前提で多数。案T (<code>{left,right}[]</code> 構造化) は全層改修 + データ移行が必要。copilot も案S 推奨。</td></tr>
-      <tr><td>内部表現</td><td><code>RowClusters = {left:string; right:string}</code> を描画/プレビューで使用、永続は案S</td><td>意味の明快さ (左右) とデータの単純さ (string[][]) を両立。</td></tr>
-    </table>
-
-    <h3>Deviations / Tradeoffs <span class="warn">[deviation]</span></h3>
-    <table>
-      <tr><th>逸脱</th><th>内容</th><th>理由</th></tr>
-      <tr><td>実機は space 近似</td><td>SDK <code>TextContainerProperty</code> に text-align が無く、フォントは proportional (LVGL)。単一コンテナ <code>content</code> しか持てないため、<code>@evenrealities/pretext</code> の <code>getTextWidth</code> で左右クラスタの px 幅を測り、中央を space で充填して右クラスタを右端へ寄せる。</td><td>誤差 ≒ <code>SPACE_W/2</code> (実測 <code>SPACE_W=5px</code> → 最大 ~2.5px)。HUD 用途で許容。pixel-perfect な multi-container + xPosition 案は単一→複数コンテナ大改修 + BLE churn 増のため不採用。</td></tr>
-      <tr><td>プレビューと実機の二重描画</td><td>companion プレビューは CSS flex <code>justify-content:space-between</code> で正確に左右配置 (px 量子化なし)。実機は space 近似。</td><td>プレビュー = 意図したレイアウト、実機 = 最善近似。プレビューは元々 <code>--font-mono</code> で実機 proportional と既に近似関係。</td></tr>
-      <tr><td>機能の置き場所</td><td>左右配置は custom layout 専用。auto (未カスタマイズ) では使えず「Customize layout」が前提。</td><td>同一行に複数 group を載せる = custom layout の責務。auto に per-segment 水平配置を足すと意味が曖昧。</td></tr>
-    </table>
-
-    <h3>実装</h3>
-    <table>
-      <tr><th>層</th><th>変更</th></tr>
-      <tr><td>依存</td><td><code>@evenrealities/pretext@^0.1.4</code> 追加 (bun。npm は evenhub-cli の peer ts^5 競合で不可)。</td></tr>
-      <tr><td>config.ts</td><td><code>RIGHT_DIVIDER='@right'</code> / <code>isRightDivider</code>。<code>normalizeGlassLayout</code> に行内 @right 1 個正規化 (<code>onceDivider</code>)。<code>consolidateClock</code> の flatMap は @right を passthrough (変更不要)。<code>generateGlassLayout</code> は @right 無し (全左)。</td></tr>
-      <tr><td>glass-render.ts</td><td><code>GLASS_WIDTH/HEIGHT/PADDING</code> + 派生 <code>INNER_W=560</code> / <code>SPACE_W=getTextWidth(' ')</code> を定数化。<code>rowText</code>→<code>renderKeys</code> に改名。<code>splitRowClusters</code>(@right で分割) / <code>rowClusters</code> / <code>layoutRowClusters</code>(プレビュー用, pretext 非依存) / <code>justifyClusters</code>(実機用, pretext で中央 space 充填) を追加。<code>layoutLines</code> = clusters→justify。</td></tr>
-      <tr><td>glass.ts</td><td><code>DISPLAY_W/H</code> と <code>paddingLength</code> を glass-render の共有定数に統一 (INNER_W と確実に一致)。</td></tr>
-      <tr><td>companion.ts</td><td>ソース追加 UI を「Sources」見出し右端の <code>+</code> アイコンボタン (<code>cmp-label-row</code> + <code>add-btn</code>) に変更 (旧 <code>save-btn sm</code> 横長ボタンは廃止)。プレビュー custom 分岐を <code>layoutRowClusters</code>+flex で左右表示。<code>renderGlassEdit</code> 各行を 左/右 2 ゾーン (<code>data-zone</code>) に分割。<code>recomputeWysFromDom</code> が両ゾーンを読み、右に chip があれば <code>@right</code> を挿んで直列化。</td></tr>
-      <tr><td>styles.css</td><td><code>.add-btn</code> (accent 丸 + ボタン)。<code>.save-btn.sm</code> (Add label 用に残置)。<code>.wys-zone</code>/<code>.wys-zone-r</code>(右寄せ)/<code>.wys-zone-sep</code>(破線縦線)。<code>.glass-screen .grow.gjust</code> (flex space-between) + <code>.gj-r</code>。</td></tr>
-    </table>
-    <p>justify ロジック: 右空=左のみ / 左空=行頭 space で右寄せ / 両方=中央 space (最低 1)。<code>gap=round((INNER_W-leftW-rightW)/SPACE_W)</code>。</p>
-
-    <h3>検証 <span class="done">[done]</span></h3>
-    <p class="done">数値スモーク (bun): 行「時計左 / 電池右」= <code>10:30 Mon … Battery Bat 82%</code> 実幅 562px (inner 560, 誤差 2px) / 全左 92px / 全右 560px ぴったり。</p>
-    <p class="done">ブラウザ E2E (Chrome): Add Sources 小型化 / Customize→Edit layout で各行 左｜右 2 ゾーン描画 / Clock chip を右ゾーンへドラッグ→右寄せ chip / Done でプレビューが右端寄せ。tsc・build・biome クリーン。</p>
-    <p class="open">実機 (G2) 確認待ち: space 近似の右端整合 (誤差 ~2.5px) / 行内左右の見やすさ / 長文行 (左+右が INNER 超過) 時の折返し挙動。ブラウザは bridge 無しで reload すると layout リセット (memory のみ) = dev 想定。</p>
-    <hr>
-
-    <h2 class="done">フルスクリーン WYSIWYG レイアウトエディタ (実験的 / Phase 1) [2026-05-29]</h2>
-    <p>ユーザー要望: 動画フルスクリーンの強制横持ちのように、全画面・横向きで「実際の glass preview そのもの」上に
-      直接 D&D してレイアウト編集する画面。既存 Edit Layout は残す。粒度・実装は gpt-5.5 (copilot) と 2 ラウンド議論
-      (SortableJS ソースまで確認)。実機の振る舞いは AskUserQuestion でユーザーに確認。</p>
-
-    <h3>確定した前提 <span class="done">[decided]</span></h3>
-    <table>
-      <tr><th>項目</th><th>事実 / 決定</th></tr>
-      <tr><td>ホスト回転</td><td>ユーザー回答: Even App コンパニオンは<strong>縦固定 (回転しない)</strong>。よって横表示は CSS 強制回転でしか作れない。</td></tr>
-      <tr><td>横持ちの作り方</td><td><code>@media (orientation: portrait)</code> で <code>.fs-stage</code> を <code>rotate(90deg) translateY(-100vw)</code> (width:100vh/height:100vw/origin top-left) し portrait viewport を埋める。端末を横に倒すと正立 = 動画フルスクリーン体験。landscape では無回転。</td></tr>
-      <tr><td>D&D 実装</td><td>copilot 検証: 回転コンテナ内で SortableJS の fallback ghost は <code>clientX/clientY</code> 基準で 90° 逆変換せず破綻 → <strong>使用不可</strong>。よって <strong>Pointer Events 自前実装</strong>。<code>document.elementFromPoint</code> は transform 後のヒットを返すので行/ゾーン判定はそのまま動く。</td></tr>
-      <tr><td>データ</td><td>新フォーマット無し。通常エディタと同じ <code>glassLayout.rows + @right</code> を共有 (<code>splitRowClusters</code> 流用)。自由座標には広げない。</td></tr>
-      <tr><td>既存 Edit Layout</td><td>そのまま残置。入口を 2 つ (Fullscreen / Edit layout) に。</td></tr>
-    </table>
-
-    <h3>実装</h3>
-    <table>
-      <tr><th>層</th><th>変更</th></tr>
-      <tr><td>companion.ts</td><td>独立オーバーレイ (<code>document.body</code> 直下) を <code>openFsEditor</code>/<code>closeFsEditor</code> で管理 (root の render/SortableJS と非干渉)。<code>renderFsBodyHtml</code> が 10 行×左右ゾーン + Unplaced トレイを生成。自前 Pointer D&D (<code>onFsPointerDown/Move/Up</code> + <code>fsZoneAt=elementFromPoint</code> + 追従 ghost)。<code>moveFsKeyToZone</code>/<code>removeFsKey</code>/<code>normalizeFsRows</code> で rows 更新→saveConfig→<code>refreshFsBody</code>。入口 action <code>fs-open</code> (custom 未生成なら generate)。</td></tr>
-      <tr><td>styles.css</td><td><code>.fs-root/.fs-stage</code> (+ portrait media で 90° 回転)、<code>.fs-glass/.fs-row/.fs-zone(-r)</code> (緑/黒・10 等分)、<code>.fs-chip</code> (glass 風・draggable)、<code>.fs-hot</code> (drop ハイライト)、<code>.fs-ghost(-rot)</code> (追従 ghost)、<code>.fs-tray</code>、<code>.cmp-actions</code>。</td></tr>
-    </table>
-
-    <h3>検証 <span class="done">[done]</span> / 未確認 <span class="open">[open]</span></h3>
-    <p class="done">ブラウザ E2E (Chrome, landscape): Fullscreen 起動 → 10 行×左右ゾーン + 緑チップ描画 / 自前 D&D で <code>Mac Mem</code> を別行(row4)→row1 右ゾーンへ移動 = 時計左+Mem右 (iOS 型) / トレイへドロップで unplace + <code>@right</code> 自動掃除 / Done で通常プレビューに反映。tsc・biome・build クリーン。</p>
-    <p class="open">実機 (iOS portrait) 確認待ち: <code>@media portrait</code> の 90° 回転が viewport を正しく埋めるか (デスクトップ landscape では再現不可)。タッチでの Pointer D&D 操作感 (forceFallback 相当の長押し閾値は未設定 = 即ドラッグ)。回転下 ghost の向き (<code>.fs-ghost-rot</code> で 90° 補正済だが要実機確認)。</p>
-
-    <h3>オートレイアウト対応 (実機でのはみ出し修正) <span class="done">[done]</span></h3>
-    <p>実機 (iOS portrait・90° 回転は機能) で「チップがキャンバス枠からはみ出す / 行が崩れる」報告。原因と修正:</p>
-    <table>
-      <tr><th>原因</th><th>修正</th></tr>
-      <tr><td>ゾーンが <code>flex-wrap:wrap</code> で折返し → 行高 (1/10) を縦に超えて隣行と衝突</td><td><code>.fs-zone</code> を <code>flex-wrap:nowrap</code> + <code>overflow:hidden</code>。<code>.fs-row</code> も <code>overflow:hidden</code> で 1 行クリップ (実機グラスと同じ単一行。超過は <code>.fs-over</code> 警告)。</td></tr>
-      <tr><td>キャンバスに 2:1 フィット制約が無く、領域から溢れる</td><td><code>.fs-canvas</code> を <code>container-type:size</code>、<code>.fs-glass</code> を <code>width:min(100cqw,200cqh)</code> + <code>aspect-ratio:2/1</code> で必ず領域内に 2:1 コンテイン (端末非依存)。</td></tr>
-      <tr><td>チップが固定 px でキャンバスに追従しない</td><td><code>.fs-glass</code> を <code>container-type:size</code> にし、内部チップを <code>font-size:clamp(7px,5.4cqh,17px)</code>・padding/×アイコンも cqh + clamp でキャンバス高に追従スケール。トレイ/ghost は固定 px (コンテナ外)。</td></tr>
-    </table>
-    <p class="done">ブラウザ E2E (Chrome landscape): キャンバスが 2:1 でコンテイン / チップがサイズ追従 / 1 行に複数チップ配置でも折返さずクリップ / × 適正サイズ。tsc・biome・build クリーン。</p>
-
-    <h3>左右の色分け + はみ出しそのまま描画 + グループ run dedup <span class="done">[done]</span></h3>
-    <p>実機で左詰めが収まらない件への対応 (ユーザー要望)。実機グラスは長い行も見えているため、エディタでも
-      「左は右半分にはみ出してもそのまま描画」し、左右クラスタを色分けして識別可能にし、実機グラスと同じ
-      グループ名の省略 (run dedup) をエディタにも適用する。</p>
-    <table>
-      <tr><th>要望</th><th>実装</th></tr>
-      <tr><td>左/右クラスタを識別</td><td>右クラスタチップに <code>.fs-chip-r</code> (ティール <code>#69e6c6</code>) を付与。左は緑 (glass)。重なっても色で判別可。custom ラベルは従来どおり黄。</td></tr>
-      <tr><td>左のはみ出しをそのまま描画</td><td><code>.fs-row</code>/<code>.fs-zone</code> の <code>overflow:hidden</code> を撤去 (折返し禁止 <code>nowrap</code> は維持し縦衝突は防ぐ)。クリップは <code>.fs-glass</code> 端のみ (実機グラスの見切れに対応)。右ゾーンは DOM 上で後 = 左のはみ出しの上に重なり右端表示。ドロップ判定は要素ベース (<code>data-zone</code>) なので左がはみ出しても右半分は右に解決 (回転下でも安全)。</td></tr>
-      <tr><td>省略表示 (同一グループ連続)</td><td><code>renderFsCluster(keys, rightSide)</code> が左右クラスタ独立に run dedup。直前と同 <code>groupId</code> の連続ではグループ名を 1 回だけ前置 (例「Mac CPU 36% / Mem 76%」)。custom ラベルは run を切る。<code>fsChip(key, showGroup, rightSide)</code> に変更。実機 <code>renderKeys</code> と同じ規則。</td></tr>
-    </table>
-    <p class="done">ブラウザ E2E: 左 7 チップが中央線を越え右端手前まで描画 (クリップ無し) / 右チップはティールで右端維持 + ⚠ / run dedup が長い混在列 (clock→Claude→Cost dedup→Codex→Mac→Claude→Codex) で正しく動作。tsc・biome・build クリーン。</p>
-
-    <p class="open">Phase 2 候補 (必要なら): 通常 Edit Layout (<code>wysChip</code>) にも同じ色分け/dedup を適用 / ドロップ位置でのクラスタ内挿入順制御 (現状は末尾 append) / 左のはみ出しと右チップが完全に重なる極端ケースの視認性 / タッチ長押し閾値。</p>
+# 3) 動作確認 (watcher 無しでも curl で overlay を出せる)
+curl -X POST http://127.0.0.1:8723/api/emit -H 'Content-Type: application/json' \
+  -d '{"providerId":"test","id":"t1","kind":"toast","text":"hello glass"}'
+</code></pre>
+    </section>
   </body>
 </html>

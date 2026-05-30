@@ -206,6 +206,17 @@ Source Edit : 接続先 URL（複数可） + 接続テスト + 「ローカル�
 - Codex: `codex app-server` JSON-RPC `initialize` → `initialized` → ~1.5s → `account/rateLimits/read`。`primary` が埋まるまで再取得。
 - トークン/認証はデータソース（Mac/PC のサーバー）内に留め、フロント/glass には集計値（cost / % 等）だけ渡す。
 
+### overlay イベント（transient push、PROTOCOL §11）
+
+永続状態（`/api/status` の poll）とは別に、source が一過性の overlay（通知/トースト/バナー）を push する経路を持つ。代表例 = Mac ネイティブ通知のグラス転送。設計は gpt-5.5 と確定（2026-05-30）。
+
+- 搬送: `GET /api/events` の cursor 付き **long-poll**（`since`/`waitMs`）。SSE/WS は WKWebView の jettison/電池が未検証なので不採用。`StatusDoc` に混ぜず別 path に隔離（fire-once と永続状態の混在を避ける）。
+- 取り込み: `POST /api/emit`（**loopback 限定**）。外部 watcher が同一ホストから投入する。NDJSON 常駐 provider は後付け可。
+- 配送意味論: source-local 単調 `seq` + `(providerId,id)` dedupe + `ttlMs` リングバッファ。client は `since` cursor と seenId で重複排除、`reset` で連続性破棄。
+- client 配線: `src/events.ts` が `capabilities.events` を広告する server source だけ long-poll し、新着を `window 'toolbar:overlay'` に流す。glass の overlay（`createOverlayManager`）が描く。glass ライフサイクルで start/stop（companion では張らない＝余計な負荷を避ける）。
+- watcher: `server/watchers/mac-notifications.ts`（`bun run server watch mac-notifications`）。通知センター SQLite（usernoted）を `sqlite3`/`plutil` で読み、`/api/emit` に転送。要 Full Disk Access。OS 依存で壊れやすいので読めない行はスキップ。
+- dialog 往復（はい/いいえ等の応答を source へ返す）: `kind:'dialog'` を emit すると server（`server/actions.ts`）が `requestId` を払い出して events で配送、ユーザーの選択を client が `POST /api/action`（LAN）で返し、質問した watcher は `GET /api/action-result`（loopback long-poll）で受け取る。安全性は requestId（unguessable）+ index/action 検証 + accept-once。確認/利用は `bun run server ask "<質問>" <選択...>`。設計は gpt-5.5 と確定。
+
 ## 9. ローカルサーバーのリリース整備（クロスプラットフォーム・配布・拡張）
 
 companion が叩く `/api/status`・`/api/machine` を返すローカルサーバーを、clone 不要・ワンライナー・クロスプラットフォームで配布する設計（Claude 多角調査 + gpt-5.5 で確定、2026-05-30）。拡張の搬送路は PROTOCOL §9。

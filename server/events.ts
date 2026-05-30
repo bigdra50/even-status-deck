@@ -1,0 +1,104 @@
+// transient overlay イベントの source-local リングバッファ + long-poll。
+// POST /api/emit が emitEvent() を、GET /api/events が pollEvents() を呼ぶ。
+//
+// seq は source-local の単調増加 (この process 内のみ)。server 再起動で 0 に戻る
+// → client は since > lastSeq を検知して reset:true で受ける (古い cursor を捨てて現在へ)。
+// dedupe は (providerId,id) 単位。rate limit は providerId 単位。いずれも buffer 汚染と
+// グラスへの洪水を防ぐためで、untrusted な POST 入力前提で守る。
+import { DEFAULT_EVENT_TTL_MS, type EmitInput, type OverlayEvent } from '../src/event-types.ts'
+
+const BUFFER_MAX = 256 // リングバッファ保持上限 (超過は古いものから捨てる)
+const SEEN_TTL_MS = 60_000 // 同一 (providerId,id) 二重 emit を抑制する窓
+const RATE_WINDOW_MS = 10_000 // rate limit の窓
+const RATE_MAX = 30 // providerId あたり窓内の最大 emit 数
+
+let lastSeq = 0
+let buffer: OverlayEvent[] = []
+const seen = new Map<string, number>() // key=`<len>:<providerId>:<id>` -> emit ts (dedupe)
+const rate = new Map<string, number[]>() // providerId -> 直近 emit ts[] (rate limit)
+const waiters = new Set<() => void>() // long-poll 待機者の resolve
+
+function key(providerId: string, id: string): string {
+  return `${providerId.length}:${providerId}:${id}`
+}
+
+// TTL 切れイベントと古い seen/rate を掃除する。各イベントは自前の ttlMs を持つ。
+function prune(t: number): void {
+  buffer = buffer.filter((e) => t - e.ts < (e.ttlMs ?? DEFAULT_EVENT_TTL_MS))
+  if (buffer.length > BUFFER_MAX) buffer = buffer.slice(buffer.length - BUFFER_MAX)
+  for (const [k, at] of seen) if (t - at >= SEEN_TTL_MS) seen.delete(k)
+}
+
+export type EmitResult = { ok: true; seq: number } | { ok: false; reason: 'duplicate' | 'rate' }
+
+// 1 イベントを buffer に積む。重複 (同 providerId,id) と rate 超過は拒否する。
+export function emitEvent(input: EmitInput): EmitResult {
+  const t = Date.now()
+  prune(t)
+  const k = key(input.providerId, input.id)
+  if (seen.has(k)) return { ok: false, reason: 'duplicate' }
+  const stamps = (rate.get(input.providerId) ?? []).filter((s) => t - s < RATE_WINDOW_MS)
+  if (stamps.length >= RATE_MAX) {
+    rate.set(input.providerId, stamps)
+    return { ok: false, reason: 'rate' }
+  }
+  stamps.push(t)
+  rate.set(input.providerId, stamps)
+  seen.set(k, t)
+  const seq = ++lastSeq
+  const ev: OverlayEvent = { ...input, seq, ts: t }
+  buffer.push(ev)
+  prune(t)
+  for (const w of [...waiters]) w() // long-poll 待機者を起こす
+  waiters.clear()
+  return { ok: true, seq }
+}
+
+export type PollResult = { cursor: number; reset: boolean; events: OverlayEvent[] }
+
+// since 以降の未配送イベントと cursor/reset を計算する (待機なしの即時評価)。
+function snapshot(since: number): PollResult {
+  const t = Date.now()
+  prune(t)
+  // client が先行 (server 再起動で seq リセット等): 現在を全配送して reset。
+  if (since > lastSeq) return { cursor: lastSeq, reset: true, events: [...buffer] }
+  const pending = buffer.filter((e) => e.seq > since)
+  // since と buffer 最古の間に欠落 (TTL/容量で落ちた) があれば reset。
+  const oldest = buffer.length ? buffer[0].seq : lastSeq + 1
+  const reset = since > 0 && oldest > since + 1
+  return { cursor: lastSeq, reset, events: pending }
+}
+
+// long-poll: pending か reset があれば即返す。無ければ waitMs まで emit を待ち、起きて再評価して返す。
+// onClose(cb) が渡されれば client 切断時に cb を呼んでもらい、待機者リークを防ぐ。
+export async function pollEvents(
+  since: number,
+  waitMs: number,
+  onClose?: (cb: () => void) => void,
+): Promise<PollResult> {
+  const first = snapshot(since)
+  if (first.events.length || first.reset) return first
+  await new Promise<void>((resolve) => {
+    let done = false
+    const wake = (): void => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      waiters.delete(wake)
+      resolve()
+    }
+    const timer = setTimeout(wake, Math.max(0, waitMs))
+    waiters.add(wake)
+    onClose?.(wake)
+  })
+  return snapshot(since)
+}
+
+// テスト用: 全状態をリセットする。
+export function _resetForTest(): void {
+  lastSeq = 0
+  buffer = []
+  seen.clear()
+  rate.clear()
+  waiters.clear()
+}

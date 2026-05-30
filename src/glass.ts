@@ -9,8 +9,17 @@ import {
 } from '@evenrealities/even_hub_sdk'
 import { loadBatteryLog, recordBatteryLevel, setBatteryBridge } from './battery'
 import { clockShowsSeconds, localStatus } from './builtins'
-import { BUILTIN_SOURCE_ID, emptyConfig, loadConfig, syncSourceWithStatus } from './config'
+import {
+  BUILTIN_SOURCE_ID,
+  emptyConfig,
+  enabledSources,
+  loadConfig,
+  sourceUrls,
+  syncSourceWithStatus,
+} from './config'
+import { postDialogResult } from './data'
 import { getGlassBattery, setGlassBattery } from './device-state'
+import { startEvents, stopEvents } from './events'
 import { createOverlayManager, type Notif } from './glass-overlay'
 import {
   buildViews,
@@ -182,16 +191,42 @@ function scheduleOverlayWake(): void {
 type OverlayEvent =
   | ({ kind?: 'notification' } & Notif)
   | { kind: 'toast'; text: string; durationMs?: number }
-  | { kind: 'dialog'; title: string; message: string; actions?: string[] }
+  | {
+      kind: 'dialog'
+      title: string
+      message: string
+      actions?: string[]
+      requestId?: string // リモート dialog のみ: 応答相関 ID
+      replyUrl?: string // リモート dialog のみ: 応答 POST 先 (source の base URL)
+    }
   | { kind: 'banner'; text: string }
 function onOverlayEvent(e: Event): void {
   const d = (e as CustomEvent<OverlayEvent>).detail
   if (!d) return
   if (d.kind === 'toast') overlay.toast(d.text, { durationMs: d.durationMs })
-  else if (d.kind === 'dialog') overlay.dialog(d.title, d.message, d.actions ?? ['OK'])
-  else if (d.kind === 'banner') overlay.setBanner(d.text)
+  else if (d.kind === 'dialog') {
+    const actions = d.actions?.length ? d.actions : ['OK']
+    const { requestId, replyUrl } = d
+    // リモート dialog (requestId+replyUrl 付き) は選択を source へ返す。ローカル発火は onResult なし。
+    const onResult =
+      requestId && replyUrl
+        ? (index: number): void => {
+            void postDialogResult(replyUrl, requestId, index, actions[index] ?? '')
+          }
+        : undefined
+    overlay.dialog(d.title, d.message, actions, { onResult })
+  } else if (d.kind === 'banner') overlay.setBanner(d.text)
   else overlay.notify(d)
   refresh()
+}
+
+// config から server source の (id, urls) を抽出し、overlay イベント long-poll を張り直す。
+// events 側が capabilities.events を広告しない source は long-poll しない (jettison/電池対策)。
+function syncEventSources(): void {
+  const sources = enabledSources(data.config)
+    .filter((s) => s.kind === 'server')
+    .map((s) => ({ id: s.id, urls: sourceUrls(s) }))
+  startEvents(sources)
 }
 
 // 時刻 HUD を毎分更新する glass-local タイマー。er-clock 式: builtin status を直接再計算して
@@ -228,6 +263,7 @@ function cleanup(): void {
     glassClock = null
   }
   overlay.clear()
+  stopEvents() // overlay イベント long-poll を全停止
   if (overlayTimer) {
     clearTimeout(overlayTimer)
     overlayTimer = null
@@ -362,6 +398,7 @@ async function onConfigChanged(): Promise<void> {
   views = buildViews(data, visible)
   if (idx >= views.length) idx = 0
   await applyImuConfig() // IMU トグル/設定変更を反映
+  syncEventSources() // source 追加/削除/URL 変更を overlay イベントループへ反映
   refresh()
 }
 
@@ -399,6 +436,7 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
     window.addEventListener('toolbar:overlay', onOverlayEvent) // overlay トリガ (再利用可能)
     window.addEventListener('beforeunload', cleanup)
   }
+  syncEventSources() // server source の overlay イベント long-poll を開始
 
   await initDeviceBattery(bridge) // HUD のグラスバッテリー (builtin に反映)
   await applyImuConfig() // config.imu.enabled なら IMU 起動 (onEvent 登録後・前提コンテナ作成後)
