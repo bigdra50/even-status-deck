@@ -15,6 +15,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "server": "bun run server/index.ts",
+    "provider": "bun run server/index.ts provider",
     "sim": "evenhub-simulator http://localhost:5173",
     "pack": "npm run build && evenhub pack app.json dist -o eveng2-toolbar.ehpk",
     "upload": "node scripts/upload.mjs",

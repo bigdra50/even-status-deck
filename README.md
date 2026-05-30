@@ -134,7 +134,7 @@ export default {
 apiKey = "xxxx"
 ```
 
-実例: [`eveng2-claude-usage-provider`](https://github.com/bigdra50/eveng2-claude-usage-provider)（Claude の rate-limit % を返す drop-in プラグイン。非公式 API のため本体から切り出した opt-in の別 repo）。`providers/claude-limits.mjs` に置き `[providers.claude-limits]` を登録する。`group()` がハングしても `/api/status` を止めないよう、fetch には必ずタイムアウトを入れる。
+実例: [`eveng2-claude-usage-provider`](https://github.com/bigdra50/eveng2-claude-usage-provider)（Claude の rate-limit % を返す drop-in プラグイン。非公式 API のため本体から切り出した opt-in の別 repo）。`provider add-js <url> --accept-risk unofficial-api`（下記 CLI）で入れるか、手動なら `providers/claude-limits.mjs` に置き `[providers.claude-limits]` を登録する。`group()` がハングしても `/api/status` を止めないよう、fetch には必ずタイムアウトを入れる。
 
 ### サーバー側 config（有効/無効・オプション）
 
@@ -151,6 +151,39 @@ enabled = false        # codex を止める
 [providers.weather]    # (4) plugin にオプションを渡す
 enabled = true
 apiKey = "xxxx"        # group(ctx) で ctx.options.apiKey として受け取る
+```
+
+### provider CLI（管理）
+
+provider の一覧・有効化・インストール・更新・削除を CLI で行う。clone 実行なら `bun run provider <cmd>`（グローバル install 済みなら `eveng2-toolbar provider <cmd>`）。config / ledger を書き換えるだけなので、**実行中サーバーの次 poll（最大 3s）で反映、restart 不要**。
+
+| コマンド | 説明 |
+|---|---|
+| `list` | 全 provider を kind / status / managed / risk で一覧。`drift`（手動改変）や未登録ファイルも表示 |
+| `enable <id>` / `disable <id>` | 有効/無効を切り替え |
+| `add-js <https-url\|abs-path> [--accept-risk a,b] [--force]` | JS plugin をインストール（**コードを実行せず**静的検証 → sha256 → risk 承認 → atomic 配置 → 登録）|
+| `add-subprocess <id> <command> [--timeout ms] [--ttl ms] [--accept-risk a,b] [-- args...]` | subprocess provider を登録（command は bare/絶対パス）|
+| `update <id>` / `update --all` | managed provider を更新（sha 比較、新 risk のみ再承認）|
+| `remove <id> [--keep-file]` | 削除（config → file → ledger）|
+| `check-updates [<id>]` | 更新有無を確認（DL せず ETag / sha 比較）|
+
+risk のある provider（非公式 API 等）は `--accept-risk <tag>` で明示承認が要る。CLI 経由でインストールしたものは managed として ledger（`$XDG_STATE_HOME/eveng2-toolbar/provider-ledger.json`）に記録され、update / drift 検知の対象になる。
+
+```bash
+# 例: claude-limits プラグイン (rate-limit %、非公式 API) をインストール
+bun run provider add-js \
+  https://raw.githubusercontent.com/bigdra50/eveng2-claude-usage-provider/main/provider.mjs \
+  --accept-risk unofficial-api
+bun run provider list
+```
+
+#### 手動配置からの移行（gate）
+
+gate 導入後、`providers/` にファイルを置くだけでは動かない（未登録ファイルは import すらされない）。以前から手動配置していたものは登録する:
+
+```bash
+bun run provider list            # 未登録は "unregistered" として表示
+bun run provider enable <id>     # [providers.<id>] を登録して有効化 (ファイル名=id にしておく)
 ```
 
 ## プロトコル
@@ -176,6 +209,7 @@ companion は受信時に `parseStatusDoc()` で検証・サニタイズし、`v
 bun install
 bun run dev      # dev server (フロント + /api を同一オリジン配信)
 bun run server   # standalone サーバー (/api を 0.0.0.0:8723 で配信、起動時に LAN IP を表示)
+bun run provider # provider 管理 CLI (list / enable / add-js / ...)。例: bun run provider list
 bun run sim      # evenhub-simulator で動作確認
 bun run qr       # 接続先 URL の QR を表示 (スマホから dev-URL sideload)
 bun run build    # tsc && vite build
