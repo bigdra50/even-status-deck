@@ -17,6 +17,7 @@ import {
   sourceUrls,
   syncSourceWithStatus,
 } from './config'
+import { postDialogResult } from './data'
 import { getGlassBattery, setGlassBattery } from './device-state'
 import { startEvents, stopEvents } from './events'
 import { createOverlayManager, type Notif } from './glass-overlay'
@@ -190,14 +191,31 @@ function scheduleOverlayWake(): void {
 type OverlayEvent =
   | ({ kind?: 'notification' } & Notif)
   | { kind: 'toast'; text: string; durationMs?: number }
-  | { kind: 'dialog'; title: string; message: string; actions?: string[] }
+  | {
+      kind: 'dialog'
+      title: string
+      message: string
+      actions?: string[]
+      requestId?: string // リモート dialog のみ: 応答相関 ID
+      replyUrl?: string // リモート dialog のみ: 応答 POST 先 (source の base URL)
+    }
   | { kind: 'banner'; text: string }
 function onOverlayEvent(e: Event): void {
   const d = (e as CustomEvent<OverlayEvent>).detail
   if (!d) return
   if (d.kind === 'toast') overlay.toast(d.text, { durationMs: d.durationMs })
-  else if (d.kind === 'dialog') overlay.dialog(d.title, d.message, d.actions ?? ['OK'])
-  else if (d.kind === 'banner') overlay.setBanner(d.text)
+  else if (d.kind === 'dialog') {
+    const actions = d.actions?.length ? d.actions : ['OK']
+    const { requestId, replyUrl } = d
+    // リモート dialog (requestId+replyUrl 付き) は選択を source へ返す。ローカル発火は onResult なし。
+    const onResult =
+      requestId && replyUrl
+        ? (index: number): void => {
+            void postDialogResult(replyUrl, requestId, index, actions[index] ?? '')
+          }
+        : undefined
+    overlay.dialog(d.title, d.message, actions, { onResult })
+  } else if (d.kind === 'banner') overlay.setBanner(d.text)
   else overlay.notify(d)
   refresh()
 }

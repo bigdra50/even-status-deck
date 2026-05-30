@@ -23,15 +23,25 @@ const SEEN_MAX = 256
 const ERROR_BACKOFF_MS = 5_000
 const WAIT_MS = 25_000
 
-function dispatchOverlay(e: OverlayEvent): void {
+// wire event → glass の 'toolbar:overlay' detail (onOverlayEvent が受ける)。
+// dialog は応答を返す先 (replyUrl) と requestId を載せる。
+function dispatchOverlay(e: OverlayEvent, replyUrl: string): void {
   if (typeof window === 'undefined') return
-  // wire event → glass の 'toolbar:overlay' detail (onOverlayEvent が受ける)。
-  const detail =
-    e.kind === 'toast'
-      ? { kind: 'toast', text: e.text ?? '', durationMs: e.durationMs }
-      : e.kind === 'banner'
-        ? { kind: 'banner', text: e.text ?? '' }
-        : { kind: 'notification', app: e.app ?? '', sender: e.sender ?? '', body: e.body ?? '' }
+  let detail: unknown
+  if (e.kind === 'toast') detail = { kind: 'toast', text: e.text ?? '', durationMs: e.durationMs }
+  else if (e.kind === 'banner') detail = { kind: 'banner', text: e.text ?? '' }
+  else if (e.kind === 'dialog') {
+    detail = {
+      kind: 'dialog',
+      title: e.title ?? '',
+      message: e.message ?? '',
+      actions: e.actions ?? [],
+      requestId: e.requestId ?? '',
+      replyUrl,
+    }
+  } else {
+    detail = { kind: 'notification', app: e.app ?? '', sender: e.sender ?? '', body: e.body ?? '' }
+  }
   window.dispatchEvent(new CustomEvent('toolbar:overlay', { detail }))
 }
 
@@ -85,9 +95,18 @@ async function runLoop(loop: Loop): Promise<void> {
   if (!machine?.capabilities?.events) return
 
   while (!ctl.signal.aborted) {
-    const doc = await firstReachable(loop.urls, ctl.signal, (u) =>
-      fetchEventsFrom(u, loop.since, WAIT_MS, ctl.signal),
-    )
+    // 到達した url を replyUrl として捕捉する (dialog 応答の POST 先に使う)。
+    let doc = null
+    let replyUrl = loop.urls[0] ?? ''
+    for (const u of loop.urls) {
+      if (ctl.signal.aborted) return
+      const d = await fetchEventsFrom(u, loop.since, WAIT_MS, ctl.signal)
+      if (d) {
+        doc = d
+        replyUrl = u
+        break
+      }
+    }
     if (ctl.signal.aborted) return
     if (!doc) {
       await sleep(ERROR_BACKOFF_MS, ctl.signal) // 全経路失敗 → backoff して再試行
@@ -98,7 +117,7 @@ async function runLoop(loop: Loop): Promise<void> {
       const k = `${e.providerId.length}:${e.providerId}:${e.id}`
       if (loop.seen.has(k)) continue
       remember(loop.seen, k, e.ts)
-      dispatchOverlay(e)
+      dispatchOverlay(e, replyUrl)
     }
     loop.since = doc.cursor
   }
