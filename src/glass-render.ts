@@ -13,6 +13,7 @@ import {
   LABEL_SEG,
   type ViewGroup,
 } from './config'
+import type { GridLayout } from './glass-layout'
 import type { Group, StatusDoc } from './status-types'
 import { isVisible, segKey, type VisibleMap } from './visibility'
 
@@ -335,10 +336,12 @@ export function renderGlass(view: GView, d: GlassData, visible?: VisibleMap): st
 // --- 実験ページ (page2+) -------------------------------------------------------------
 // 実機検証用の差し替え可能なページ群。検証内容に応じて中身を変える。page1 (summary) には影響しない。
 // TODO(release): 公開前に EXPERIMENT_PAGES を空にする (または dev gate)。
-type ExperimentPage = { id: string; render: () => string }
+type ExperimentPage =
+  | { id: string; kind: 'text'; render: () => string }
+  | { id: string; kind: 'grid'; layout: GridLayout }
 
-// 全角 / grapheme 幅の実機検証ページ。formatSegmentValue / pad の表示幅 (EAW) 修正を視認する。
-// |...| の右端が ruler 行と縦に揃えば pad が効いている。CJK / 絵文字が描画できるかも確認できる。
+// page2 (text): 全角 / grapheme 幅の検証。formatSegmentValue / pad の表示幅 (EAW) 修正を視認する。
+// 単一 text container の space パディングなので、proportional フォントでは |...| は揃わない (実機確認済)。
 function renderCjkWidthTest(): string {
   const W = 10
   return [
@@ -357,10 +360,53 @@ function renderCjkWidthTest(): string {
     .join('\n')
 }
 
-const EXPERIMENT_PAGES: ExperimentPage[] = [{ id: 'cjk-width', render: renderCjkWidthTest }]
+// page3 (grid): 同じ値を「座標配置の text セル」で組む。値セルを col3(x=144) に枠付きで並べると、
+// 線形の space パディングと違い左端が px で厳密に揃う (compiler が座標配置)。page2 との対比用。
+const GRID_CJK: GridLayout = {
+  cells: [
+    { id: 'title', col: 0, row: 0, colSpan: 12, rowSpan: 2, content: 'grid PoC: 列が px で揃う' },
+    { id: 'l1', col: 0, row: 2, colSpan: 3, rowSpan: 2, content: 'ja' },
+    { id: 'v1', col: 3, row: 2, colSpan: 9, rowSpan: 2, content: '日本語', border: 1, padding: 2 },
+    { id: 'l2', col: 0, row: 4, colSpan: 3, rowSpan: 2, content: '全角' },
+    {
+      id: 'v2',
+      col: 3,
+      row: 4,
+      colSpan: 9,
+      rowSpan: 2,
+      content: '１２３ＡＢＣ',
+      border: 1,
+      padding: 2,
+    },
+    { id: 'l3', col: 0, row: 6, colSpan: 3, rowSpan: 2, content: '天気' },
+    {
+      id: 'v3',
+      col: 3,
+      row: 6,
+      colSpan: 9,
+      rowSpan: 2,
+      content: '☀ 21°C くもり',
+      border: 1,
+      padding: 2,
+    },
+  ],
+}
+
+const EXPERIMENT_PAGES: ExperimentPage[] = [
+  { id: 'cjk-width', kind: 'text', render: renderCjkWidthTest },
+  { id: 'grid-cjk', kind: 'grid', layout: GRID_CJK },
+]
+
+// grid 実験なら GridLayout、それ以外 (summary / GroupRef / text 実験) は null。glass.ts の描画分岐用。
+export function gridLayoutFor(view: GView): GridLayout | null {
+  if (typeof view !== 'object' || !('exp' in view)) return null
+  const p = EXPERIMENT_PAGES.find((e) => e.id === view.exp)
+  return p?.kind === 'grid' ? p.layout : null
+}
 
 function renderExperiment(id: string): string {
-  return EXPERIMENT_PAGES.find((p) => p.id === id)?.render() ?? '(experiment not found)'
+  const p = EXPERIMENT_PAGES.find((e) => e.id === id)
+  return p?.kind === 'text' ? p.render() : '(grid view)'
 }
 
 // 表示するビュー。page1 = summary (従来どおり: リグレッション防止のため不変)。
