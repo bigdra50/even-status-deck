@@ -177,6 +177,8 @@ export async function weatherStatus(signal: AbortSignal): Promise<StatusDoc | nu
   const now = Date.now()
   const cache = readCache()
   if (cache && now - cache.fetchedAt < FRESH_MS) return cache.doc // 新鮮: 何もしない
+  // 実機の devtools 無し環境で経路を追えるよう、デバッグコンソールへ進捗を出す(座標は出さない=PII)。
+  console.log('[weather] requesting location…')
   try {
     const pos = await getPosition()
     if (signal.aborted) return null
@@ -184,15 +186,18 @@ export async function weatherStatus(signal: AbortSignal): Promise<StatusDoc | nu
     const lon = round2(pos.lon)
     const w = await fetchOpenMeteo(lat, lon, signal)
     if (signal.aborted) return null
+    console.log(`[weather] ok ${Math.round(w.tempC)}C ${weatherCodeText(w.code)}`)
     const doc = buildWeatherDoc(w.tempC, w.code, w.windKmh, Date.now())
     writeCache({ lat, lon, fetchedAt: Date.now(), doc })
     return doc
   } catch (err) {
     if (signal.aborted) return null
+    const msg = err instanceof Error ? err.message : 'weather unavailable'
+    console.warn(`[weather] failed: ${msg}`)
     // 失敗: cache が stale 範囲内なら最後の値を stale 表示、無ければ error doc(source は残す)。
     if (cache && now - cache.fetchedAt < STALE_MAX_MS) {
       return withState(cache.doc, 'stale', 'using cached weather')
     }
-    return errorDoc(err instanceof Error ? err.message : 'weather unavailable', now)
+    return errorDoc(msg, now)
   }
 }
