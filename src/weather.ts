@@ -20,6 +20,7 @@ const FRESH_MS = 30 * 60_000 // この間は再取得しない(cache をその�
 const STALE_MAX_MS = 6 * 60 * 60_000 // 失敗時に cache を stale 表示してよい上限
 const GEO_TIMEOUT_MS = 10_000
 const GEO_MAX_AGE_MS = 30 * 60_000 // OS の位置キャッシュ許容(初回以外は許可ダイアログを出さない)
+const OPEN_METEO_TIMEOUT_MS = 8_000 // fetch がハングして weather が永遠に pending(灰色)になるのを防ぐ
 
 type Cache = { lat: number; lon: number; fetchedAt: number; doc: StatusDoc }
 
@@ -159,16 +160,43 @@ async function fetchOpenMeteo(
   lon: number,
   signal: AbortSignal,
 ): Promise<OpenMeteoCurrent> {
-  const res = await fetch(openMeteoUrl(lat, lon), { signal })
-  if (!res.ok) throw new Error(`open-meteo HTTP ${res.status}`)
-  const json = (await res.json()) as { current?: Record<string, unknown> }
-  const cur = json.current
-  if (!cur || typeof cur.temperature_2m !== 'number') throw new Error('open-meteo: no current data')
-  return {
-    tempC: cur.temperature_2m,
-    code: typeof cur.weather_code === 'number' ? cur.weather_code : -1,
-    windKmh: typeof cur.wind_speed_10m === 'number' ? cur.wind_speed_10m : 0,
+  // 外部 fetch がハングしたままだと weather が永遠に pending(灰色)になるため、timeout で abort する。
+  // store からの signal(source 変更時)も合流させ、どちらでも fetch を止める。
+  const ctl = new AbortController()
+  const onAbort = () => ctl.abort()
+  signal.addEventListener('abort', onAbort, { once: true })
+  const timer = setTimeout(() => ctl.abort(), OPEN_METEO_TIMEOUT_MS)
+  try {
+    const res = await fetch(openMeteoUrl(lat, lon), { signal: ctl.signal })
+    if (!res.ok) throw new Error(`open-meteo HTTP ${res.status}`)
+    const json = (await res.json()) as { current?: Record<string, unknown> }
+    const cur = json.current
+    if (!cur || typeof cur.temperature_2m !== 'number') {
+      throw new Error('open-meteo: no current data')
+    }
+    return {
+      tempC: cur.temperature_2m,
+      code: typeof cur.weather_code === 'number' ? cur.weather_code : -1,
+      windKmh: typeof cur.wind_speed_10m === 'number' ? cur.wind_speed_10m : 0,
+    }
+  } finally {
+    clearTimeout(timer)
+    signal.removeEventListener('abort', onAbort)
   }
+}
+
+// 失敗時の backoff。直近失敗から数分は geolocation/network/ログを繰り返さない (poll 毎の churn 防止)。
+// in-memory (reload で解除)。fresh cache の間は元々取得しないので、これは「失敗が続く環境」専用。
+const FAIL_BACKOFF_MS = 5 * 60_000
+let lastFailAt = 0
+let lastFailMsg = 'weather unavailable'
+
+// 失敗/backoff 時の degrade した StatusDoc。stale cache 範囲なら最後の値、無ければ error (source は残す)。
+function degraded(cache: Cache | null, now: number, msg: string): StatusDoc {
+  if (cache && now - cache.fetchedAt < STALE_MAX_MS) {
+    return withState(cache.doc, 'stale', 'using cached weather')
+  }
+  return errorDoc(msg, now)
 }
 
 // client source の producer。store.refreshSource(kind==='client') から poll ごとに呼ばれる。
@@ -177,6 +205,10 @@ export async function weatherStatus(signal: AbortSignal): Promise<StatusDoc | nu
   const now = Date.now()
   const cache = readCache()
   if (cache && now - cache.fetchedAt < FRESH_MS) return cache.doc // 新鮮: 何もしない
+  // 直近失敗の backoff 中は再取得もログもしない (poll 毎の geolocation/network/ログ churn を防ぐ)。
+  if (now - lastFailAt < FAIL_BACKOFF_MS) return degraded(cache, now, lastFailMsg)
+  // 実機の devtools 無し環境で経路を追えるよう、デバッグコンソールへ進捗を出す(座標は出さない=PII)。
+  console.log('[weather] requesting location…')
   try {
     const pos = await getPosition()
     if (signal.aborted) return null
@@ -184,15 +216,16 @@ export async function weatherStatus(signal: AbortSignal): Promise<StatusDoc | nu
     const lon = round2(pos.lon)
     const w = await fetchOpenMeteo(lat, lon, signal)
     if (signal.aborted) return null
+    lastFailAt = 0 // 成功で backoff 解除
+    console.log(`[weather] ok ${Math.round(w.tempC)}C ${weatherCodeText(w.code)}`)
     const doc = buildWeatherDoc(w.tempC, w.code, w.windKmh, Date.now())
     writeCache({ lat, lon, fetchedAt: Date.now(), doc })
     return doc
   } catch (err) {
     if (signal.aborted) return null
-    // 失敗: cache が stale 範囲内なら最後の値を stale 表示、無ければ error doc(source は残す)。
-    if (cache && now - cache.fetchedAt < STALE_MAX_MS) {
-      return withState(cache.doc, 'stale', 'using cached weather')
-    }
-    return errorDoc(err instanceof Error ? err.message : 'weather unavailable', now)
+    lastFailMsg = err instanceof Error ? err.message : 'weather unavailable'
+    lastFailAt = now // 以後 FAIL_BACKOFF_MS は再取得/ログを抑制
+    console.warn(`[weather] failed: ${lastFailMsg}`)
+    return degraded(cache, now, lastFailMsg)
   }
 }
