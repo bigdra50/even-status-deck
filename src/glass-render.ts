@@ -465,14 +465,11 @@ export const POPUP_DEMO_NOTIFS: PopupNotif[] = [
 
 // スタック (stack) と現在 index → overlay の GridLayout。
 // 上行 + 左ドット列 (現在=● / 他=·) + 中央通知カード + 下行。背後の中央 status は隠す近似。
+// 上行 + 中央通知カード + 下行 (grid)。左のスタックドットは text 列だと · の中心がずれるため、
+// glass.ts 側で px 位置の個別コンテナにして中心を揃える (ここには含めない)。
 export function buildPopupOverlay(stack: PopupNotif[], idx: number): GridLayout {
   const cur = Math.max(0, Math.min(idx, stack.length - 1))
   const n = stack[cur]
-  // 左ドット列。中抜き ◦/○ は firmware フォントに無く描画されないため、描ける塗り系で
-  // サイズ差をつける (現在=• / 他=·)。leading は • 基準で固定する (· を個別に右端揃えすると
-  // narrow な分だけ右へ寄りすぎるため)。左端を揃えると中心もほぼ揃い、ボックス左辺に寄る。
-  const dotLead = ' '.repeat(Math.max(0, Math.floor((48 - 6 - getTextWidth('•')) / SPACE_W)))
-  const dots = stack.map((_, i) => dotLead + (i === cur ? '•' : '·')).join('\n')
   // 1 行目 = タイトル (字下げなし)、2 行目以降 (sender + body) は 2 文字インデントする。
   const box = n
     ? [`${n.app} · Now`, ...`${n.sender}\n${n.body}`.split('\n').map((l) => `  ${l}`)].join('\n')
@@ -480,7 +477,6 @@ export function buildPopupOverlay(stack: PopupNotif[], idx: number): GridLayout 
   return {
     cells: [
       { id: 'top', col: 0, row: 0, colSpan: 12, rowSpan: 1, content: POPUP_TOP },
-      { id: 'dots', col: 0, row: 2, colSpan: 1, rowSpan: 6, content: dots },
       {
         id: 'box',
         col: 1,
@@ -495,6 +491,16 @@ export function buildPopupOverlay(stack: PopupNotif[], idx: number): GridLayout 
       { id: 'bottom', col: 0, row: 9, colSpan: 12, rowSpan: 1, content: POPUP_BOTTOM },
     ],
   }
+}
+
+// 各ドットの中心 x (box col1=x48 の左 x≈40)。glass.ts が glyph 幅の半分だけ左にずらして
+// xPosition を決め、· と • の「中心」を px で揃える (text 列の左/右寄りすぎを解消)。
+export const POPUP_DOT_CX = 40
+// 各ドットの yPosition (box y58,h172 内で縦中央寄せ)。
+export function popupDotYs(count: number): number[] {
+  const ROW_H = 28
+  const startY = Math.round(58 + (172 - count * ROW_H) / 2)
+  return Array.from({ length: count }, (_, i) => startY + i * ROW_H)
 }
 
 const EXPERIMENT_PAGES: ExperimentPage[] = [

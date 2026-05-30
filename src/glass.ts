@@ -7,6 +7,7 @@ import {
   TextContainerProperty,
   TextContainerUpgrade,
 } from '@evenrealities/even_hub_sdk'
+import { getTextWidth } from '@evenrealities/pretext'
 import { loadBatteryLog, recordBatteryLevel, setBatteryBridge } from './battery'
 import { clockShowsSeconds, localStatus } from './builtins'
 import { BUILTIN_SOURCE_ID, emptyConfig, loadConfig, syncSourceWithStatus } from './config'
@@ -24,8 +25,10 @@ import {
   gridLayoutFor,
   POPUP_BASE_TEXT,
   POPUP_DEMO_NOTIFS,
+  POPUP_DOT_CX,
   POPUP_MAX,
   type PopupNotif,
+  popupDotYs,
   renderGlass,
 } from './glass-render'
 import { feedImuSample, isImuStarted, setImuConfig, startImu, stopImu } from './imu'
@@ -94,9 +97,29 @@ function isPopupView(view: GView): boolean {
 // 非表示時は 10 行のトップページ (base) を単一コンテナで描く。
 function popupContainers(): TextContainerProperty[] {
   if (popupStack.length === 0) return [singleContainer(POPUP_BASE_TEXT)]
-  return compileGrid(buildPopupOverlay(popupStack, popupIdx)).map(
+  const grid = compileGrid(buildPopupOverlay(popupStack, popupIdx)).map(
     (c) => new TextContainerProperty(c),
   )
+  // スタックドットは px 位置で中心を揃える (text 列だと narrow な · が左右にずれるため)。
+  // 各ドットの中心を POPUP_DOT_CX に合わせ、glyph 幅の半分だけ左にずらして配置する。
+  const ys = popupDotYs(popupStack.length)
+  const dots = popupStack.map((_, i) => {
+    const g = i === popupIdx ? '•' : '·'
+    return new TextContainerProperty({
+      xPosition: Math.round(POPUP_DOT_CX - getTextWidth(g) / 2),
+      yPosition: ys[i] ?? 0,
+      width: 16,
+      height: 28,
+      borderWidth: 0,
+      borderColor: 0,
+      paddingLength: 0,
+      containerID: 90 + i,
+      containerName: `dot${i}`,
+      content: g,
+      isEventCapture: 0,
+    })
+  })
+  return [...grid, ...dots]
 }
 
 // view → グラスのコンテナ集合。popup → popupContainers、grid 実験 → compiler、
