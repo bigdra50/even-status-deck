@@ -179,8 +179,13 @@ StatusDoc 形で表現し、server ソースと完全に同等に扱う (設定�
   (公開プロトコルで 3rd party ソースを受け入れるため)。ソースは markup を埋め込まない。
   ※ グラス描画はプレーンテキスト (LVGL container) なので XSS 経路にならないが、companion の
   プレビュー UI は DOM なので escape 必須。
-- loopback / LAN 利用のみ。CORS ヘッダは不要 (EvenApp WebView は実測でランタイム CORS 強制をしておらず、
-  store インストール版アプリ + ユーザー起動サーバーの LAN 直結も動作確認済み)。付けても害はないが必須ではない。
+- loopback / LAN 利用のみ。**GET (simple request)** は CORS 不要 (EvenApp WebView は GET ではランタイム
+  CORS 強制をせず、store 版アプリ + ユーザー起動サーバーの LAN 直結も動作確認済み)。応答に
+  `Access-Control-Allow-Origin: *` は付けてある。
+- ただし **非 simple な cross-origin POST (例 §11 `/api/action`)** は WebView が **CORS preflight(OPTIONS)** を
+  投げる。対策は2系統で両方入れている: (1) server が OPTIONS を 204 + CORS ヘッダで返す、(2) client は
+  POST の `Content-Type` を `text/plain` にして simple request 化する (server は content-type を見ず
+  body を JSON.parse する)。preflight 未対応だと glass からの応答 POST が握り潰される (実機で確認した罠)。
 
 ## 8. 実装例
 

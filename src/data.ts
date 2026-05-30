@@ -120,9 +120,12 @@ export const postDialogResult = async (
   const ctl = new AbortController()
   const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS)
   try {
+    // Content-Type を text/plain にして CORS preflight(OPTIONS) を回避する。glass は別オリジン
+    // (アプリ → LAN サーバー) なので application/json だと preflight が走る。body は JSON 文字列の
+    // ままで、server は content-type を見ず JSON.parse する。simple request にして確実に届かせる。
     const res = await fetch(`${clean}/api/action`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
       body: JSON.stringify({ type: 'dialog.result', requestId, index, action }),
       signal: ctl.signal,
     })
