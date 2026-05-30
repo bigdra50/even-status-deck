@@ -24,21 +24,6 @@ const EVENTS_WAIT_MAX_MS = 30_000
 const EVENTS_WAIT_DEFAULT_MS = 25_000
 const EMIT_BODY_MAX_BYTES = 8 * 1024 // emit body の上限 (巨大 POST を弾く)
 
-// 一時診断 (TODO remove): glass からの応答 POST が届くかを観測する。非 GET (OPTIONS/POST) の到達を
-// 直近 30 件記録し、loopback の GET /api/_debug/inbound で読み出す。CORS preflight か否かの切り分け用。
-type InboundLog = { t: number; method: string; path: string; remote: string; note?: string }
-const recentInbound: InboundLog[] = []
-function logInbound(req: IncomingMessage, path: string, note?: string): void {
-  recentInbound.push({
-    t: Date.now(),
-    method: req.method ?? '',
-    path,
-    remote: req.socket.remoteAddress ?? '',
-    note,
-  })
-  if (recentInbound.length > 30) recentInbound.shift()
-}
-
 function sendJson(res: ServerResponse, code: number, body: unknown): void {
   res.writeHead(code, JSON_HEADERS)
   res.end(JSON.stringify(body))
@@ -144,12 +129,10 @@ async function handleAction(req: IncomingMessage, res: ServerResponse): Promise<
   }
   const input = parseDialogResult(parsed)
   if (!input) {
-    logInbound(req, '/api/action', 'invalid result') // 診断
     sendJson(res, 400, { ok: false, error: 'invalid result' })
     return
   }
   const r = completeDialogRequest(input.requestId, input.index, input.action)
-  logInbound(req, '/api/action', r.ok ? `completed index=${input.index}` : `reject:${r.reason}`) // 診断
   if (!r.ok) {
     sendJson(res, 200, { ok: false, reason: r.reason })
     return
@@ -203,16 +186,6 @@ export function startServer(_cfg: ServerConfig, port: number): void {
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const pathname = url.pathname
-    if (req.method !== 'GET') logInbound(req, pathname) // 診断: 非 GET の到達を記録
-    // 診断: 直近の非 GET 到達を読み出す (loopback)。
-    if (pathname === '/api/_debug/inbound') {
-      if (!isLoopback(req)) {
-        sendJson(res, 403, { ok: false })
-        return
-      }
-      sendJson(res, 200, { ok: true, recent: recentInbound })
-      return
-    }
     // CORS preflight。glass は別オリジンから JSON POST(/api/action) しうるため OPTIONS を許可する。
     // (client は text/plain で simple request 化もしているが、念のため preflight も通す)。
     if (req.method === 'OPTIONS') {
