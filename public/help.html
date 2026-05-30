@@ -127,7 +127,8 @@
   <body>
     <h1>Set up a local server</h1>
     <p class="lead">
-      This app reads Claude Code / Codex usage from a local server on your Mac or PC.
+      Time, date, and glasses battery work without a server. A local server is optional —
+      it adds your Mac/PC system info and Claude Code / Codex usage.
       Auth tokens stay on that machine — only usage (%) and reset times are sent to the glasses.
     </p>
 
@@ -159,6 +160,20 @@
       </p>
       <p style="margin-bottom: 0">
         Updates only while the server is running. It stops when the machine sleeps.
+      </p>
+    </div>
+
+    <h2>Troubleshooting</h2>
+    <div class="note">
+      <p>
+        <strong>Glasses go blank after a few minutes in the foreground.</strong>
+        Known issue caused by the iOS WebView being reclaimed by the system.
+        Reopen this companion to recover.
+      </p>
+      <p style="margin-bottom: 0">
+        <strong>Forwarding Mac notifications?</strong>
+        The watcher needs Full Disk Access (System Settings &gt; Privacy &amp; Security &gt;
+        Full Disk Access).
       </p>
     </div>
   </body>
