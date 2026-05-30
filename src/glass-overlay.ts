@@ -254,6 +254,10 @@ export function createOverlayManager() {
         toasts.shift()
         return true
       }
+      if (banner !== null) {
+        banner = null // banner も tap で消せる
+        return true
+      }
       return false
     },
 

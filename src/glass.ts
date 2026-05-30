@@ -59,6 +59,20 @@ let glassClock: ReturnType<typeof setTimeout> | null = null // 分境界の時�
 let overlayTimer: ReturnType<typeof setTimeout> | null = null // toast の自動消去タイマー
 const overlay = createOverlayManager() // notification / toast / dialog / banner (再利用可能)
 
+// DEBUG(動作確認用): summary でタップすると overlay を 1 種ずつ順に表示する。TODO(release): 削除。
+let overlayDemoIdx = 0
+const OVERLAY_DEMO: (() => void)[] = [
+  () => {
+    overlay.notify({ app: 'WhatsApp', sender: 'Elizabeth', body: '玉ねぎとピーマン買ってきて' })
+    overlay.notify({ app: 'Slack', sender: '#general', body: 'デプロイ完了 🎉' })
+    overlay.notify({ app: 'Mail', sender: 'GitHub', body: 'PR がマージされました' })
+  },
+  () => overlay.toast('保存しました'),
+  () => overlay.toast('削除しました', { action: '取消' }),
+  () => overlay.dialog('確認', 'この通知を削除しますか？', ['OK', 'キャンセル']),
+  () => overlay.setBanner('オフライン中'),
+]
+
 // 全面 1 text container (page1 / linear)。従来の単一コンテナと同一。
 function singleContainer(content: string): TextContainerProperty {
   return new TextContainerProperty({
@@ -315,7 +329,12 @@ function onEvent(event: EvenHubEvent): void {
     if (et === OsEventTypeList.DOUBLE_CLICK_EVENT) {
       void gbridge?.shutDownPageContainer(1)
     } else if (overlay.handleTap()) {
-      // overlay が tap を消費 (dialog 確定 / 通知既読→次 / toast dismiss)。
+      // overlay が tap を消費 (dialog 確定 / 通知既読→次 / toast dismiss / banner 消去)。
+      refresh()
+    } else if (idx === 0) {
+      // DEBUG: summary でのタップは次の overlay デモを表示 (動作確認用)。TODO(release): 削除。
+      OVERLAY_DEMO[overlayDemoIdx % OVERLAY_DEMO.length]?.()
+      overlayDemoIdx++
       refresh()
     } else {
       idx = 0
