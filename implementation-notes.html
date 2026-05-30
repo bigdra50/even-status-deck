@@ -31,8 +31,16 @@
         provider/watcher → server → glass で通知/トースト/バナーを push する。代表例 = Mac 通知転送。
       </p>
       <p class="text-xs text-slate-500 mt-1">最終更新: 2026-05-30 ・ ステータス:
-        <span class="badge decided">forward + dialog 往復 実装完了</span>
-        <span class="badge decided">実機: notification/toast/banner 確認済</span> ・ gpt-5.5 と設計確定
+        <span class="badge decided">forward + dialog 往復 実機確認済</span>
+        <span class="badge decided">notification/toast/banner + dialog はい/いいえ往復 OK</span> ・ gpt-5.5 と設計確定
+      </p>
+      <p class="text-xs mt-2 p-2 rounded" style="background:#3a1420;border:1px solid #b53a5b;">
+        <b style="color:#f29faf;">実機で判明した罠 (修正済 0.1.74):</b>
+        glass は別オリジンから <code>application/json</code> で <code>POST /api/action</code> するため
+        WKWebView が <b>CORS preflight(OPTIONS)</b> を投げる。server が OPTIONS 未対応(404)だと本 POST が
+        握り潰され dialog 応答が返らない (GET=simple は preflight 無しなので forward は動き症状が分かりにくい)。
+        → client を <code>text/plain</code> で simple request 化 + server で OPTIONS 対応。一時診断
+        <code>/api/_debug/inbound</code> で glass(LAN IP) の POST 到達→completed を観測し確証 (診断は撤去済)。
       </p>
     </header>
 
