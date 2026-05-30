@@ -265,3 +265,70 @@ glass 入力（click / scroll / double-click / IMU はすでに `onEvenHubEvent`
 
 未確定な理由: gesture mapping UI も実 action UX も未着手で、request 形・params・sync/async・gesture binding を
 今 normative に固定すると推測を外したまま stable v1 を縛るため。実装が出てから §2 へ昇格する。
+
+## 11. overlay イベント（source → client、transient）
+
+source が client へ **一過性の overlay**（通知 / トースト / バナー）を push する経路。
+§2-3 の `StatusDoc`（永続状態）とは別軸: イベントは **fire-once** で、再取得しても再表示しない（client が dedupe）。
+代表ユースケース = Mac ネイティブ通知をグラスへ転送する。**v1 互換の追加**（別 path・既存 `StatusDoc` を変えない）。
+client は `GET /api/machine` の `capabilities.events === true` を見て対応 source だけ long-poll する。
+
+```
+provider/watcher → POST /api/emit (loopback) → server buffer → GET /api/events (long-poll) → client overlay
+```
+
+dialog（modal・往復 `onResult`）は含めない。往復が要るので §10 の `POST /api/action` 方向で扱う。
+
+### `GET /api/events?since=<seq>&waitMs=<ms>`（long-poll）
+
+`since` 以降のイベントを返す。pending か `reset` があれば即返し、無ければ `waitMs`（既定 25000・上限 30000）まで保留して空で返る。
+client は応答後すぐ次の long-poll を張る。idle churn は ~`waitMs` に 1 回、イベント時の latency ≈ RTT。
+
+```jsonc
+{
+  "version": 1,
+  "sourceId": "macbook",          // 任意。machineId
+  "cursor": 130,                  // 次回 since に渡す (= 最大 seq)
+  "reset": false,                 // true = since が古すぎ/server 再起動。client は連続性を仮定しない
+  "events": [
+    {
+      "seq": 124,                 // source-local 単調増加
+      "ts": 1779800000000,
+      "providerId": "mac-notifications",
+      "id": "mac:42",             // (providerId,id) で dedupe
+      "kind": "notification",     // "notification" | "toast" | "banner"
+      "app": "Slack", "sender": "#general", "body": "デプロイ完了 🎉",
+      "ttlMs": 20000
+    }
+  ]
+}
+```
+
+- client は `(providerId, id)` で重複排除し、`cursor` を次の `since` にする。`reset:true` は連続性破棄の合図。
+- イベントは server で `ttlMs`（既定 15000）保持。失効分は配送されない（古い通知を蒸し返さない）。
+
+### `POST /api/emit`（loopback 限定）
+
+イベントを投入する。**`127.0.0.1` / `::1` からのみ受理**（同一ホストの watcher に限定し通知偽装を防ぐ）。LAN からは 403。
+
+```jsonc
+// 入力 (seq/ts は server が付与)
+{ "providerId": "mac-notifications", "id": "mac:42", "kind": "notification",
+  "app": "Slack", "sender": "#general", "body": "...", "ttlMs": 20000 }
+// 応答
+{ "ok": true, "seq": 124 }                  // 受理
+{ "ok": false, "reason": "duplicate" }       // 同 (providerId,id) 既出 (再送不要)
+{ "ok": false, "reason": "rate" }            // providerId 単位の rate 超過
+```
+
+| kind | 必須フィールド | client overlay |
+|---|---|---|
+| `notification` | `app`/`sender`/`body` のいずれか | 中央カード |
+| `toast` | `text` | 下端 1 行・`durationMs` で自動消去 |
+| `banner` | `text` | 上 1 行常駐 |
+
+### バリデーション / セキュリティ
+
+- 入力は untrusted として検証・サニタイズ（`src/event-types.ts` の `parseEmitInput`）。文字列長 clip・`durationMs`/`ttlMs` clamp・kind allowlist・空通知破棄。body 上限超過は POST を弾く。
+- `value`/`label` 同様、`app`/`sender`/`body`/`text` も untrusted。glass はプレーンテキストで XSS 経路にならないが、companion の DOM プレビューは escape する。token は §7 どおり source 内に留め、表示文字列だけ載せる。
+- 洪水対策: `providerId` 単位 rate limit + server リングバッファ + `ttlMs`。emit は loopback 限定なので脅威は同一ホストのプロセスに限られる。
