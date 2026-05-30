@@ -14,7 +14,7 @@ type Loop = {
   ctl: AbortController
   urls: string[]
   since: number
-  seen: Map<string, number> // "providerId\0id" -> ts (dedupe, 挿入順で古いものから落とす)
+  seen: Map<string, number> // key=`<len>:<providerId>:<id>` -> ts (dedupe, 挿入順で古いものから落とす)
 }
 
 const loops = new Map<string, Loop>()
@@ -95,7 +95,7 @@ async function runLoop(loop: Loop): Promise<void> {
     }
     if (doc.reset) loop.seen.clear() // 連続性を捨てて cursor を採用
     for (const e of doc.events) {
-      const k = `${e.providerId} ${e.id}`
+      const k = `${e.providerId.length}:${e.providerId}:${e.id}`
       if (loop.seen.has(k)) continue
       remember(loop.seen, k, e.ts)
       dispatchOverlay(e)
