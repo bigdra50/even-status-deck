@@ -7,7 +7,8 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { networkInterfaces } from 'node:os'
-import { parseEmitInput } from '../src/event-types.ts'
+import { parseDialogResult, parseEmitInput } from '../src/event-types.ts'
+import { completeDialogRequest, createDialogRequest, pollDialogResult } from './actions.ts'
 import { loadServerConfig } from './config.ts'
 import { emitEvent, pollEvents } from './events.ts'
 import { machineInfo } from './machine.ts'
@@ -95,13 +96,75 @@ async function handleEmit(req: IncomingMessage, res: ServerResponse): Promise<vo
     sendJson(res, 400, { ok: false, error: 'invalid event' })
     return
   }
+  // dialog は server が requestId を払い出し、event に載せて配送する (応答相関用)。
+  let requestId: string | undefined
+  if (input.kind === 'dialog') {
+    requestId = createDialogRequest(input.providerId, input.actions ?? [], input.ttlMs)
+    input.requestId = requestId
+  }
   const r = emitEvent(input)
   if (!r.ok) {
     // duplicate / rate は 200 (ok:false) で返す。watcher 側は再送しなくてよい。
+    // (dialog の orphan request は TTL/GC で片付く)
     sendJson(res, 200, { ok: false, reason: r.reason })
     return
   }
-  sendJson(res, 200, { ok: true, seq: r.seq })
+  sendJson(res, 200, requestId ? { ok: true, seq: r.seq, requestId } : { ok: true, seq: r.seq })
+}
+
+// POST /api/action : dialog の選択結果を受ける (client → server、LAN 受理)。
+// 正当性は requestId(unguessable) + index/action 検証 + 単一受理で守る。
+async function handleAction(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const raw = await readBody(req, EMIT_BODY_MAX_BYTES)
+  if (raw == null) {
+    sendJson(res, 413, { ok: false, error: 'body too large' })
+    return
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    sendJson(res, 400, { ok: false, error: 'invalid json' })
+    return
+  }
+  const input = parseDialogResult(parsed)
+  if (!input) {
+    sendJson(res, 400, { ok: false, error: 'invalid result' })
+    return
+  }
+  const r = completeDialogRequest(input.requestId, input.index, input.action)
+  if (!r.ok) {
+    sendJson(res, 200, { ok: false, reason: r.reason })
+    return
+  }
+  sendJson(res, 200, { ok: true })
+}
+
+// GET /api/action-result?requestId=&waitMs= : 質問した watcher が結果を long-poll する (loopback 限定)。
+async function handleActionResult(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+): Promise<void> {
+  if (!isLoopback(req)) {
+    sendJson(res, 403, { ok: false, error: 'loopback only' })
+    return
+  }
+  const requestId = url.searchParams.get('requestId') ?? ''
+  if (!requestId) {
+    sendJson(res, 400, { ok: false, error: 'requestId required' })
+    return
+  }
+  const waitMs = Math.max(
+    0,
+    Math.min(parseIntParam(url.searchParams.get('waitMs'), EVENTS_WAIT_DEFAULT_MS), EVENTS_WAIT_MAX_MS),
+  )
+  const result = await pollDialogResult(requestId, waitMs)
+  if (!result) {
+    sendJson(res, 404, { ok: false, error: 'unknown requestId' })
+    return
+  }
+  sendJson(res, 200, { ok: true, requestId, ...result })
 }
 
 // OD-3: 起動時に LAN IP を console.log するだけ (QR / qrcode-terminal は入れない)。
@@ -138,6 +201,14 @@ export function startServer(_cfg: ServerConfig, port: number): void {
       }
       if (pathname === '/api/emit' && req.method === 'POST') {
         await handleEmit(req, res)
+        return
+      }
+      if (pathname === '/api/action' && req.method === 'POST') {
+        await handleAction(req, res)
+        return
+      }
+      if (pathname === '/api/action-result') {
+        await handleActionResult(req, res, url)
         return
       }
     } catch (e) {

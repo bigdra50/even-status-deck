@@ -7,7 +7,7 @@
 //
 // dialog は往復 (onResult) が要るためリモートイベントには含めない (PROTOCOL §10 reserved の /api/action 方向)。
 
-export type OverlayEventKind = 'notification' | 'toast' | 'banner'
+export type OverlayEventKind = 'notification' | 'toast' | 'banner' | 'dialog'
 
 // emit 入力。provider/watcher が POST /api/emit に投げる形。seq/ts は server が付与する。
 export type EmitInput = {
@@ -24,13 +24,21 @@ export type EmitInput = {
   body?: string
   /** toast / banner: 表示文字列。 */
   text?: string
+  /** dialog: タイトル。 */
+  title?: string
+  /** dialog: 本文。 */
+  message?: string
+  /** dialog: 選択肢ラベル (例 ["はい","いいえ"])。結果は index/label で返る。 */
+  actions?: string[]
   /** toast: 自動消去までの ms。 */
   durationMs?: number
   /** server buffer の保持・client 配送猶予 (ms)。 */
   ttlMs?: number
+  /** dialog のみ: server が払い出す相関 ID (client は応答時に /api/action へ返す)。emit 入力では無視。 */
+  requestId?: string
 }
 
-// server が seq (source-local 単調増加) と ts を付与した配送形。
+// server が seq (source-local 単調増加) と ts を付与した配送形。dialog は requestId 付き。
 export type OverlayEvent = EmitInput & { seq: number; ts: number }
 
 // GET /api/events のレスポンス。
@@ -49,10 +57,14 @@ const MAX_PROVIDER_ID_LEN = 64
 const MAX_EVENT_ID_LEN = 128
 const MAX_APP_LEN = 48
 const MAX_SENDER_LEN = 64
-const MAX_TEXT_LEN = 256 // body / text。glass は 576px・プレーンテキストなので十分すぎる上限
+const MAX_TEXT_LEN = 256 // body / text / message。glass は 576px・プレーンテキストなので十分すぎる上限
+const MAX_TITLE_LEN = 48 // dialog タイトル (1 行)
+const MAX_ACTIONS = 4 // dialog 選択肢数 (リング scroll で選べる範囲)
+const MAX_ACTION_LEN = 24 // 選択肢ラベル
+const MAX_REQUEST_ID_LEN = 64
 const MAX_EVENTS_PER_DOC = 64
 
-const KINDS: ReadonlySet<string> = new Set(['notification', 'toast', 'banner'])
+const KINDS: ReadonlySet<string> = new Set(['notification', 'toast', 'banner', 'dialog'])
 
 // 既定/上限 (ms)。
 export const DEFAULT_EVENT_TTL_MS = 15_000
@@ -89,6 +101,19 @@ export function parseEmitInput(x: unknown): EmitInput | null {
     if (app) out.app = app
     if (sender) out.sender = sender
     if (body) out.body = body
+  } else if (kind === 'dialog') {
+    const title = typeof d.title === 'string' ? clip(d.title, MAX_TITLE_LEN) : ''
+    const message = typeof d.message === 'string' ? clip(d.message, MAX_TEXT_LEN) : ''
+    const actions = Array.isArray(d.actions)
+      ? d.actions
+          .filter((a): a is string => typeof a === 'string' && a.trim().length > 0)
+          .slice(0, MAX_ACTIONS)
+          .map((a) => clip(a, MAX_ACTION_LEN))
+      : []
+    if ((!title && !message) || actions.length < 1) return null // 質問文 or 選択肢が無ければ破棄
+    if (title) out.title = title
+    if (message) out.message = message
+    out.actions = actions
   } else {
     // toast / banner
     if (typeof d.text !== 'string' || !d.text.trim()) return null
@@ -109,7 +134,36 @@ function parseOverlayEvent(x: unknown): OverlayEvent | null {
   const d = x as Record<string, unknown>
   if (typeof d.seq !== 'number' || !Number.isFinite(d.seq)) return null
   const ts = typeof d.ts === 'number' && Number.isFinite(d.ts) ? d.ts : Date.now()
-  return { ...base, seq: d.seq, ts }
+  const out: OverlayEvent = { ...base, seq: d.seq, ts }
+  if (typeof d.requestId === 'string' && d.requestId) {
+    out.requestId = clip(d.requestId, MAX_REQUEST_ID_LEN)
+  }
+  // dialog は応答に requestId が要る。無ければ返答不能なので破棄。
+  if (out.kind === 'dialog' && !out.requestId) return null
+  return out
+}
+
+// POST /api/action の入力 (dialog 応答)。client → server(LAN)。server が untrusted 前提で検証する。
+export type DialogResultInput = {
+  type: 'dialog.result'
+  requestId: string
+  index: number
+  action?: string
+}
+
+export function parseDialogResult(x: unknown): DialogResultInput | null {
+  if (!x || typeof x !== 'object') return null
+  const d = x as Record<string, unknown>
+  if (d.type !== 'dialog.result') return null
+  if (typeof d.requestId !== 'string' || !d.requestId.trim()) return null
+  if (typeof d.index !== 'number' || !Number.isInteger(d.index) || d.index < 0) return null
+  const out: DialogResultInput = {
+    type: 'dialog.result',
+    requestId: clip(d.requestId.trim(), MAX_REQUEST_ID_LEN),
+    index: d.index,
+  }
+  if (typeof d.action === 'string') out.action = clip(d.action, MAX_ACTION_LEN)
+  return out
 }
 
 // GET /api/events のレスポンスを検証・サニタイズする (client が untrusted な server 応答に使う)。

@@ -10,8 +10,8 @@ export type MachineInfo = {
   machineId: string
   label: string
   availableSources: string[]
-  /** 機能発見 (PROTOCOL §10)。events=true なら /api/events long-poll を話せる。 */
-  capabilities?: { events?: boolean }
+  /** 機能発見 (PROTOCOL §10/§11)。events=/api/events long-poll、dialogResults=/api/action dialog 応答。 */
+  capabilities?: { events?: boolean; dialogResults?: boolean }
 }
 
 const MAX_MACHINE_ID_LEN = 128
@@ -57,8 +57,11 @@ export function parseMachineInfo(x: unknown): MachineInfo | null {
     : []
   const out: MachineInfo = { machineId, label, availableSources }
   const caps = d.capabilities
-  if (caps && typeof caps === 'object' && (caps as { events?: unknown }).events === true) {
-    out.capabilities = { events: true }
+  if (caps && typeof caps === 'object') {
+    const c = caps as { events?: unknown; dialogResults?: unknown }
+    const events = c.events === true
+    const dialogResults = c.dialogResults === true
+    if (events || dialogResults) out.capabilities = { events, dialogResults }
   }
   return out
 }
@@ -100,6 +103,32 @@ export const fetchEventsFrom = async (
     return parseEventsDoc(await res.json())
   } catch {
     return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// dialog の選択結果を source へ返す (PROTOCOL §11)。client → POST /api/action。
+// 失敗(HTTP/abort/解析)は false。fire-and-forget 寄りだが、成否は呼び出し側が必要なら使う。
+export const postDialogResult = async (
+  url: string,
+  requestId: string,
+  index: number,
+  action: string,
+): Promise<boolean> => {
+  const clean = url.replace(/\/+$/, '')
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS)
+  try {
+    const res = await fetch(`${clean}/api/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'dialog.result', requestId, index, action }),
+      signal: ctl.signal,
+    })
+    return res.ok
+  } catch {
+    return false
   } finally {
     clearTimeout(timer)
   }

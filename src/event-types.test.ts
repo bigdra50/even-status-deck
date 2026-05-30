@@ -1,7 +1,12 @@
 // event-types の検証/サニタイズ (parseEmitInput / parseEventsDoc)。
 // 実行: bun test src/event-types.test.ts
 import { expect, test } from 'bun:test'
-import { DEFAULT_EVENT_TTL_MS, parseEmitInput, parseEventsDoc } from './event-types'
+import {
+  DEFAULT_EVENT_TTL_MS,
+  parseDialogResult,
+  parseEmitInput,
+  parseEventsDoc,
+} from './event-types'
 
 test('notification: 最低1フィールドあれば通る・ttl 既定が入る', () => {
   const r = parseEmitInput({ providerId: 'p', id: '1', kind: 'notification', body: 'hi' })
@@ -60,4 +65,48 @@ test('parseEventsDoc: 不正イベントを除外し seq 付きを通す', () =>
 test('parseEventsDoc: version/cursor が数値でなければ null', () => {
   expect(parseEventsDoc({ cursor: 1, events: [] })).toBeNull()
   expect(parseEventsDoc({ version: 1, events: [] })).toBeNull()
+})
+
+test('dialog: title/message + actions があれば通る', () => {
+  const r = parseEmitInput({
+    providerId: 'p',
+    id: 'd1',
+    kind: 'dialog',
+    message: '本番にデプロイ?',
+    actions: ['はい', 'いいえ'],
+  })
+  expect(r?.kind).toBe('dialog')
+  expect(r?.actions).toEqual(['はい', 'いいえ'])
+})
+
+test('dialog: 選択肢が無ければ破棄', () => {
+  expect(
+    parseEmitInput({ providerId: 'p', id: 'd1', kind: 'dialog', message: 'x', actions: [] }),
+  ).toBeNull()
+})
+
+test('dialog: 受信側は requestId 必須 (無ければ破棄)', () => {
+  const base = {
+    seq: 1,
+    ts: 1,
+    providerId: 'p',
+    id: 'd1',
+    kind: 'dialog',
+    message: 'x',
+    actions: ['はい', 'いいえ'],
+  }
+  // requestId 無し → events から除外される
+  expect(parseEventsDoc({ version: 1, cursor: 1, events: [base] })?.events).toEqual([])
+  // requestId あり → 通る
+  const ok = parseEventsDoc({ version: 1, cursor: 1, events: [{ ...base, requestId: 'act_x' }] })
+  expect(ok?.events[0]?.requestId).toBe('act_x')
+})
+
+test('parseDialogResult: 正常 / 不正', () => {
+  expect(
+    parseDialogResult({ type: 'dialog.result', requestId: 'act_x', index: 1, action: 'いいえ' }),
+  ).toMatchObject({ requestId: 'act_x', index: 1, action: 'いいえ' })
+  expect(parseDialogResult({ type: 'other', requestId: 'act_x', index: 0 })).toBeNull()
+  expect(parseDialogResult({ type: 'dialog.result', requestId: 'act_x', index: -1 })).toBeNull()
+  expect(parseDialogResult({ type: 'dialog.result', index: 0 })).toBeNull()
 })

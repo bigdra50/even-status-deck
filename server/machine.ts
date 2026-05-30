@@ -12,12 +12,13 @@ let machineCache: { data: MachineInfo; at: number } | null = null
 const MACHINE_TTL_MS = 60_000
 
 // /api/machine のレスポンス形。companion が source 候補の machineId / 利用可能ソースを把握する。
-// capabilities は機能発見用 (PROTOCOL §10)。events=true は /api/events long-poll を話せること。
+// capabilities は機能発見用 (PROTOCOL §10/§11)。events=/api/events long-poll、
+// dialogResults=/api/action で dialog 応答を受けられること。
 export type MachineInfo = {
   machineId: string
   label: string
   availableSources: string[]
-  capabilities?: { events?: boolean }
+  capabilities?: { events?: boolean; dialogResults?: boolean }
 }
 
 // `<cmd> --version` を実行できるかでツールの有無を判定する。
@@ -49,7 +50,7 @@ export async function machineInfo(): Promise<MachineInfo> {
     machineId,
     label: host,
     availableSources: available,
-    capabilities: { events: true }, // この server は /api/events long-poll を提供する
+    capabilities: { events: true, dialogResults: true }, // /api/events + /api/action(dialog 応答)
   }
   machineCache = { data, at: Date.now() }
   return data
