@@ -155,7 +155,14 @@ apiKey = "xxxx"        # group(ctx) で ctx.options.apiKey として受け取る
 
 ### provider CLI（管理）
 
-provider の一覧・有効化・インストール・更新・削除を CLI で行う。clone 実行なら `bun run provider <cmd>`（グローバル install 済みなら `eveng2-toolbar provider <cmd>`）。config / ledger を書き換えるだけなので、**実行中サーバーの次 poll（最大 3s）で反映、restart 不要**。
+provider の管理は `eveng2-toolbar` バイナリの **`provider` サブコマンド**（`claude mcp` / `git remote` と同じ構造。単独 install するものではない）。
+
+```
+eveng2-toolbar provider <cmd>     # グローバル install (bunx / npm) 済みのとき
+bun run provider <cmd>            # clone 実行の近道 (= bun server/index.ts provider <cmd>)
+```
+
+config / ledger を書き換えるだけなので、**実行中サーバーの次 poll（最大 3s）で反映、restart 不要**。
 
 | コマンド | 説明 |
 |---|---|
