@@ -38,10 +38,16 @@ test('loadSince: storage が undefined なら 0', () => {
   expect(loadSince(undefined, 'src1')).toBe(0)
 })
 
-test('loadSince: 不正値 (非整数・負・NaN) は 0', () => {
+test('loadSince: 純粋な非負整数のみ採用、それ以外は 0', () => {
+  expect(loadSince(mockStorage({ [KEY]: '42' }), 'src1')).toBe(42)
+  expect(loadSince(mockStorage({ [KEY]: '0' }), 'src1')).toBe(0)
+  // 部分パース・非整数・指数・負・桁あふれは不正として 0 に倒す (parseInt の緩さを継がない)。
   expect(loadSince(mockStorage({ [KEY]: 'abc' }), 'src1')).toBe(0)
+  expect(loadSince(mockStorage({ [KEY]: '42abc' }), 'src1')).toBe(0)
+  expect(loadSince(mockStorage({ [KEY]: '3.5' }), 'src1')).toBe(0)
+  expect(loadSince(mockStorage({ [KEY]: '1e3' }), 'src1')).toBe(0)
   expect(loadSince(mockStorage({ [KEY]: '-1' }), 'src1')).toBe(0)
-  expect(loadSince(mockStorage({ [KEY]: '3.5' }), 'src1')).toBe(3) // parseInt は整数部を採用
+  expect(loadSince(mockStorage({ [KEY]: '9'.repeat(20) }), 'src1')).toBe(0)
 })
 
 test('loadSince: getItem 例外は 0 (no-op)', () => {

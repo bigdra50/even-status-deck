@@ -52,8 +52,11 @@ export function loadSince(storage: StorageLike | undefined, sourceId: string): n
   try {
     const raw = storage.getItem(sinceKey(sourceId))
     if (!raw) return 0
-    const n = Number.parseInt(raw, 10)
-    return Number.isInteger(n) && n >= 0 ? n : 0
+    // localStorage は外部から改竄され得る。saveSince は String(非負整数)=/^\d+$/ しか書かないので、
+    // 読み側も部分パース (parseInt の "42abc"→42 等) を許さず、純粋な非負整数のみ採用する。
+    // 桁あふれ ("9".repeat(20) 等) は isSafeInteger で弾く。不正は 0 (= 従来挙動)。
+    const n = /^\d+$/.test(raw) ? Number(raw) : Number.NaN
+    return Number.isSafeInteger(n) && n >= 0 ? n : 0
   } catch {
     return 0 // getItem が例外を投げる場合は no-op
   }
