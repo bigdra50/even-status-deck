@@ -1521,9 +1521,28 @@ function dbgTime(t: number): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
-// console.* の可変長引数を 1 行テキストにする。Error は stack、オブジェクトは JSON。
+const MAX_DBG_LINE = 2000 // 1 ログ行の最大文字数 (巨大オブジェクト/長文での DOM・stringify 肥大を防ぐ)
+// token/secret 等を含むキーを伏せる (プローブが生レスポンスを UI に出すため redaction する)。
+const SENSITIVE_KEY =
+  /token|secret|password|passwd|api[-_]?key|authorization|auth|cookie|session|credential/i
+
+// オブジェクトを浅くクローンしつつ、機微なキーの値を伏せる。ログ前の生レスポンスに適用する。
+function redact(value: unknown, depth = 0): unknown {
+  if (depth > 4) return '«depth»'
+  if (Array.isArray(value)) return value.map((v) => redact(v, depth + 1))
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = SENSITIVE_KEY.test(k) ? '«redacted»' : redact(v, depth + 1)
+    }
+    return out
+  }
+  return value
+}
+
+// console.* の可変長引数を 1 行テキストにする。Error は stack、オブジェクトは JSON。1 行上限で truncate。
 function dbgFormat(args: unknown[]): string {
-  return args
+  const s = args
     .map((a) => {
       if (typeof a === 'string') return a
       if (a instanceof Error) return a.stack ?? `${a.name}: ${a.message}`
@@ -1534,6 +1553,7 @@ function dbgFormat(args: unknown[]): string {
       }
     })
     .join(' ')
+  return s.length > MAX_DBG_LINE ? `${s.slice(0, MAX_DBG_LINE)} …(+${s.length - MAX_DBG_LINE})` : s
 }
 
 function dbgPush(level: DbgLevel, text: string): void {
@@ -1650,7 +1670,7 @@ async function probeUserInfo(): Promise<void> {
   }
   try {
     const u = await probeBridge.getUserInfo()
-    console.log('[probe] getUserInfo →', u.toJson())
+    console.log('[probe] getUserInfo →', redact(u.toJson())) // PII を含むため機微キーは伏せる
   } catch (err) {
     console.error('[probe] getUserInfo 失敗', err)
   }
@@ -1675,7 +1695,17 @@ function probeGeo(): void {
 }
 
 async function probeIp(): Promise<void> {
+  // 外部サービスへ IP を送るため、クリック時に明示同意を取る (プライバシー)。
+  if (
+    !window.confirm(
+      'IP ジオロケーション検証のため、外部サービス(ipapi.co 等)にあなたの IP を送信します。続行しますか？',
+    )
+  ) {
+    console.log('[probe] IP geo: キャンセル')
+    return
+  }
   // キー不要の IP ジオロケーションを順に試す (CORS 許可のあるもの優先)。
+  // credentials 無し・referrer 無しで最小限の送信に留める。
   const endpoints = [
     'https://ipapi.co/json/',
     'https://ipwho.is/',
@@ -1684,9 +1714,9 @@ async function probeIp(): Promise<void> {
   for (const url of endpoints) {
     try {
       console.log('[probe] IP geo fetch:', url)
-      const res = await fetch(url)
+      const res = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer' })
       const json = (await res.json()) as unknown
-      console.log('[probe] IP geo →', json)
+      console.log('[probe] IP geo →', redact(json)) // 機微キーは伏せる
       return
     } catch (err) {
       console.warn(`[probe] IP geo 失敗 ${url}:`, err instanceof Error ? err.message : err)
