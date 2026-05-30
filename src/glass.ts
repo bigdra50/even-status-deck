@@ -68,8 +68,8 @@ const OVERLAY_DEMO: (() => void)[] = [
     overlay.notify({ app: 'Mail', sender: 'GitHub', body: 'PR がマージされました' })
   },
   () => overlay.toast('保存しました'),
-  () => overlay.toast('削除しました', { action: '取消' }),
-  () => overlay.dialog('確認', 'この通知を削除しますか？', ['OK', 'キャンセル']),
+  // dialog は安全側 (キャンセル) を既定選択にして誤タップ対策。破壊的操作はスクロールで選んでから。
+  () => overlay.dialog('確認', 'この通知を削除しますか？', ['キャンセル', '削除']),
   () => overlay.setBanner('オフライン中'),
 ]
 
@@ -195,13 +195,13 @@ function scheduleOverlayWake(): void {
 // detail.kind で notification(既定) / toast / dialog / banner を振り分ける。
 type OverlayEvent =
   | ({ kind?: 'notification' } & Notif)
-  | { kind: 'toast'; text: string; durationMs?: number; action?: string }
+  | { kind: 'toast'; text: string; durationMs?: number }
   | { kind: 'dialog'; title: string; message: string; actions?: string[] }
   | { kind: 'banner'; text: string }
 function onOverlayEvent(e: Event): void {
   const d = (e as CustomEvent<OverlayEvent>).detail
   if (!d) return
-  if (d.kind === 'toast') overlay.toast(d.text, { durationMs: d.durationMs, action: d.action })
+  if (d.kind === 'toast') overlay.toast(d.text, { durationMs: d.durationMs })
   else if (d.kind === 'dialog') overlay.dialog(d.title, d.message, d.actions ?? ['OK'])
   else if (d.kind === 'banner') overlay.setBanner(d.text)
   else overlay.notify(d)

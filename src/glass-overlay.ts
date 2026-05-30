@@ -23,7 +23,7 @@ import { compileGrid, type GridLayout } from './glass-layout'
 import { GLASS_HEIGHT, GLASS_PADDING, GLASS_WIDTH } from './glass-render'
 
 export type Notif = { app: string; sender: string; body: string }
-export type ToastOpts = { durationMs?: number; action?: string; onAction?: () => void }
+export type ToastOpts = { durationMs?: number }
 export type DialogOpts = { onResult?: (index: number) => void }
 
 type Toast = ToastOpts & { text: string; durationMs: number; expiresAt: number | null }
@@ -118,10 +118,9 @@ function dialogContainers(top: string, bottom: string, d: Dialog): TextContainer
   return framedBox(top, bottom, `${d.title}\n${d.message}\n\n${actions}`)
 }
 
-// toast: 下地ビュー (上 8 行のみ=下端は空ける) + 下端の枠付き 1 行。action 付きは末尾に [action]。
+// toast: 下地ビュー (上 8 行のみ=下端は空ける) + 下端の枠付き 1 行。自動消去のみ (入力非消費)。
 function toastContainers(baseLines: string[], t: Toast): TextContainerProperty[] {
   const base = fullContainer(baseLines.slice(0, 8).join('\n'))
-  const text = t.action ? `${t.text}   [${t.action}]` : t.text
   const row = new TextContainerProperty({
     xPosition: 16,
     yPosition: 224,
@@ -133,7 +132,7 @@ function toastContainers(baseLines: string[], t: Toast): TextContainerProperty[]
     paddingLength: 4,
     containerID: 2,
     containerName: 'toast',
-    content: text,
+    content: t.text,
     isEventCapture: 0,
   })
   return [base, row]
@@ -159,13 +158,7 @@ export function createOverlayManager() {
       if (notifStack.length < NOTIF_MAX) notifStack.push(n)
     },
     toast(text: string, opts: ToastOpts = {}): void {
-      toasts.push({
-        text,
-        durationMs: opts.durationMs ?? DEFAULT_TOAST_MS,
-        action: opts.action,
-        onAction: opts.onAction,
-        expiresAt: null,
-      })
+      toasts.push({ text, durationMs: opts.durationMs ?? DEFAULT_TOAST_MS, expiresAt: null })
     },
     dialog(title: string, message: string, actions: string[], opts: DialogOpts = {}): void {
       dialog = {
@@ -232,7 +225,7 @@ export function createOverlayManager() {
         notifIdx = Math.max(0, Math.min(notifIdx + dir, notifStack.length - 1))
         return true
       }
-      return k === 'toast' // toast 中はスクロールを食う (ビュー巡回しない) が選択は無し
+      return false // toast / banner はスクロール非消費 (自動消去・ビュー操作を妨げない)
     },
 
     // overlay が tap を消費したら true。dialog=確定 / notification=既読→次 / toast=action or dismiss。
@@ -249,13 +242,9 @@ export function createOverlayManager() {
         if (notifIdx >= notifStack.length) notifIdx = Math.max(0, notifStack.length - 1)
         return true
       }
-      if (k === 'toast' && toasts[0]) {
-        toasts[0].onAction?.()
-        toasts.shift()
-        return true
-      }
+      // toast は入力非消費 (自動消去のみ。誤タップで消えない)。
       if (banner !== null) {
-        banner = null // banner も tap で消せる
+        banner = null // banner は tap で消せる
         return true
       }
       return false
