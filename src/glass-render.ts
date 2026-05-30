@@ -1,22 +1,26 @@
 import { getTextWidth } from '@evenrealities/pretext'
 import {
+  activeView,
   BUILTIN_GROUP_LABELS,
   BUILTIN_SOURCE_ID,
   type Config,
   customLabelId,
   defaultShowGroupLabel,
-  type GroupCfg,
+  type GroupMeta,
   type GroupRef,
   isCustomLabelKey,
   isRightDivider,
   LABEL_SEG,
+  type ViewGroup,
 } from './config'
 import type { Group, StatusDoc } from './status-types'
 import { isVisible, segKey, type VisibleMap } from './visibility'
 
-// glass 描画の純粋ロジック (bridge 非依存)。複数ソース (builtin + server) を groupOrder で
-// 横断描画する。GlassData の statuses は sourceId -> 直近 StatusDoc。
+// glass 描画の純粋ロジック (bridge 非依存)。複数ソース (builtin + server) を active profile の
+// view.groupOrder で横断描画する。GlassData の statuses は sourceId -> 直近 StatusDoc。
 // HUD (時刻/電池) は builtin local の group (clock / g2) として groupOrder に含まれる。
+// 素材 (config.groups: GroupMeta) が segment の存在・順序・format を持ち、可視性 (enabled /
+// segment ON-OFF / align / showDefaultLabel) は active profile の view (ViewGroup) を読む。
 export type GView = 'summary' | GroupRef
 export type GlassData = {
   config: Config
@@ -61,14 +65,21 @@ function findGroup(d: GlassData, ref: GroupRef): Group | undefined {
 }
 
 // 1 group の summary 行: enabled かつ表示条件を満たす segment を "label value" で連結。
+// 順序は素材 (GroupMeta.segments)、ON/OFF は view (ViewGroup.segments)。
 // segment 単位の表示タイミング条件 (visible map) を適用する。全部隠れたら null (行ごと消える)。
-function groupLine(g: Group, gcfg: GroupCfg, ref: GroupRef, visible?: VisibleMap): string | null {
+function groupLine(
+  g: Group,
+  meta: GroupMeta,
+  vg: ViewGroup,
+  ref: GroupRef,
+  visible?: VisibleMap,
+): string | null {
   const segs = new Map(g.segments.map((s) => [s.id, s]))
   const parts: string[] = []
-  for (const sc of gcfg.segments) {
-    const seg = segs.get(sc.id)
-    if (!sc.enabled || !seg) continue
-    if (!isVisible(visible, segKey(ref.sourceId, ref.groupId, sc.id))) continue
+  for (const sm of meta.segments) {
+    const seg = segs.get(sm.id)
+    if (!(vg.segments[sm.id] ?? true) || !seg) continue
+    if (!isVisible(visible, segKey(ref.sourceId, ref.groupId, sm.id))) continue
     parts.push(seg.label ? `${seg.label} ${seg.value}` : seg.value)
   }
   if (!parts.length) return null
@@ -86,19 +97,20 @@ function groupLabelText(d: GlassData, sourceId: string, groupId: string): string
 }
 
 // group が default-label (group 名の前置) を出すか。未設定は groupId 既定 (clock=false/他=true)。
-function showsGroupLabel(gcfg: GroupCfg, groupId: string): boolean {
-  return gcfg.showDefaultLabel ?? defaultShowGroupLabel(groupId)
+function showsGroupLabel(vg: ViewGroup, groupId: string): boolean {
+  return vg.showDefaultLabel ?? defaultShowGroupLabel(groupId)
 }
 
 // items を解決して 1 クラスタの文字列を連結する。各 segment は値 (segLabel value) を出し、group の
 // default-label が ON なら group 名を前置する。隣接する同 group の run では先頭 1 回だけ
 // (dedup)。custom テキストラベルは独立要素で run を切る。enabled/表示条件/status でフィルタ。
 function renderKeys(items: string[], d: GlassData, visible?: VisibleMap): string {
+  const view = activeView(d.config)
   const parts: string[] = []
   let prevGroup: string | null = null // 直前に出力した segment の groupId (custom label / 行頭で null)
   for (const key of items) {
     if (isCustomLabelKey(key)) {
-      const text = d.config.glassLayout?.customLabels[customLabelId(key)]?.text
+      const text = view.glassLayout?.customLabels[customLabelId(key)]?.text
       if (text) {
         parts.push(text) // ユーザー定義の自由テキストラベル
         prevGroup = null // run を切る (後続の同 group はラベル再表示)
@@ -108,17 +120,18 @@ function renderKeys(items: string[], d: GlassData, visible?: VisibleMap): string
     const [sourceId, groupId, segId] = key.split('|')
     if (!sourceId || !groupId || !segId) continue
     if (segId === LABEL_SEG) continue // 旧 @label 配置 chip は廃止 (migration で除去済)
-    const gcfg = d.config.groups[sourceId]?.[groupId]
-    if (!gcfg?.enabled) continue // group 無効
-    const sc = gcfg.segments.find((s) => s.id === segId)
-    if (!sc?.enabled) continue // segment 無効
+    const vg = view.groups[sourceId]?.[groupId]
+    if (!vg?.enabled) continue // group 無効
+    const meta = d.config.groups[sourceId]?.[groupId]
+    if (!meta?.segments.some((s) => s.id === segId)) continue // 素材に存在しない segment
+    if (!(vg.segments[segId] ?? true)) continue // segment 無効
     if (!isVisible(visible, key)) continue // 表示タイミング条件
     const seg = findGroup(d, { sourceId, groupId })?.segments.find((s) => s.id === segId)
     if (!seg) continue // status 欠落 (missing) → 描画時 skip (rows からは消さない)
     const v = formatSegmentValue(seg.value, seg.widthChars, seg.isNumeric ?? false)
     const body = seg.label ? `${seg.label} ${v}` : v
     // default-label: ON かつ run の先頭 (直前と group が変わった) なら group 名を前置
-    if (showsGroupLabel(gcfg, groupId) && groupId !== prevGroup) {
+    if (showsGroupLabel(vg, groupId) && groupId !== prevGroup) {
       const gl = groupLabelText(d, sourceId, groupId)
       parts.push(gl ? `${gl} ${body}` : body)
     } else {
@@ -152,7 +165,7 @@ export function layoutRowClusters(
   visible: VisibleMap | undefined,
   budget: number,
 ): RowClusters[] {
-  const rows = d.config.glassLayout?.rows ?? []
+  const rows = activeView(d.config).glassLayout?.rows ?? []
   const out: RowClusters[] = []
   for (let i = 0; i < budget; i++) out.push(rowClusters(rows[i] ?? [], d, visible))
   return out
@@ -193,16 +206,18 @@ export function summarySections(
   d: GlassData,
   visible?: VisibleMap,
 ): { top: string[]; bottom: string[] } {
+  const view = activeView(d.config)
   const top: string[] = []
   const bottom: string[] = []
-  for (const ref of d.config.groupOrder) {
-    const gcfg = d.config.groups[ref.sourceId]?.[ref.groupId]
-    if (!gcfg?.enabled) continue
+  for (const ref of view.groupOrder) {
+    const vg = view.groups[ref.sourceId]?.[ref.groupId]
+    const meta = d.config.groups[ref.sourceId]?.[ref.groupId]
+    if (!vg?.enabled || !meta) continue
     const g = findGroup(d, ref)
     if (!g) continue
-    const line = groupLine(g, gcfg, ref, visible)
+    const line = groupLine(g, meta, vg, ref, visible)
     if (!line) continue
-    if (gcfg.align === 'bottom') bottom.push(line)
+    if (vg.align === 'bottom') bottom.push(line)
     else top.push(line)
   }
   return { top, bottom }
@@ -256,7 +271,7 @@ export function renderGlass(view: GView, d: GlassData, visible?: VisibleMap): st
   if (view !== 'summary') return frame(clampRows(detailBody(d, view, visible), budget), null)
 
   // custom layout: 固定行を絶対位置で描画 (空行も保持)。
-  if (d.config.glassLayout) return layoutLines(d, visible, budget).join('\n')
+  if (activeView(d.config).glassLayout) return layoutLines(d, visible, budget).join('\n')
 
   const { top, bottom } = summarySections(d, visible)
   if (top.length + bottom.length === 0) return frame(['(no metric)'], null)
@@ -272,12 +287,14 @@ export function renderGlass(view: GView, d: GlassData, visible?: VisibleMap): st
 // 表示するビュー: summary + 表示可能な segment が 1 つ以上ある有効 group (groupOrder 順)。
 // 全 segment が条件で隠れた group は detail も出さない (groupLine が null)。
 export function buildViews(d: GlassData, visible?: VisibleMap): GView[] {
+  const view = activeView(d.config)
   const out: GView[] = ['summary']
-  for (const ref of d.config.groupOrder) {
-    const gcfg = d.config.groups[ref.sourceId]?.[ref.groupId]
-    if (!gcfg?.enabled) continue
+  for (const ref of view.groupOrder) {
+    const vg = view.groups[ref.sourceId]?.[ref.groupId]
+    const meta = d.config.groups[ref.sourceId]?.[ref.groupId]
+    if (!vg?.enabled || !meta) continue
     const g = findGroup(d, ref)
-    if (g && groupLine(g, gcfg, ref, visible)) out.push(ref)
+    if (g && groupLine(g, meta, vg, ref, visible)) out.push(ref)
   }
   return out
 }

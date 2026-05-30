@@ -184,6 +184,88 @@ textarea {
   align-items: center;
   justify-content: center;
 }
+.gear-btn[disabled] {
+  opacity: 0.35;
+  cursor: default;
+}
+/* 破壊的操作 (preset 削除) の gear-btn は枠/アイコンを err 色にする。 */
+.gear-btn.danger:not([disabled]) {
+  color: var(--err);
+  border-color: var(--err);
+}
+
+/* Phase 4: プリセット切替の提案バナー。非モーダル・dismiss 可能 (Switch / ×)。
+   accent (Even yellow) の左ボーダーで「提案」を控えめに示す。glass は勝手に変えない。 */
+.suggest-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-3);
+}
+.suggest-icon {
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+}
+.suggest-text {
+  flex: 1;
+  min-width: 0;
+}
+.suggest-title {
+  font-size: var(--fs-md);
+}
+.suggest-sub {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+/* 承認 (Switch): accent の小ボタンで primary を示す。 */
+.suggest-accept {
+  flex: 0 0 auto;
+  background: var(--accent);
+  color: #232323;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+/* 却下 (×): 控えめなアイコンボタン。 */
+.suggest-dismiss {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1);
+}
+
+/* Profile (プリセット) バー: select + 操作ボタン群を 1 行に。select を主役にして伸ばす。 */
+.profile-bar {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.profile-select {
+  flex: 1;
+  min-width: 0;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  color: var(--text);
+  font-size: var(--fs-base);
+  font-family: var(--font-sans);
+}
+
 /* 見出し右端の追加ボタン (+ アイコン)。primary な「追加」アクションを accent の丸ボタンで示す。 */
 .add-btn {
   background: var(--accent);

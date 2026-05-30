@@ -1,8 +1,8 @@
 import { expect, test } from '@playwright/test'
 import { attachConsoleErrors, MACHINE, STATUS } from './fixtures'
 
-// 既定サーバ (server.local) の Sources 行の接続ドット。
-const DOT = '.src:has([data-action="edit-source"][data-src="server.local"]) .conn-dot'
+// 既定サーバ (server.local) の preset 内 Sources 行の接続ドット。
+const DOT = '.src:has([data-action="remove-from-preset"][data-src="server.local"]) .conn-dot'
 
 // 切断検出の回帰テスト。retry backoff (10/20/40s) と 60s poll を page.clock で早送りし、
 // online → stale → offline → 復帰、および glass preview からの offline group 除外を検証する。

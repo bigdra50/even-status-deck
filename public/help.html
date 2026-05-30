@@ -127,47 +127,38 @@
   <body>
     <h1>Set up a local server</h1>
     <p class="lead">
-      This app reads Claude Code / Codex usage from a local server on your Mac.
-      Auth tokens stay on the Mac — only usage (%) and reset times are sent to the glasses.
+      This app reads Claude Code / Codex usage from a local server on your Mac or PC.
+      Auth tokens stay on that machine — only usage (%) and reset times are sent to the glasses.
     </p>
 
     <h2>Steps</h2>
     <ol>
       <li>
-        Clone the repo on your Mac
-        <span class="cmd">ghq get bigdra50/eveng2-toolbar</span>
+        Make sure your Mac/PC has Bun or Node 18+ (Bun recommended)
+        <span class="cmd">curl -fsSL https://bun.sh/install | bash</span>
       </li>
       <li>
-        Install dependencies
-        <span class="cmd">bun install</span>
+        Start the local server (serves the API on port 8723)
+        <span class="cmd">bunx eveng2-toolbar server</span>
+        <span class="cmd">npx eveng2-toolbar server</span>
       </li>
       <li>
-        Start the dev server (it serves the API on the same origin)
-        <span class="cmd">bun run dev</span>
+        Read the LAN address it prints on startup. It looks like
+        <code>http://192.168.x.x:8723</code> (the server logs your machine's LAN IP).
       </li>
       <li>
-        Find your Mac's LAN IP
-        <span class="cmd">ipconfig getifaddr en0</span>
-      </li>
-      <li>
-        Enter <code>http://&lt;LAN-IP&gt;:5173</code> as the URL in the server
+        Enter that <code>http://&lt;LAN-IP&gt;:8723</code> as the URL in the server
         settings, then tap Test
       </li>
     </ol>
 
-    <h2>QR shortcut</h2>
-    <p>
-      Instead of typing it, run this on your Mac to show a QR code of the URL and scan it from your phone.
-    </p>
-    <span class="cmd">bun run qr</span>
-
     <div class="note">
       <p>
         <strong>Connect to the same Wi-Fi.</strong>
-        It won't connect if your Mac and phone (glasses) are on different networks.
+        It won't connect if your Mac/PC and phone (glasses) are on different networks.
       </p>
       <p style="margin-bottom: 0">
-        Updates only while the dev server is running. It stops when your Mac sleeps.
+        Updates only while the server is running. It stops when the machine sleeps.
       </p>
     </div>
   </body>
