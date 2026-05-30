@@ -469,13 +469,10 @@ export function buildPopupOverlay(stack: PopupNotif[], idx: number): GridLayout 
   const cur = Math.max(0, Math.min(idx, stack.length - 1))
   const n = stack[cur]
   // 左ドット列。中抜き ◦/○ は firmware フォントに無く描画されないため、描ける塗り系で
-  // サイズ差をつける (現在=• / 他=·)。col0(48px) の右端付近へ右寄せし、ボックス左辺に寄せる。
-  const dotLine = (active: boolean): string => {
-    const g = active ? '•' : '·'
-    const lead = Math.max(0, Math.floor((48 - 6 - getTextWidth(g)) / SPACE_W))
-    return ' '.repeat(lead) + g
-  }
-  const dots = stack.map((_, i) => dotLine(i === cur)).join('\n')
+  // サイズ差をつける (現在=• / 他=·)。leading は • 基準で固定する (· を個別に右端揃えすると
+  // narrow な分だけ右へ寄りすぎるため)。左端を揃えると中心もほぼ揃い、ボックス左辺に寄る。
+  const dotLead = ' '.repeat(Math.max(0, Math.floor((48 - 6 - getTextWidth('•')) / SPACE_W)))
+  const dots = stack.map((_, i) => dotLead + (i === cur ? '•' : '·')).join('\n')
   // 1 行目 = タイトル (字下げなし)、2 行目以降 (sender + body) は 2 文字インデントする。
   const box = n
     ? [`${n.app} · Now`, ...`${n.sender}\n${n.body}`.split('\n').map((l) => `  ${l}`)].join('\n')
