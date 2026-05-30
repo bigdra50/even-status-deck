@@ -251,6 +251,9 @@ export default {
 
 ### `POST /api/action` + `machine.capabilities`（予約）
 
+> 一部正規化済み: `POST /api/action` の `type:"dialog.result"`（dialog 応答）は §11 で normative。
+> 本節で予約のままなのは、下記の glass gesture からの任意 source 遠隔操作（`type:"source.action"` 等）。
+
 glass 入力（click / scroll / double-click / IMU はすでに `onEvenHubEvent` で受信済み）から
 ソースを遠隔操作する拡張点。namespace（path + `capabilities`）だけ押さえ、挙動契約は未確定。
 
@@ -277,7 +280,7 @@ client は `GET /api/machine` の `capabilities.events === true` を見て対応
 provider/watcher → POST /api/emit (loopback) → server buffer → GET /api/events (long-poll) → client overlay
 ```
 
-dialog（modal・往復 `onResult`）は含めない。往復が要るので §10 の `POST /api/action` 方向で扱う。
+`dialog`（modal の質問）は **往復**する: source が選択肢付きで push し、ユーザーの選択を client が `POST /api/action` で返す（下記「dialog 往復」）。`notification`/`toast`/`banner` は一方向（fire-and-forget）。
 
 ### `GET /api/events?since=<seq>&waitMs=<ms>`（long-poll）
 
@@ -296,7 +299,7 @@ client は応答後すぐ次の long-poll を張る。idle churn は ~`waitMs` �
       "ts": 1779800000000,
       "providerId": "mac-notifications",
       "id": "mac:42",             // (providerId,id) で dedupe
-      "kind": "notification",     // "notification" | "toast" | "banner"
+      "kind": "notification",     // "notification" | "toast" | "banner" | "dialog"
       "app": "Slack", "sender": "#general", "body": "デプロイ完了 🎉",
       "ttlMs": 20000
     }
@@ -326,6 +329,52 @@ client は応答後すぐ次の long-poll を張る。idle churn は ~`waitMs` �
 | `notification` | `app`/`sender`/`body` のいずれか | 中央カード |
 | `toast` | `text` | 下端 1 行・`durationMs` で自動消去 |
 | `banner` | `text` | 上 1 行常駐 |
+| `dialog` | `title`/`message` のいずれか + `actions[]` | 中央 modal・scroll で選択 + tap で確定 |
+
+`dialog` を emit すると server が `requestId` を払い出して応答に返し、配送イベントにも載せる:
+
+```jsonc
+// 入力
+{ "providerId": "ask-cli", "id": "ask:1", "kind": "dialog",
+  "title": "確認", "message": "本番にデプロイ?", "actions": ["はい","いいえ"], "ttlMs": 60000 }
+// 応答 (requestId 追加)
+{ "ok": true, "seq": 131, "requestId": "act_b6bda837809b4ad33b9f8a3e" }
+```
+
+### dialog 往復（質問と応答）
+
+```
+watcher → POST /api/emit{kind:dialog} (loopback) → requestId
+        → GET /api/action-result?requestId= (loopback long-poll) で結果を待つ
+client  ← GET /api/events で dialog{requestId,actions} を受け、modal 表示
+        → ユーザー選択 → POST /api/action{requestId,index,action} (LAN)
+server  → 相関し completed。待っている action-result を起こす
+```
+
+#### `POST /api/action`（LAN 受理）
+
+dialog の選択結果を返す。client（グラス＝iPhone, LAN 側）から届くので **loopback でなく LAN を受理**する。正当性は **`requestId`（unguessable な server 生成トークン）を知っていること + `index`/`action` 検証 + 単一受理**で守る（confirmation は UX 安全弁であって認証ではない / §10）。
+
+```jsonc
+// 入力
+{ "type": "dialog.result", "requestId": "act_...", "index": 0, "action": "はい" }
+// 応答
+{ "ok": true }
+{ "ok": false, "reason": "not_found"|"expired"|"already_completed"|"bad_index"|"action_mismatch" }
+```
+
+#### `GET /api/action-result?requestId=<id>&waitMs=<ms>`（loopback 限定・long-poll）
+
+質問した watcher が結果を待つ。pending なら `waitMs` か TTL 期限まで保留。
+
+```jsonc
+{ "ok": true, "requestId": "act_...", "status": "completed",  // pending|completed|dismissed|expired
+  "result": { "index": 0, "action": "はい", "ts": 1779800000000 } }
+```
+
+- `requestId` は server 生成・`act_` 接頭・accept-once。TTL（既定 60000・上限 300000）= 表示有効期限 兼 受理期限。
+- 未回答で TTL 到達 → `expired`。`/api/action` の二重送信 → `already_completed`。
+- 動作確認/利用は `bun run server ask "<質問>" <選択1> <選択2>`（選択ラベルを stdout に出す）。
 
 ### バリデーション / セキュリティ
 

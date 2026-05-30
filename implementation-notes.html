@@ -31,7 +31,8 @@
         provider/watcher → server → glass で通知/トースト/バナーを push する。代表例 = Mac 通知転送。
       </p>
       <p class="text-xs text-slate-500 mt-1">最終更新: 2026-05-30 ・ ステータス:
-        <span class="badge decided">チャネル実装+実機前検証 完了</span> ・ gpt-5.5 と設計確定
+        <span class="badge decided">forward + dialog 往復 実装完了</span>
+        <span class="badge decided">実機: notification/toast/banner 確認済</span> ・ gpt-5.5 と設計確定
       </p>
     </header>
 
@@ -44,6 +45,40 @@ flowchart LR
   B -->|"GET /api/events?since&waitMs<br/>(long-poll, LAN)"| C["client src/events.ts<br/>id で dedupe"]
   C -->|"window 'toolbar:overlay'"| O["glass overlay<br/>notification / toast / banner"]
       </pre>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-semibold text-white mb-2">dialog 往復チャネル <span class="text-xs text-slate-500">(はい/いいえ応答を source へ返す・gpt-5.5 と確定)</span></h2>
+      <p class="text-sm text-slate-400 mb-2">forward の逆。source が質問を push → ユーザーがリングで選択 → 結果を source へ返す request/response。§10 reserved の <code>POST /api/action</code> を <code>type:"dialog.result"</code> のみ正規化。</p>
+      <pre class="mermaid">
+sequenceDiagram
+  participant W as watcher(Mac,loopback)
+  participant S as server
+  participant G as glass(client,LAN)
+  W->>S: POST /api/emit {kind:dialog, actions:[はい,いいえ]}
+  S-->>W: {ok, seq, requestId:R}
+  W->>S: GET /api/action-result?requestId=R (loopback long-poll)
+  G->>S: GET /api/events (long-poll)
+  S-->>G: dialog{R, actions}
+  Note over G: overlay.dialog → ユーザー選択 i
+  G->>S: POST /api/action {requestId:R, index:i, action} (LAN)
+  S-->>W: {status:completed, result:{index:i, action}}
+  Note over W: 結果を受けて動作
+      </pre>
+      <div class="space-y-2 mt-2">
+        <details class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge decided">decided</span> <b class="ml-2">結果 endpoint は LAN 受理（forward の emit と非対称）</b></summary>
+          <p class="mt-2 text-sm text-slate-300">結果は client（iPhone, LAN）から来るので <code>POST /api/action</code> は loopback でなく LAN を受理。安全性 = <b>server 生成の unguessable requestId（capability token）+ index/action 検証 + accept-once</b>。<code>GET /api/action-result</code>（質問側 watcher の受信）は loopback 限定。</p>
+        </details>
+        <details class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge decided">decided</span> <b class="ml-2">requestId は server 払い出し・相関ストアは ring buffer と別</b></summary>
+          <p class="mt-2 text-sm text-slate-300"><code>server/actions.ts</code> が pending(<code>requestId/providerId/actions/expiresAt/status/result</code>)を保持。TTL（既定60s）= 表示有効期限 兼 受理期限。event ring buffer は配送、action store は相関で役割分離。</p>
+        </details>
+        <details class="bg-slate-900/40 rounded p-3">
+          <summary><span class="badge tradeoff">tradeoff</span> <b class="ml-2">範囲は dialog.result のみ正規化</b></summary>
+          <p class="mt-2 text-sm text-slate-300">glass gesture からの任意 source 遠隔操作（<code>type:"source.action"</code>）は §10 reserved のまま。今回は「source の質問への応答」だけを固める。確認 CLI = <code>bun run server ask "..." はい いいえ</code>（選択ラベルを stdout）。</p>
+        </details>
+      </div>
     </section>
 
     <section class="mb-8">
@@ -125,8 +160,10 @@ flowchart LR
         <tr><td><code>src/events.ts</code> <i>(新)</i></td><td>client long-poll loop（capability gate・dedupe・<code>toolbar:overlay</code> 配線）</td></tr>
         <tr><td><code>src/glass.ts</code></td><td>init/config変更/cleanup で <code>startEvents</code>/<code>stopEvents</code></td></tr>
         <tr><td><code>server/watchers/mac-notifications.ts</code> <i>(新)</i></td><td>通知センター DB → <code>/api/emit</code> 転送</td></tr>
-        <tr><td><code>server/index.ts</code></td><td><code>watch mac-notifications</code> サブコマンド</td></tr>
-        <tr><td><code>*.test.ts</code> <i>(新)</i></td><td>buffer/parse のユニットテスト（<code>bun test</code> 16 件）</td></tr>
+        <tr><td><code>server/actions.ts</code> <i>(新)</i></td><td>dialog 往復の相関ストア（requestId 払い出し・結果 long-poll）</td></tr>
+        <tr><td><code>server/cli/ask.ts</code> <i>(新)</i></td><td><code>ask</code> CLI（dialog を出して選択を待つ）</td></tr>
+        <tr><td><code>server/index.ts</code></td><td><code>watch</code> / <code>ask</code> サブコマンド</td></tr>
+        <tr><td><code>*.test.ts</code> <i>(新)</i></td><td>buffer/parse/dialog のユニットテスト（<code>bun test</code> 29 件）</td></tr>
       </table>
     </section>
 
