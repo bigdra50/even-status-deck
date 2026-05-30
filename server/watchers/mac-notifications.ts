@@ -16,6 +16,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { loadServerConfig } from '../config.ts'
+import type { MacNotificationsWatcherConfig } from '../types.ts'
 
 const pexec = promisify(execFile)
 
@@ -106,6 +107,31 @@ async function decodeNotif(hex: string, tmpFile: string): Promise<Notif | null> 
   }
 }
 
+// 単一エントリが identifier / title に一致するか。
+// 規則: エントリが identifier と完全一致、または identifier / title への大小無視の部分一致。
+function matchesEntry(entry: string, identifier: string, title: string): boolean {
+  if (entry === identifier) return true // 完全一致 (bundle id 想定)
+  const needle = entry.toLowerCase()
+  if (identifier.toLowerCase().includes(needle)) return true // identifier 部分一致 (大小無視)
+  return title.toLowerCase().includes(needle) // title 部分一致 (大小無視)
+}
+
+// 通知を転送すべきか判定する純粋関数 (allowlist / denylist)。
+// - deny にマッチ → 転送しない (deny 優先)。
+// - allow が非空でマッチしない → 転送しない (allow で絞り込み)。
+// - 既定 (allow / deny ともに空) → 全通過 (フィルタ無効、現状の挙動を変えない)。
+export function shouldForward(
+  identifier: string,
+  title: string,
+  rule: MacNotificationsWatcherConfig | undefined,
+): boolean {
+  const deny = rule?.deny ?? []
+  const allow = rule?.allow ?? []
+  if (deny.some((e) => matchesEntry(e, identifier, title))) return false
+  if (allow.length > 0 && !allow.some((e) => matchesEntry(e, identifier, title))) return false
+  return true
+}
+
 async function emit(endpoint: string, recId: number, n: Notif): Promise<void> {
   // overlay notification の {app,sender,body} に対応づける: app=タイトル / sender=サブタイトル / body=本文。
   const payload = {
@@ -156,12 +182,15 @@ export async function runMacNotificationsWatcher(): Promise<void> {
   // 簡易ループ。エラーは握りつぶして次の tick へ (一過性のロック等で落とさない)。
   for (;;) {
     try {
+      // 転送フィルタは tick ごとに最新 config から取る (loadServerConfig は TTL キャッシュ済み)。
+      const rule = (await loadServerConfig()).watchers?.['mac-notifications']
       const rows = await queryNewRows(lastRecId)
       for (const row of rows) {
         lastRecId = Math.max(lastRecId, row.recId)
         const n = await decodeNotif(row.hex, tmpFile)
         if (!n) continue
         if (!n.title && !n.sub && !n.body) continue // 空通知はスキップ
+        if (!shouldForward(row.identifier, n.title, rule)) continue // allow/deny で除外
         await emit(endpoint, row.recId, n)
       }
     } catch (e) {
