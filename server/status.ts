@@ -57,43 +57,83 @@ function asGroup(x: unknown): Group | null {
 // この Map は status.ts が所有する (移植元は vite.config.ts:463 のモジュールスコープ)。
 const loaded = new Map<string, ProviderDef>()
 
-// providers/*.{ts,mjs,js} を autoload する。manifest ({id, group}) 推奨。
-// 旧 function 形 (default が関数) は filename を id にする (legacy)。
-async function getUserProviders(): Promise<ProviderDef[]> {
-  let files: string[]
-  try {
-    files = (await readdir(PROVIDER_DIR)).filter((f) => /\.(ts|mjs|js)$/.test(f))
-  } catch {
-    return [] // ディレクトリ無し
+// 1 つの provider ファイルを import して ProviderDef にする。manifest ({id, group}) を推奨。
+// 旧 function 形 (default が関数) は filename=id 前提なので expectedId を採用 (legacy・deprecated)。
+async function importProvider(path: string, expectedId: string): Promise<ProviderDef | null> {
+  const mod = (await import(pathToFileURL(path).href)) as { default?: unknown }
+  const d = mod.default as { id?: unknown; group?: unknown } | (() => unknown) | undefined
+  if (d && typeof d === 'object' && typeof d.id === 'string' && typeof d.group === 'function') {
+    const fn = d.group as (ctx: ProviderCtx) => unknown
+    return { id: d.id, group: async (ctx) => asGroup(await fn(ctx)) }
   }
-  const paths = new Set(files.map((f) => join(PROVIDER_DIR, f)))
-  for (const path of paths) {
-    if (loaded.has(path)) continue
-    try {
-      const mod = (await import(pathToFileURL(path).href)) as { default?: unknown }
-      const d = mod.default as { id?: unknown; group?: unknown } | (() => unknown) | undefined
-      if (d && typeof d === 'object' && typeof d.id === 'string' && typeof d.group === 'function') {
-        const fn = d.group as (ctx: ProviderCtx) => unknown
-        loaded.set(path, { id: d.id, group: async (ctx) => asGroup(await fn(ctx)) })
-      } else if (typeof d === 'function') {
-        const fn = d as () => unknown
-        const id = path
-          .split(/[/\\]/)
-          .pop()
-          ?.replace(/\.(ts|mjs|js)$/, '') // legacy: filename を id に
-        if (!id) continue
-        loaded.set(path, { id, group: async () => asGroup(await fn()) })
-      } else {
-        console.warn(`[providers] ${path}: default export が provider ({id,group}) ではありません`)
+  if (typeof d === 'function') {
+    const fn = d as () => unknown
+    console.warn(
+      `[providers] ${path}: legacy function provider は deprecated。manifest {id, group} を使ってください`,
+    )
+    return { id: expectedId, group: async () => asGroup(await fn()) }
+  }
+  console.warn(`[providers] ${path}: default export が provider ({id,group}) ではありません`)
+  return null
+}
+
+// JS plugin を autoload する。
+//
+// gate (C-1 / OD-A): 「providers/ に置けば動く」は廃止。**明示登録された id の `<id>.<ext>` だけを import する**。
+// 未登録のファイルは一切 import しない (= top-level コードも走らない)。これにより sync ツールや
+// malware が providers/ に置いただけのファイルは実行されない。登録 = config セクション or ledger
+// 注入 (cfg.providers[id] が存在し、builtin でも subprocess でもないこと)。ファイル名は id に一致させる。
+async function getUserProviders(cfg: ServerConfig): Promise<ProviderDef[]> {
+  const builtinIds = new Set(BUILTINS.map((b) => b.id))
+  // 登録済みのうち builtin でも subprocess (command 持ち) でもなく、無効化されていない id = JS plugin。
+  // enabled=false は import もしない (top-level 副作用も走らせない)。再 enable で次回 import される。
+  const jsIds = Object.entries(cfg.providers)
+    .filter(
+      ([id, opts]) => !builtinIds.has(id) && !isSubprocessEntry(opts) && opts?.enabled !== false,
+    )
+    .map(([id]) => id)
+
+  // providers/ の <basename>.<ext> → path。`.tmp-*` (install ステージング) は除外。決定的に扱う。
+  const byName = new Map<string, string>()
+  try {
+    for (const f of (await readdir(PROVIDER_DIR)).sort()) {
+      const m = /^(?!\.tmp-)(.+)\.(ts|mjs|js)$/.exec(f)
+      if (m?.[1] && !byName.has(m[1])) byName.set(m[1], join(PROVIDER_DIR, f))
+    }
+  } catch {
+    // ディレクトリ無し → JS plugin 無し
+  }
+
+  const out: ProviderDef[] = []
+  const usedPaths = new Set<string>()
+  for (const id of jsIds) {
+    const path = byName.get(id) // 登録 id に一致するファイルのみ (未登録ファイルは触らない)
+    if (!path) continue // 登録あるがファイル無し (無害にスキップ)
+    usedPaths.add(path)
+    let def = loaded.get(path)
+    if (!def) {
+      try {
+        const imported = await importProvider(path, id)
+        if (!imported) continue
+        def = imported
+        loaded.set(path, def)
+        console.log(`[providers] loaded ${path}`)
+      } catch (e) {
+        console.warn(`[providers] ${path} の読み込みに失敗:`, e)
         continue
       }
-      console.log(`[providers] loaded ${path}`)
-    } catch (e) {
-      console.warn(`[providers] ${path} の読み込みに失敗:`, e)
     }
+    if (def.id !== id) {
+      console.warn(
+        `[providers] ${path}: manifest id '${def.id}' が登録 id '${id}' と不一致 (ファイル名=id にしてください)`,
+      )
+      continue
+    }
+    out.push(def)
   }
-  for (const path of [...loaded.keys()]) if (!paths.has(path)) loaded.delete(path)
-  return [...loaded.values()]
+  // 参照されなくなった (ファイル削除 / 登録解除) loaded を片付ける。
+  for (const path of [...loaded.keys()]) if (!usedPaths.has(path)) loaded.delete(path)
+  return out
 }
 
 // --- TTL キャッシュ + inflight dedup --------------------------------------------------
@@ -150,7 +190,7 @@ function resolveProvider(
 // enabled 既定 ON (未指定/true は実行、false のみ除外)。Promise.allSettled で 1 つの失敗が
 // 他 provider を巻き込まないようにする。
 export async function buildStatusDoc(cfg: ServerConfig): Promise<StatusDoc> {
-  const builtins = [...BUILTINS, ...(await getUserProviders())]
+  const builtins = [...BUILTINS, ...(await getUserProviders(cfg))]
   const byId = new Map(builtins.map((p) => [p.id, p]))
 
   // 実行対象 id を集める: builtin/JS の id と、config に command を持つ subprocess の id。

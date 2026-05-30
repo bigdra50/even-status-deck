@@ -34,3 +34,43 @@ export type ServerConfig = {
   port?: number
   providers: Record<string, ProviderOpts | SubprocessEntry>
 }
+
+// --- provider 管理 (install/update/uninstall) の ledger 型 (tasks/provider-management-design.md) ---
+// provider が宣言できるリスクタグ。install/list/update で表示し、自動更新は既定 OFF。
+export type RiskTag = 'unofficial-api' | 'terms-risk' | 'account-limitation-risk'
+
+// ledger は CLI(managed) でインストールした provider の記録。手動配置 (unmanaged) は載らない。
+// $XDG_STATE_HOME/eveng2-toolbar/provider-ledger.json に保存する。
+export type LedgerEntryJs = {
+  id: string
+  kind: 'js'
+  managed: true
+  source: string // "https://..." or "local:<absolutePath>"
+  installedSha256: string
+  etag: string | null
+  installedVersion: string | null
+  installedAt: string // ISO8601
+  risk: RiskTag[]
+  acceptedRisks: RiskTag[]
+  enabled: boolean
+  ext: 'ts' | 'mjs' | 'js'
+}
+
+export type LedgerEntrySubprocess = {
+  id: string
+  kind: 'subprocess'
+  managed: true
+  source: string // "command:<command>"
+  command: string
+  args: string[]
+  timeoutMs: number
+  ttlMs: number
+  installedSha256: string | null
+  installedAt: string
+  risk: RiskTag[]
+  acceptedRisks: RiskTag[]
+  enabled: boolean
+}
+
+export type LedgerEntry = LedgerEntryJs | LedgerEntrySubprocess
+export type Ledger = { version: 1; providers: Record<string, LedgerEntry> }

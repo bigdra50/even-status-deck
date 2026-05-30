@@ -50,6 +50,11 @@ export async function runSubprocess(
   cfg: SubprocessProviderConfig,
   configDir: string,
 ): Promise<SubprocessResult> {
+  // command が path 区切りを含むのに絶対パスでない = cwd 相対解決になり危険なので拒否する。
+  // 区切りを含まない bare command (例 "python3") は PATH 解決を許可する (MCP / i3blocks と同様)。
+  if (/[/\\]/.test(cfg.command) && !isAbsolute(cfg.command)) {
+    return { ok: false, error: 'command must be a bare name (PATH) or an absolute path' }
+  }
   const args = resolveArgs(cfg.args ?? [], configDir)
   if (args === null) {
     return { ok: false, error: 'invalid args (non-absolute path or unknown token)' }

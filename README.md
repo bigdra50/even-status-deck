@@ -107,13 +107,15 @@ print(json.dumps({
 
 例: iPhone bridge（`eveng2-iphone-bridge`、別マシン/常駐の source）。Claude の rate-limit % のように本体と同一マシンで「API を叩くだけ」のものは (4) JS plugin の方が軽い。
 
-### (4) JS plugin（autoload, Vim 流）
+### (4) JS plugin（autoload）
 
-`$XDG_CONFIG_HOME/eveng2-toolbar/providers/*.{ts,mjs,js}` を置くと本体が動的 import する（既定 `~/.config/eveng2-toolbar/providers/`）。本体ランタイム（`bun run server` / dev）でのみ有効（compile 単一バイナリでは無効）。
+`$XDG_CONFIG_HOME/eveng2-toolbar/providers/<id>.{ts,mjs,js}`（既定 `~/.config/eveng2-toolbar/providers/`）に置き、`config.toml` に `[providers.<id>]` を書くと有効になる。本体ランタイム（`bun run server` / dev）でのみ有効（compile 単一バイナリでは無効）。
+
+**置くだけでは動かない（gate）**: セキュリティのため、`config.toml` に `[providers.<id>]` で**明示登録した id の `<id>.<ext>` だけ**が import・実行される。未登録ファイルは import すらされない（sync ツールや誤って置いたファイルが勝手に走らない）。よって **ファイル名は id に一致**させる。`enabled = false` にすると import もしない。
 
 - 契約: default export で manifest `{ id, group }`。`group(ctx)` は `Group`（`{ id, label, segments }`）か `null`。
 - `ctx.options` に `config.toml` の `[providers.<id>]` が渡る（apiKey 等）。`.ts` のまま読める。
-- 例: [`examples/provider.example.ts`](./examples/provider.example.ts)。
+- 例: [`examples/provider.example.ts`](./examples/provider.example.ts)（`<id>.ts` にリネームして置く）。
 
 ```ts
 // ~/.config/eveng2-toolbar/providers/weather.ts
@@ -126,7 +128,13 @@ export default {
 }
 ```
 
-実例: [`eveng2-claude-usage-provider`](https://github.com/bigdra50/eveng2-claude-usage-provider)（Claude の rate-limit % を返す drop-in プラグイン。非公式 API のため本体から切り出した opt-in の別 repo。`providers/` に 1 ファイル置くだけ）。`group()` がハングしても `/api/status` を止めないよう、fetch には必ずタイムアウトを入れる。
+```toml
+# config.toml — これで初めて有効になる (gate)
+[providers.weather]
+apiKey = "xxxx"
+```
+
+実例: [`eveng2-claude-usage-provider`](https://github.com/bigdra50/eveng2-claude-usage-provider)（Claude の rate-limit % を返す drop-in プラグイン。非公式 API のため本体から切り出した opt-in の別 repo）。`providers/claude-limits.mjs` に置き `[providers.claude-limits]` を登録する。`group()` がハングしても `/api/status` を止めないよう、fetch には必ずタイムアウトを入れる。
 
 ### サーバー側 config（有効/無効・オプション）
 
