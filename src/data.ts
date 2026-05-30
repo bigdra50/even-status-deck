@@ -1,5 +1,6 @@
 // データ層 API。URL を明示し timeout / abort 付きで取得する純粋関数 (マルチソース集約用)。
 // 可変 base グローバルは廃止 (store が接続先を保持し revision で遅延応答を破棄する)。
+import { type EventsDoc, parseEventsDoc } from './event-types'
 import { parseStatusDoc, type StatusDoc } from './status-types'
 
 // machineId は同一マシン判定 (id 安定化・合流) のキーなので非空 string であることを保証する。
@@ -9,6 +10,8 @@ export type MachineInfo = {
   machineId: string
   label: string
   availableSources: string[]
+  /** 機能発見 (PROTOCOL §10)。events=true なら /api/events long-poll を話せる。 */
+  capabilities?: { events?: boolean }
 }
 
 const MAX_MACHINE_ID_LEN = 128
@@ -52,7 +55,12 @@ export function parseMachineInfo(x: unknown): MachineInfo | null {
         .filter((s): s is string => typeof s === 'string')
         .slice(0, MAX_AVAILABLE_SOURCES)
     : []
-  return { machineId, label, availableSources }
+  const out: MachineInfo = { machineId, label, availableSources }
+  const caps = d.capabilities
+  if (caps && typeof caps === 'object' && (caps as { events?: unknown }).events === true) {
+    out.capabilities = { events: true }
+  }
+  return out
 }
 
 // status は受信時に検証・サニタイズする (不正データで描画を壊さない)。
@@ -67,6 +75,35 @@ export const fetchMachineFrom = async (
   signal?: AbortSignal,
 ): Promise<MachineInfo | null> =>
   parseMachineInfo(await getJsonFrom<unknown>(url, '/api/machine', signal))
+
+// overlay イベントの long-poll (PROTOCOL §11)。timeout は waitMs + 通常 margin。
+// pending か reset があれば server が即返し、無ければ waitMs まで保留して空で返る。
+// 解析失敗 / HTTP エラー / abort は null (= caller が backoff して再試行)。
+export const fetchEventsFrom = async (
+  url: string,
+  since: number,
+  waitMs: number,
+  signal?: AbortSignal,
+): Promise<EventsDoc | null> => {
+  const clean = url.replace(/\/+$/, '')
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), waitMs + FETCH_TIMEOUT_MS)
+  if (signal) {
+    if (signal.aborted) ctl.abort()
+    else signal.addEventListener('abort', () => ctl.abort(), { once: true })
+  }
+  try {
+    const res = await fetch(`${clean}/api/events?since=${since}&waitMs=${waitMs}`, {
+      signal: ctl.signal,
+    })
+    if (!res.ok) return null
+    return parseEventsDoc(await res.json())
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 // 同一マシンの複数経路 (LAN / VPN 等) を到達順に試す (先頭優先、失敗で次へ)。
 // 成功した経路の status とその url を返す。全滅なら null。abort されたら即中断する。

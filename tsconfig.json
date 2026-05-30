@@ -18,5 +18,7 @@
     "noFallthroughCasesInSwitch": true,
     "strict": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "_comment": "*.test.ts は bun test で実行する (bun:test を import するため root tsc の対象外)。",
+  "exclude": ["src/**/*.test.ts"]
 }
