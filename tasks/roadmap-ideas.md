@@ -221,11 +221,13 @@ type ImageSource =
 - **枠線と行高の関係（注意）**: 1 行高（rowSpan=1 = 28.8px）のセルに border+padding を入れると `innerH < 27` で行が消える。**枠を付けるなら rowSpan≥2**。1 行セルは border 0 / padding 0 を既定にする。compiler は「枠付きで 1 行も入らないセル」を警告/拒否。
 - レイアウト変更 = `rebuildPageContainer`（ちらつき）/ 中身更新 = `textContainerUpgrade`・`updateImageRawData`（ちらつき無し）→ 配置（grid）は固定運用し、データをセルに流し込む 2 層構成。
 - **全角 / grapheme（重要）**: 幅は px（`getTextWidth`）で測る。現状の `formatSegmentValue` / `pad` は `.length`（UTF-16 code unit）ベースで、全角・絵文字で列ズレ / 誤切り詰め / サロゲート分断が起きる既存バグ（`widthChars` 使用時に顕在）。grid の text-fit ではこれを使わず **px + grapheme** に統一する。行全体の overflow 防止（`justifyClusters`）は既に px なので全角でも 2 ページ目には溢れない。
-- 要実機検証: pretext `getTextWidth` が CJK の字幅を正しく持つか、firmware font に CJK glyph があるか、line-height 27px が CJK でも不変か。
+- 実機確認（0.1.54 / build #24909, 2026-05-30）: firmware font は **CJK（漢字 / かな / 全角数字 / 円）＋ 絵文字（☀ ☁ ☂ 😀 🎉 🔥）とも描画される**。10 行も維持。
+- 実機で **列は揃わないことを確認**（`|...|` の右端が縦に揃わない）。proportional フォントでは space パディングで px 揃えは原理的に不可。→ **厳密な列揃えは grid の座標配置コンテナ専用**とする。EAW 修正は「列揃え」のためではなく **絵文字分断・過大幅・誤切り詰めの是正**として維持し、線形 status line の widthChars は近似のまま割り切る。
 
 ### データ束縛
 - text cell: 既存 segment 参照（groupId/segmentId）を N 行表示。現状 `renderGlass` のロジックをセル内寸に一般化。
 - image cell: **client 描画を標準**（`icon` / `sparkline` / `bitmap` を declarative 宣言 → クライアントで 4-bit 変換）。server が画像バイトを返す方式は BLE 遅延 / サイズ / 互換リスクが高いので後回し。
+- **絵文字グリフで代替（実機確認・重要）**: firmware font が絵文字を描画できるので、天気 ☀☁☂🌧 / 状態アイコンのような単純な絵は **text cell の絵文字で出せる**。image container（1 枚 0.5〜2s/BLE・≤4・逐次）を使わずに済む。image cell は**本物のグラフ / ビットマップ**専用に温存し、アイコン類はまず絵文字 text を試す。
 
 ### 後方互換
 現状の線形 status line = 「12×10 グリッドに全面 1 text cell（colSpan=12, rowSpan=10）を置き summary view を束縛」した 1 プリセット。描画結果を変えずに移行できる。
