@@ -64,7 +64,12 @@ async function importProvider(path: string, expectedId: string): Promise<Provide
   const d = mod.default as { id?: unknown; group?: unknown } | (() => unknown) | undefined
   if (d && typeof d === 'object' && typeof d.id === 'string' && typeof d.group === 'function') {
     const fn = d.group as (ctx: ProviderCtx) => unknown
-    return { id: d.id, group: async (ctx) => asGroup(await fn(ctx)) }
+    const disp = (d as { dispose?: unknown }).dispose
+    return {
+      id: d.id,
+      group: async (ctx) => asGroup(await fn(ctx)),
+      dispose: typeof disp === 'function' ? (disp as () => void | Promise<void>) : undefined,
+    }
   }
   if (typeof d === 'function') {
     const fn = d as () => unknown
@@ -131,8 +136,13 @@ async function getUserProviders(cfg: ServerConfig): Promise<ProviderDef[]> {
     }
     out.push(def)
   }
-  // 参照されなくなった (ファイル削除 / 登録解除) loaded を片付ける。
-  for (const path of [...loaded.keys()]) if (!usedPaths.has(path)) loaded.delete(path)
+  // 参照されなくなった (ファイル削除 / 登録解除) loaded を片付ける。dispose で timer/socket を解放。
+  for (const path of [...loaded.keys()]) {
+    if (usedPaths.has(path)) continue
+    const d = loaded.get(path)
+    if (d?.dispose) Promise.resolve(d.dispose()).catch(() => {}) // 解放失敗は無視
+    loaded.delete(path)
+  }
   return out
 }
 

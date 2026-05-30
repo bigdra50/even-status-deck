@@ -221,6 +221,24 @@ ttlMs = 30000
 - 標準 provider をこの形式で書けば、そのまま他言語ユーザーのコピペサンプルになる（JS の `export default` 形式と違い翻訳不要）。
 - v1 は単発モード（毎 poll spawn → stdout 全体を `JSON.parse`）。高頻度向けの NDJSON 常駐モードは必要が出たら追加。
 
+### (a) JS plugin の manifest と gate
+
+`providers/<id>.{ts,mjs,js}` を動的 import する（本体ランタイム時のみ。compile バイナリでは無効）。
+
+```ts
+export default {
+  id: 'weather',                 // ファイル名 <id>.<ext> と一致させる
+  group: (ctx) => Group | null,  // ctx.options = config の [providers.<id>]
+  risk?: ('unofficial-api' | 'terms-risk' | 'account-limitation-risk')[],
+  version?: string,
+  dispose?: () => void,          // アンロード時に呼ばれる（timer/socket 解放）
+}
+```
+
+- **gate**: ファイルを置くだけでは実行されない。config の `[providers.<id>]` 登録（または `provider enable`）された id の `<id>.<ext>` だけが import・実行される。未登録ファイルは import しない。
+- **`provider add-js <https-url|abs-path>`**: コードを**実行せず**に `export default { id }` を静的解析し、`risk` を読んで未承認なら `--accept-risk` を要求する。動的 manifest（`export default makeManifest()`）は静的に読めないため拒否する。HTTPS 強制・サイズ上限・sha256・同一 dir staging → atomic rename・ledger 記録。
+- `risk` は宣言値（provider 自己申告）。client/ホストは untrusted として扱い、install/list/update で提示してユーザーに承認させる。
+
 ### セキュリティ
 
 - provider は信頼コードのみ実行（config 明示登録 = ユーザーの意図）。

@@ -2,6 +2,7 @@
 // add/remove/update/check-updates は Phase 3+。
 import { readdir } from 'node:fs/promises'
 import { loadLedger, loadServerConfig, PROVIDER_DIR } from '../config.ts'
+import type { RiskTag } from '../types.ts'
 import {
   appendSection,
   hasSection,
@@ -9,6 +10,7 @@ import {
   setEnabled,
   writeConfigText,
 } from './config-writer.ts'
+import { addJs, removeProvider, updateJs } from './install.ts'
 import { updateLedger } from './ledger.ts'
 
 const BUILTIN_IDS = new Set(['claude-code', 'codex', 'system'])
@@ -149,32 +151,126 @@ function done(id: string, what: string): void {
   console.log(`${id}: ${what}. 反映は実行中サーバーの次 poll (最大 3s)、restart 不要。`)
 }
 
+// 簡易フラグ parser。--accept-risk <csv> / --force / --keep-file / --all と positional を分ける。
+function parseArgs(rest: string[]): {
+  positional: string[]
+  acceptRisk: RiskTag[]
+  force: boolean
+  keepFile: boolean
+  all: boolean
+} {
+  const positional: string[] = []
+  let acceptRisk: RiskTag[] = []
+  let force = false
+  let keepFile = false
+  let all = false
+  const VALID_RISK = new Set<string>(['unofficial-api', 'terms-risk', 'account-limitation-risk'])
+  // 不正タグは無視 (gate は宣言 risk と照合するので未知タグは効かない)。
+  const toTags = (s: string): RiskTag[] =>
+    s
+      .split(',')
+      .map((x) => x.trim())
+      .filter((x) => VALID_RISK.has(x)) as RiskTag[]
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i] ?? ''
+    if (a === '--force') force = true
+    else if (a === '--keep-file') keepFile = true
+    else if (a === '--all') all = true
+    else if (a === '--accept-risk') {
+      const v = rest[i + 1]
+      // 次が別フラグ/欠落なら値を食わない (--accept-risk --force 事故を防ぐ)。
+      if (v && !v.startsWith('--')) {
+        acceptRisk = toTags(v)
+        i++
+      }
+    } else if (a.startsWith('--accept-risk=')) acceptRisk = toTags(a.slice('--accept-risk='.length))
+    else if (a.startsWith('--')) console.warn(`warning: 未知のフラグ ${a} を無視します`)
+    else positional.push(a)
+  }
+  return { positional, acceptRisk, force, keepFile, all }
+}
+
+async function cmdUpdateAll(acceptRisk: RiskTag[]): Promise<void> {
+  const ledger = await loadLedger()
+  const ids = Object.values(ledger.providers)
+    .filter((e) => e.kind === 'js')
+    .map((e) => e.id)
+  const needAttention: string[] = []
+  for (const id of ids) {
+    try {
+      const r = await updateJs(id, { acceptRisk })
+      console.log(`${id}: ${r}`)
+      if (r === 'risk') needAttention.push(id)
+    } catch (e) {
+      console.error(`${id}: ${e instanceof Error ? e.message : String(e)}`)
+      needAttention.push(id)
+    }
+  }
+  if (needAttention.length) {
+    console.log(`\n要対応 (--accept-risk を付けて個別 update): ${needAttention.join(', ')}`)
+  }
+}
+
+function requireValidId(sub: string, id: string | undefined): id is string {
+  if (!id) {
+    console.error(`usage: eveng2-toolbar provider ${sub} <id>`)
+    process.exitCode = 1
+    return false
+  }
+  if (!ID_RE.test(id)) {
+    console.error(`invalid id '${id}': [A-Za-z0-9_-] のみ使えます`)
+    process.exitCode = 1
+    return false
+  }
+  return true
+}
+
 export async function runProviderCli(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv
+  const flags = parseArgs(rest)
   switch (sub) {
     case 'list':
       await cmdList()
       return
     case 'enable':
     case 'disable': {
-      const id = rest[0]
-      if (!id) {
-        console.error(`usage: eveng2-toolbar provider ${sub} <id>`)
-        process.exitCode = 1
-        return
-      }
-      if (!ID_RE.test(id)) {
-        console.error(`invalid id '${id}': [A-Za-z0-9_-] のみ使えます`)
-        process.exitCode = 1
-        return
-      }
+      const id = flags.positional[0]
+      if (!requireValidId(sub, id)) return
       if (sub === 'enable') await cmdEnable(id)
       else await cmdDisable(id)
       return
     }
+    case 'add-js': {
+      const source = flags.positional[0]
+      if (!source) {
+        console.error(
+          'usage: eveng2-toolbar provider add-js <https-url|abs-path> [--accept-risk a,b] [--force]',
+        )
+        process.exitCode = 1
+        return
+      }
+      await addJs(source, { acceptRisk: flags.acceptRisk, force: flags.force })
+      return
+    }
+    case 'remove': {
+      const id = flags.positional[0]
+      if (!requireValidId(sub, id)) return
+      await removeProvider(id, flags.keepFile)
+      return
+    }
+    case 'update': {
+      if (flags.all) {
+        await cmdUpdateAll(flags.acceptRisk)
+        return
+      }
+      const id = flags.positional[0]
+      if (!requireValidId(sub, id)) return
+      const r = await updateJs(id, { acceptRisk: flags.acceptRisk })
+      console.log(`${id}: ${r}${r === 'risk' ? ' (--accept-risk を付けて再実行)' : ''}`)
+      return
+    }
     default:
-      console.log('usage: eveng2-toolbar provider <list|enable|disable> [id]')
-      console.log('  (add / remove / update は今後のフェーズ)')
+      console.log('usage: eveng2-toolbar provider <list|enable|disable|add-js|update|remove> ...')
       process.exitCode = sub ? 1 : 0
   }
 }

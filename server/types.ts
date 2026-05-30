@@ -7,11 +7,23 @@ export type { Group, Segment, StatusDoc } from '../src/status-types.ts'
 // provider 実行コンテキスト。config.providers[id] のオプションをそのまま渡す。
 export type ProviderCtx = { options: Record<string, unknown> }
 
-// builtin / JS plugin provider の manifest。id を a-priori に持つことで、計算前に
+// builtin / JS plugin provider の解決済み形。id を a-priori に持つことで、計算前に
 // config の enabled を適用でき、無効 provider は spawn も送信もしない。
+// dispose は JS plugin がアンロード (ファイル削除/登録解除) されるとき呼ばれる (timer/socket 解放)。
 export type ProviderDef = {
   id: string
   group: (ctx: ProviderCtx) => Promise<Group | null> | Group | null
+  dispose?: () => void | Promise<void>
+}
+
+// JS plugin の default export 契約 (manifest)。group のみ必須、他は任意。
+// risk は install/list/update で提示し承認 (--accept-risk) を要求するためのタグ。
+export type JsProviderManifest = {
+  id: string
+  group: (ctx: ProviderCtx) => Promise<Group | null> | Group | null
+  risk?: RiskTag[]
+  version?: string
+  dispose?: () => void | Promise<void>
 }
 
 // subprocess provider (PROTOCOL §9c)。外部コマンドを spawn して StatusDoc / 単一 Group を得る。

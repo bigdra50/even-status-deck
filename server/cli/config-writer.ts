@@ -85,6 +85,17 @@ export function setEnabled(text: string, id: string, enabled: boolean): string |
   return lines.join('\n')
 }
 
+// [providers.<id>] セクション (ヘッダ〜次セクション/EOF) を削除する。無ければ null。
+// セクション内のコメントは失われる (呼び出し側で警告する)。前にあるコメント行は残る。
+export function removeSection(text: string, id: string): string | null {
+  const lines = text.split('\n')
+  const h = findSection(lines, id)
+  if (h < 0) return null
+  const end = sectionEnd(lines, h + 1, stringBodyLines(lines))
+  lines.splice(h, end - h)
+  return lines.join('\n')
+}
+
 // 末尾に [providers.<id>] (+ 任意で enabled) を追記する。既存内容があれば空行で区切る。
 // id は呼び出し側で [a-z0-9_-]+ に検証済み前提 (TOML キーとして安全)。
 export function appendSection(text: string, id: string, enabled?: boolean): string {
