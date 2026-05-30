@@ -2,8 +2,6 @@ import {
   CreateStartUpPageContainer,
   type EvenAppBridge,
   type EvenHubEvent,
-  ListContainerProperty,
-  ListItemContainerProperty,
   OsEventTypeList,
   RebuildPageContainer,
   TextContainerProperty,
@@ -25,7 +23,6 @@ import {
   type GlassData,
   type GView,
   gridLayoutFor,
-  LIST_DEMO_ITEMS,
   POPUP_BASE_TEXT,
   POPUP_DEMO_NOTIFS,
   POPUP_DOT_CX,
@@ -96,33 +93,6 @@ function isPopupView(view: GView): boolean {
   return typeof view === 'object' && 'exp' in view && view.exp === 'popup'
 }
 
-function isListView(view: GView): boolean {
-  return typeof view === 'object' && 'exp' in view && view.exp === 'list'
-}
-
-// page6: ListContainer の通知リスト (角丸枠 + 選択ハイライト + firmware ネイティブスクロール)。
-// 各項目に \n を含め「複数行項目が描けるか」を実機検証する。
-function buildListContainer(): ListContainerProperty {
-  return new ListContainerProperty({
-    xPosition: 40,
-    yPosition: 30,
-    width: 496,
-    height: 228,
-    borderWidth: 2,
-    borderColor: 12,
-    borderRadius: 8,
-    paddingLength: 6,
-    containerID: 1,
-    containerName: 'list',
-    itemContainer: new ListItemContainerProperty({
-      itemCount: LIST_DEMO_ITEMS.length,
-      itemWidth: 0, // 0 = コンテナ幅いっぱい
-      isItemSelectBorderEn: 1,
-      itemName: LIST_DEMO_ITEMS,
-    }),
-  })
-}
-
 // popup 実験ページのコンテナ: 表示中は overlay (上下1行 + 中央通知ボックス) を grid で、
 // 非表示時は 10 行のトップページ (base) を単一コンテナで描く。
 function popupContainers(): TextContainerProperty[] {
@@ -164,8 +134,6 @@ function viewContainers(view: GView): TextContainerProperty[] {
 // topology キー (コンテナ構成の同一性)。popup は base/shown で別 (toggle で rebuild)、
 // grid は id ごと、それ以外は 'single' (中身差し替えのみ)。
 function topoKey(view: GView): string {
-  // list: 内容が変わらなければ rebuild しない (スクロール/選択は firmware ネイティブ)。
-  if (isListView(view)) return 'list'
   // popup: stack 数 + 現在 index が変わると rebuild (ドット/中身が変わるため)。
   if (isPopupView(view))
     return popupStack.length === 0 ? 'popup:base' : `popup:${popupStack.length}:${popupIdx}`
@@ -196,17 +164,6 @@ function refresh(): void {
 
   if (key !== lastTopo) {
     lastTopo = key
-    // list ページは listObject で 1 つの ListContainer を送る (ネイティブスクロール)。
-    if (isListView(view)) {
-      lastContent = null
-      bridge
-        .rebuildPageContainer(
-          new RebuildPageContainer({ containerTotalNum: 1, listObject: [buildListContainer()] }),
-        )
-        .catch(() => {})
-        .finally(done)
-      return
-    }
     let containers: TextContainerProperty[]
     try {
       containers = viewContainers(view)
@@ -379,16 +336,6 @@ async function initDeviceBattery(bridge: EvenAppBridge): Promise<void> {
 // click は sysEvent、swipe(scroll) は textEvent。ライフサイクルも sysEvent で来るので
 // click 判定より先に分岐する。
 function onEvent(event: EvenHubEvent): void {
-  const lst = event.listEvent
-  if (lst) {
-    // list 実験ページ: scroll/選択は firmware ネイティブ。click でページを離れる (summary へ)。
-    if (lst.eventType === OsEventTypeList.CLICK_EVENT) {
-      idx = 0
-      refresh()
-      syncPopupDemo()
-    }
-    return
-  }
   const sys = event.sysEvent
   if (sys) {
     const et = sys.eventType

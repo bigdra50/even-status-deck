@@ -340,7 +340,6 @@ type ExperimentPage =
   | { id: string; kind: 'text'; render: () => string }
   | { id: string; kind: 'grid'; layout: GridLayout }
   | { id: string; kind: 'popup' } // 中央ボックスの popup demo (glass.ts が timer/tap を制御)
-  | { id: string; kind: 'list' } // ListContainer の通知リスト (firmware ネイティブスクロール検証)
 
 // page2 (text): 全角 / grapheme 幅の検証。formatSegmentValue / pad の表示幅 (EAW) 修正を視認する。
 // 単一 text container の space パディングなので、proportional フォントでは |...| は揃わない (実機確認済)。
@@ -504,25 +503,12 @@ export function popupDotYs(count: number): number[] {
   return Array.from({ length: count }, (_, i) => startY + i * ROW_H)
 }
 
-// page6 (list): ListContainer の通知リスト。各項目に \n を入れて「複数行項目が描けるか」を検証。
-// firmware ネイティブスクロール + 選択ハイライト(isItemSelectBorderEn) + 角丸枠の見た目を実機で見る。
-export const LIST_DEMO_ITEMS: string[] = [
-  'WhatsApp · Elizabeth\n  お母さんから連絡。玉ねぎとピーマン買って',
-  'Slack · #general\n  デプロイ完了しました 🎉',
-  'Mail · GitHub\n  PR がマージされました',
-  'Calendar · Reminder\n  15:00 ミーティング 5分前',
-  'X · 通知\n  3件の新しい返信があります',
-  'Phone · 不在着信\n  090-xxxx-xxxx (2件)',
-]
-
-// 同種の見た目 (grid 同士 / box 系の popup・list) が隣り合うと区別しづらいので、
-// 種類が交互になるよう並べる (text → grid → box(popup) → grid → box(list))。
+// 同種の見た目 (grid 同士) が隣り合うと区別しづらいので、種類が交互になるよう並べる。
 const EXPERIMENT_PAGES: ExperimentPage[] = [
   { id: 'cjk-width', kind: 'text', render: renderCjkWidthTest },
   { id: 'grid-cjk', kind: 'grid', layout: GRID_CJK },
   { id: 'popup', kind: 'popup' },
   { id: 'grid-rows', kind: 'grid', layout: GRID_ROWS },
-  { id: 'list', kind: 'list' },
 ]
 
 // grid 実験なら GridLayout、それ以外 (summary / GroupRef / text 実験) は null。glass.ts の描画分岐用。
