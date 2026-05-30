@@ -3,8 +3,7 @@
   "private": true,
   "type": "module",
   "bin": {
-    "eveng2-toolbar": "./server/index.ts",
-    "eveng2-toolbar-server": "./server/index.ts"
+    "eveng2-toolbar": "./dist-server/index.js"
   },
   "exports": {
     ".": "./server/index.ts",
@@ -16,6 +15,7 @@
     "preview": "vite preview",
     "server": "bun run server/index.ts",
     "provider": "bun run server/index.ts provider",
+    "build:server": "bun run scripts/build-server.mjs",
     "sim": "evenhub-simulator http://localhost:5173",
     "pack": "npm run build && evenhub pack app.json dist -o eveng2-toolbar.ehpk",
     "upload": "node scripts/upload.mjs",

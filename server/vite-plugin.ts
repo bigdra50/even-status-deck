@@ -1,5 +1,5 @@
 // Vite dev middleware shim。devApiPlugin を vite.config.ts から移植し、Node 上で動かす。
-// I-4 解決: bun-server.ts や Bun API は import しない (構造で境界を強制し npm run dev を壊さない)。
+// http-server.ts (standalone サーバー) は import しない。vite dev は middleware 経由でハンドラを使う。
 // machineInfo / buildStatusDoc / loadServerConfig は standalone と同一実装を共有する。
 import type { ViteDevServer } from 'vite'
 import { loadServerConfig } from './config.ts'

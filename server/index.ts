@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
-// standalone エントリ。`eveng2-toolbar provider <subcmd>` は provider 管理 CLI へ、
-// それ以外 (引数なし / `server`) は Bun.serve でサーバーを起動する。
-import { startServer } from './bun-server.ts'
 import { runProviderCli } from './cli/provider.ts'
 import { loadServerConfig } from './config.ts'
+// standalone エントリ。`eveng2-toolbar provider <subcmd>` は provider 管理 CLI へ、
+// それ以外 (引数なし / `server`) は node:http の HTTP サーバーを起動する。
+import { startServer } from './http-server.ts'
 
 if (process.argv[2] === 'provider') {
   try {

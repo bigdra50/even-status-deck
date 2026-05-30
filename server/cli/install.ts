@@ -1,7 +1,7 @@
 // JS provider の install / update / remove (管理 Phase 3)。
 // セキュリティの要: DL したリモートコードを**実行せず**静的に manifest を読む (id / risk)。
 // HTTPS 強制、出力サイズ上限、sha256、同一 dir staging → atomic rename、risk 承認、ledger 記録。
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { loadLedger, PROVIDER_DIR } from '../config.ts'
@@ -37,9 +37,7 @@ function isRiskTag(s: string): s is RiskTag {
 }
 
 function sha256(bytes: Uint8Array): string {
-  const h = new Bun.CryptoHasher('sha256')
-  h.update(bytes)
-  return h.digest('hex')
+  return createHash('sha256').update(bytes).digest('hex')
 }
 
 function deriveExt(source: string): Ext {
@@ -229,6 +227,11 @@ export async function addJs(
   opts: { acceptRisk: RiskTag[]; force: boolean },
 ): Promise<void> {
   const { bytes, ext, etag } = await fetchSource(source)
+  if (ext === 'ts') {
+    console.warn(
+      'warning: .ts プラグインは bun ランタイムでのみロードされます (node/npx 実行時は読み込めません)。.mjs / .js を推奨します。',
+    )
+  }
   const sha = sha256(bytes)
   const manifest = parseManifestStatic(new TextDecoder().decode(bytes))
   if (!manifest) {

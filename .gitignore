@@ -3,6 +3,7 @@ node_modules/
 
 # build / packaging
 dist/
+dist-server/
 *.ehpk
 .vite/
 
