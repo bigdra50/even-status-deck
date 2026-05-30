@@ -11,16 +11,7 @@ import { loadBatteryLog, recordBatteryLevel, setBatteryBridge } from './battery'
 import { clockShowsSeconds, localStatus } from './builtins'
 import { BUILTIN_SOURCE_ID, emptyConfig, loadConfig, syncSourceWithStatus } from './config'
 import { getGlassBattery, setGlassBattery } from './device-state'
-import {
-  clearPopups,
-  dismissCurrentPopup,
-  isPopupActive,
-  type PopupNotif,
-  popupOverlayContainers,
-  popupTopoKey,
-  pushPopup,
-  scrollPopup,
-} from './glass-popup'
+import { createOverlayManager, type Notif } from './glass-overlay'
 import {
   buildViews,
   GLASS_HEIGHT,
@@ -65,6 +56,8 @@ let refreshPending = false
 let lastContent: string | null = null // 直近送信した content (single topology)。無変化なら upgrade 抑制
 let lastTopo: string | null = null // 直近のコンテナ構成キー。変わると rebuildPageContainer する
 let glassClock: ReturnType<typeof setTimeout> | null = null // 分境界の時刻更新 (store.notify を介さない)
+let overlayTimer: ReturnType<typeof setTimeout> | null = null // toast の自動消去タイマー
+const overlay = createOverlayManager() // notification / toast / dialog / banner (再利用可能)
 
 // 全面 1 text container (page1 / linear)。従来の単一コンテナと同一。
 function singleContainer(content: string): TextContainerProperty {
@@ -102,19 +95,18 @@ function refresh(): void {
       refresh()
     }
   }
+  overlay.tick(Date.now()) // toast の expiry を進める (空になることもある)
+  scheduleOverlayWake() // 次の自動消去をスケジュール
   const view = views[idx] ?? 'summary'
   const base = renderGlass(view, data, visible)
 
-  if (isPopupActive()) {
-    // 現在ビューの上下 1 行を残し、中央に通知ポップアップを重ねる (件数/選択が変われば rebuild)。
-    const lines = base.split('\n')
-    const top = lines[0] ?? ''
-    const bottom = lines.length > 1 ? (lines[lines.length - 1] ?? '') : ''
-    const key = `popup:${popupTopoKey()}`
+  if (overlay.isActive()) {
+    // 現在ビューの上に active overlay を重ねる (内容/選択が変われば rebuild)。
+    const key = `ov:${overlay.key()}`
     if (key !== lastTopo) {
       lastTopo = key
       lastContent = null
-      const containers = popupOverlayContainers(top, bottom)
+      const containers = overlay.containers(base)
       bridge
         .rebuildPageContainer(
           new RebuildPageContainer({
@@ -125,7 +117,7 @@ function refresh(): void {
         .catch(() => {})
         .finally(done)
     } else {
-      done() // 同一 stack/index は再送不要
+      done()
     }
     return
   }
@@ -167,14 +159,39 @@ function cycle(dir: number): void {
   refresh()
 }
 
-// 外部トリガ: window 'toolbar:popup' イベントで通知を積み、再描画する。
-// detail に PopupNotif ({app, sender, body}) を渡す。通知ソースが決まったらここに繋ぐ。
-function onPopupEvent(e: Event): void {
-  const d = (e as CustomEvent<PopupNotif>).detail
-  if (d?.app) {
-    pushPopup(d)
-    refresh()
+// toast の auto-dismiss 用タイマー。overlay.nextWakeMs() に合わせて setTimeout する。
+function scheduleOverlayWake(): void {
+  if (overlayTimer) {
+    clearTimeout(overlayTimer)
+    overlayTimer = null
   }
+  const ms = overlay.nextWakeMs(Date.now())
+  if (ms !== Number.POSITIVE_INFINITY) {
+    overlayTimer = setTimeout(
+      () => {
+        overlayTimer = null
+        refresh()
+      },
+      Math.max(0, ms),
+    )
+  }
+}
+
+// 外部トリガ: window 'toolbar:overlay' イベントで overlay を出す (通知ソースが決まったら繋ぐ)。
+// detail.kind で notification(既定) / toast / dialog / banner を振り分ける。
+type OverlayEvent =
+  | ({ kind?: 'notification' } & Notif)
+  | { kind: 'toast'; text: string; durationMs?: number; action?: string }
+  | { kind: 'dialog'; title: string; message: string; actions?: string[] }
+  | { kind: 'banner'; text: string }
+function onOverlayEvent(e: Event): void {
+  const d = (e as CustomEvent<OverlayEvent>).detail
+  if (!d) return
+  if (d.kind === 'toast') overlay.toast(d.text, { durationMs: d.durationMs, action: d.action })
+  else if (d.kind === 'dialog') overlay.dialog(d.title, d.message, d.actions ?? ['OK'])
+  else if (d.kind === 'banner') overlay.setBanner(d.text)
+  else overlay.notify(d)
+  refresh()
 }
 
 // 時刻 HUD を毎分更新する glass-local タイマー。er-clock 式: builtin status を直接再計算して
@@ -210,10 +227,14 @@ function cleanup(): void {
     clearTimeout(glassClock)
     glassClock = null
   }
-  clearPopups()
+  overlay.clear()
+  if (overlayTimer) {
+    clearTimeout(overlayTimer)
+    overlayTimer = null
+  }
   if (typeof window !== 'undefined') {
     window.removeEventListener('toolbar:config-changed', onConfigChangedEvent)
-    window.removeEventListener('toolbar:popup', onPopupEvent)
+    window.removeEventListener('toolbar:overlay', onOverlayEvent)
     window.removeEventListener('beforeunload', cleanup)
   }
   if (gbridge) void stopImu(gbridge)
@@ -293,9 +314,8 @@ function onEvent(event: EvenHubEvent): void {
     lastClickAt = now
     if (et === OsEventTypeList.DOUBLE_CLICK_EVENT) {
       void gbridge?.shutDownPageContainer(1)
-    } else if (isPopupActive()) {
-      // 通知表示中のタップは現在の通知を既読にして次へ (空になれば通常表示へ)。
-      dismissCurrentPopup()
+    } else if (overlay.handleTap()) {
+      // overlay が tap を消費 (dialog 確定 / 通知既読→次 / toast dismiss)。
       refresh()
     } else {
       idx = 0
@@ -305,15 +325,16 @@ function onEvent(event: EvenHubEvent): void {
   }
   const txt = event.textEvent
   if (txt) {
-    // 通知表示中はスクロールでスタック内を移動、無ければビュー巡回。
-    if (isPopupActive()) {
-      if (txt.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) scrollPopup(1)
-      else if (txt.eventType === OsEventTypeList.SCROLL_TOP_EVENT) scrollPopup(-1)
-      refresh()
-      return
-    }
-    if (txt.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) cycle(1)
-    else if (txt.eventType === OsEventTypeList.SCROLL_TOP_EVENT) cycle(-1)
+    const dir =
+      txt.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT
+        ? 1
+        : txt.eventType === OsEventTypeList.SCROLL_TOP_EVENT
+          ? -1
+          : 0
+    if (dir === 0) return
+    // overlay が scroll を消費 (dialog 選択 / 通知切替) すれば再描画、無ければビュー巡回。
+    if (overlay.handleScroll(dir)) refresh()
+    else cycle(dir)
   }
 }
 
@@ -374,7 +395,7 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   storeUnsub = subscribe(onStoreUpdate)
   if (typeof window !== 'undefined') {
     window.addEventListener('toolbar:config-changed', onConfigChangedEvent)
-    window.addEventListener('toolbar:popup', onPopupEvent) // 通知トリガ (再利用可能)
+    window.addEventListener('toolbar:overlay', onOverlayEvent) // overlay トリガ (再利用可能)
     window.addEventListener('beforeunload', cleanup)
   }
 
