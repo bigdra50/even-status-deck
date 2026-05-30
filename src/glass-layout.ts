@@ -19,6 +19,7 @@ export type GridCell = {
   rowSpan: number
   content: string
   border?: number // borderWidth 0-5 (既定 0)
+  radius?: number // borderRadius 0-10 (既定 0・角丸)
   padding?: number // paddingLength (既定 0)
 }
 export type GridLayout = { cols?: number; rows?: number; cells: GridCell[] }
@@ -112,17 +113,21 @@ export function compileGrid(layout: GridLayout): CompiledCell[] {
 
     const border = Math.max(0, Math.min(5, c.border ?? 0))
     const padding = Math.max(0, c.padding ?? 0)
-    const w = Math.round(c.colSpan * COL_W)
-    const h = Math.round(c.rowSpan * ROW_H)
+    const x = Math.round(c.col * COL_W)
+    const y = Math.round(c.row * ROW_H)
+    // edge-based 丸め: 隣接セルが隙間/重なり無く tile する (ROW_H=28.8 が小数なので
+    // round(span*ROW_H) の累積だと 1px ずれる)。1 行セル (rowSpan=1) を積むときに効く。
+    const w = Math.round((c.col + c.colSpan) * COL_W) - x
+    const h = Math.round((c.row + c.rowSpan) * ROW_H) - y
     const inset = 2 * (border + padding)
     out.push({
-      xPosition: Math.round(c.col * COL_W),
-      yPosition: Math.round(c.row * ROW_H),
+      xPosition: x,
+      yPosition: y,
       width: w,
       height: h,
       borderWidth: border,
       borderColor: border > 0 ? 12 : 0,
-      borderRadius: 0,
+      borderRadius: Math.max(0, Math.min(10, c.radius ?? 0)),
       paddingLength: padding,
       containerID: id,
       containerName: `c${id}`,

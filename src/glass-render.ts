@@ -339,6 +339,7 @@ export function renderGlass(view: GView, d: GlassData, visible?: VisibleMap): st
 type ExperimentPage =
   | { id: string; kind: 'text'; render: () => string }
   | { id: string; kind: 'grid'; layout: GridLayout }
+  | { id: string; kind: 'popup' } // 中央ボックスの popup demo (glass.ts が timer/tap を制御)
 
 // page2 (text): 全角 / grapheme 幅の検証。formatSegmentValue / pad の表示幅 (EAW) 修正を視認する。
 // 単一 text container の space パディングなので、proportional フォントでは |...| は揃わない (実機確認済)。
@@ -392,9 +393,122 @@ const GRID_CJK: GridLayout = {
   ],
 }
 
+// page4 (grid): 1 行ずつ (rowSpan=1) のグリッドを描けるか実機検証。border 有/無を交互にして
+// 薄い行 (innerH: border1=27px / border0=29px) が描けるか対比する。8 コンテナ上限
+// (text 8 = event 1 + cell 7) のため 10 行ぜんぶをセル化はできない = 自由グリッドは最大 7〜8 行。
+const GRID_ROWS: GridLayout = {
+  cells: [
+    {
+      id: 'r0',
+      col: 0,
+      row: 0,
+      colSpan: 12,
+      rowSpan: 1,
+      content: '1行グリッド (border1)',
+      border: 1,
+    },
+    { id: 'r1', col: 0, row: 1, colSpan: 12, rowSpan: 1, content: '日本語 abc 123 (border0)' },
+    {
+      id: 'r2',
+      col: 0,
+      row: 2,
+      colSpan: 12,
+      rowSpan: 1,
+      content: '全角 ＡＢＣ１２３ (b1)',
+      border: 1,
+    },
+    { id: 'r3', col: 0, row: 3, colSpan: 12, rowSpan: 1, content: '天気 ☀ 21°C (b0)' },
+    { id: 'r4', col: 0, row: 4, colSpan: 12, rowSpan: 1, content: 'bar ━━━━──── (b1)', border: 1 },
+    { id: 'r5', col: 0, row: 5, colSpan: 12, rowSpan: 1, content: 'row5 テスト (b0)' },
+    {
+      id: 'r6',
+      col: 0,
+      row: 6,
+      colSpan: 12,
+      rowSpan: 1,
+      content: 'row6 上限 7/10 (b1)',
+      border: 1,
+    },
+  ],
+}
+
+// page5 (popup): トップページ風の 10 行 (base) に、中央へ通知カードを上書きする overlay。
+// 上下 1 行 (POPUP_TOP / POPUP_BOTTOM) だけ残し、中央の status は隠れる (SDK は透過/フェード不可なので
+// rebuild で「消す」近似)。glass.ts が一定間隔で overlay を出し、タップで base へ戻す。
+const POPUP_TOP = '09:41   G2 100%   ☀ Tokyo 21°C'
+const POPUP_BOTTOM = 'Claude $12 1.9k   ·   Codex 45%'
+export const POPUP_BASE_TEXT = [
+  POPUP_TOP,
+  'TCHN  TechNova    182.45  -0.81%',
+  'SOLR  SolRise      27.85  +0.12%',
+  'BIOX  BioXel       46.12   0.00%',
+  'CPU 34%  MEM 61%  Disk 72%',
+  'Battery 88% ~6h   Net wifi',
+  'Weather くもり   AQI 42',
+  'Calendar 次の会議 25分',
+  'Tasks 今日 4件   通知 3',
+  POPUP_BOTTOM,
+].join('\n')
+export type PopupNotif = { app: string; sender: string; body: string }
+export const POPUP_MAX = 4 // スタック最大数 (左ドットの行数 = box rowSpan6 に収まる範囲)
+// timer が順に push するデモ通知。
+export const POPUP_DEMO_NOTIFS: PopupNotif[] = [
+  {
+    app: 'WhatsApp',
+    sender: 'Elizabeth',
+    body: 'お母さんから連絡。玉ねぎと\nピーマンを買ってきて。',
+  },
+  { app: 'Slack', sender: '#general', body: 'デプロイ完了しました 🎉' },
+  { app: 'Mail', sender: 'GitHub', body: 'PR がマージされました。' },
+  { app: 'Calendar', sender: 'Reminder', body: '15:00 ミーティング 5分前' },
+]
+
+// スタック (stack) と現在 index → overlay の GridLayout。
+// 上行 + 左ドット列 (現在=● / 他=·) + 中央通知カード + 下行。背後の中央 status は隠す近似。
+// 上行 + 中央通知カード + 下行 (grid)。左のスタックドットは text 列だと · の中心がずれるため、
+// glass.ts 側で px 位置の個別コンテナにして中心を揃える (ここには含めない)。
+export function buildPopupOverlay(stack: PopupNotif[], idx: number): GridLayout {
+  const cur = Math.max(0, Math.min(idx, stack.length - 1))
+  const n = stack[cur]
+  // 1 行目 = タイトル (字下げなし)、2 行目以降 (sender + body) は 2 文字インデントする。
+  const box = n
+    ? [`${n.app} · Now`, ...`${n.sender}\n${n.body}`.split('\n').map((l) => `  ${l}`)].join('\n')
+    : ''
+  return {
+    cells: [
+      { id: 'top', col: 0, row: 0, colSpan: 12, rowSpan: 1, content: POPUP_TOP },
+      {
+        id: 'box',
+        col: 1,
+        row: 2,
+        colSpan: 10,
+        rowSpan: 6,
+        content: box,
+        border: 2,
+        radius: 8,
+        padding: 6,
+      },
+      { id: 'bottom', col: 0, row: 9, colSpan: 12, rowSpan: 1, content: POPUP_BOTTOM },
+    ],
+  }
+}
+
+// 各ドットの中心 x (box col1=x48 の左 x≈40)。glass.ts が glyph 幅の半分だけ左にずらして
+// xPosition を決め、· と • の「中心」を px で揃える (text 列の左/右寄りすぎを解消)。
+export const POPUP_DOT_CX = 40
+// 各ドットの yPosition (box y58,h172 内で縦中央寄せ)。
+export function popupDotYs(count: number): number[] {
+  const ROW_H = 28
+  const startY = Math.round(58 + (172 - count * ROW_H) / 2)
+  return Array.from({ length: count }, (_, i) => startY + i * ROW_H)
+}
+
+// 同種の見た目 (grid 同士) が隣り合うと区別しづらいので、種類が交互になるよう並べる。
 const EXPERIMENT_PAGES: ExperimentPage[] = [
   { id: 'cjk-width', kind: 'text', render: renderCjkWidthTest },
   { id: 'grid-cjk', kind: 'grid', layout: GRID_CJK },
+  { id: 'popup', kind: 'popup' },
+  { id: 'grid-rows', kind: 'grid', layout: GRID_ROWS },
 ]
 
 // grid 実験なら GridLayout、それ以外 (summary / GroupRef / text 実験) は null。glass.ts の描画分岐用。

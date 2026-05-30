@@ -7,12 +7,14 @@ import {
   TextContainerProperty,
   TextContainerUpgrade,
 } from '@evenrealities/even_hub_sdk'
+import { getTextWidth } from '@evenrealities/pretext'
 import { loadBatteryLog, recordBatteryLevel, setBatteryBridge } from './battery'
 import { clockShowsSeconds, localStatus } from './builtins'
 import { BUILTIN_SOURCE_ID, emptyConfig, loadConfig, syncSourceWithStatus } from './config'
 import { getGlassBattery, setGlassBattery } from './device-state'
 import { compileGrid } from './glass-layout'
 import {
+  buildPopupOverlay,
   buildViews,
   type ExpView,
   GLASS_HEIGHT,
@@ -21,6 +23,12 @@ import {
   type GlassData,
   type GView,
   gridLayoutFor,
+  POPUP_BASE_TEXT,
+  POPUP_DEMO_NOTIFS,
+  POPUP_DOT_CX,
+  POPUP_MAX,
+  type PopupNotif,
+  popupDotYs,
   renderGlass,
 } from './glass-render'
 import { feedImuSample, isImuStarted, setImuConfig, startImu, stopImu } from './imu'
@@ -57,6 +65,11 @@ let refreshBusy = false // bridge 書き込みを直列化 (BLE 飽和でグラ�
 let refreshPending = false
 let lastContent: string | null = null // 直近送信した content (single topology)。無変化なら upgrade 抑制
 let lastTopo: string | null = null // 直近のコンテナ構成キー。変わると rebuildPageContainer する
+let popupStack: PopupNotif[] = [] // popup 実験ページ: 表示中の通知スタック
+let popupIdx = 0 // スタック内の現在表示 index (スクロールで移動)
+let popupDemoNext = 0 // 次に push するデモ通知の index
+let popupTimer: ReturnType<typeof setInterval> | null = null // 一定間隔で通知を push
+const POPUP_INTERVAL_MS = 4000 // 通知の発生間隔
 let glassClock: ReturnType<typeof setTimeout> | null = null // 分境界の時刻更新 (store.notify を介さない)
 
 // 全面 1 text container (page1 / linear)。従来の単一コンテナと同一。
@@ -76,16 +89,54 @@ function singleContainer(content: string): TextContainerProperty {
   })
 }
 
-// view → グラスのコンテナ集合。linear (summary / GroupRef / text 実験) は単一 'toolbar' container、
-// grid 実験は compiler 出力 (event 層 + 座標配置セル群)。
+function isPopupView(view: GView): boolean {
+  return typeof view === 'object' && 'exp' in view && view.exp === 'popup'
+}
+
+// popup 実験ページのコンテナ: 表示中は overlay (上下1行 + 中央通知ボックス) を grid で、
+// 非表示時は 10 行のトップページ (base) を単一コンテナで描く。
+function popupContainers(): TextContainerProperty[] {
+  if (popupStack.length === 0) return [singleContainer(POPUP_BASE_TEXT)]
+  const grid = compileGrid(buildPopupOverlay(popupStack, popupIdx)).map(
+    (c) => new TextContainerProperty(c),
+  )
+  // スタックドットは px 位置で中心を揃える (text 列だと narrow な · が左右にずれるため)。
+  // 各ドットの中心を POPUP_DOT_CX に合わせ、glyph 幅の半分だけ左にずらして配置する。
+  const ys = popupDotYs(popupStack.length)
+  const dots = popupStack.map((_, i) => {
+    const g = i === popupIdx ? '•' : '·'
+    return new TextContainerProperty({
+      xPosition: Math.round(POPUP_DOT_CX - getTextWidth(g) / 2),
+      yPosition: ys[i] ?? 0,
+      width: 16,
+      height: 28,
+      borderWidth: 0,
+      borderColor: 0,
+      paddingLength: 0,
+      containerID: 90 + i,
+      containerName: `dot${i}`,
+      content: g,
+      isEventCapture: 0,
+    })
+  })
+  return [...grid, ...dots]
+}
+
+// view → グラスのコンテナ集合。popup → popupContainers、grid 実験 → compiler、
+// それ以外 (summary / GroupRef / text 実験) → 単一 'toolbar' container。
 function viewContainers(view: GView): TextContainerProperty[] {
+  if (isPopupView(view)) return popupContainers()
   const layout = gridLayoutFor(view)
   if (layout) return compileGrid(layout).map((c) => new TextContainerProperty(c))
   return [singleContainer(renderGlass(view, data, visible))]
 }
 
-// topology キー (コンテナ構成の同一性)。linear は全て 'single' (中身差し替えのみ)、grid は id ごと。
+// topology キー (コンテナ構成の同一性)。popup は base/shown で別 (toggle で rebuild)、
+// grid は id ごと、それ以外は 'single' (中身差し替えのみ)。
 function topoKey(view: GView): string {
+  // popup: stack 数 + 現在 index が変わると rebuild (ドット/中身が変わるため)。
+  if (isPopupView(view))
+    return popupStack.length === 0 ? 'popup:base' : `popup:${popupStack.length}:${popupIdx}`
   return gridLayoutFor(view) ? `grid:${(view as ExpView).exp}` : 'single'
 }
 
@@ -112,6 +163,7 @@ function refresh(): void {
   const key = topoKey(view)
 
   if (key !== lastTopo) {
+    lastTopo = key
     let containers: TextContainerProperty[]
     try {
       containers = viewContainers(view)
@@ -119,7 +171,6 @@ function refresh(): void {
       console.error('[grid] compile failed:', e)
       containers = [singleContainer('(layout error)')]
     }
-    lastTopo = key
     lastContent = key === 'single' ? (containers[0]?.content ?? null) : null
     bridge
       .rebuildPageContainer(
@@ -163,6 +214,30 @@ function cycle(dir: number): void {
   if (views.length === 0) return
   idx = (idx + dir + views.length) % views.length
   refresh()
+  syncPopupDemo()
+}
+
+// popup 実験ページにいる間だけ、一定間隔で popup を発生させるタイマーを回す。
+// ページ離脱時はタイマーを止めて popup を畳む (他ページには影響しない)。
+function syncPopupDemo(): void {
+  if (isPopupView(views[idx] ?? 'summary')) {
+    if (!popupTimer)
+      popupTimer = setInterval(() => {
+        if (popupStack.length < POPUP_MAX) {
+          const n = POPUP_DEMO_NOTIFS[popupDemoNext % POPUP_DEMO_NOTIFS.length]
+          if (n) popupStack.push(n)
+          popupDemoNext++
+          refresh()
+        }
+      }, POPUP_INTERVAL_MS)
+  } else {
+    if (popupTimer) {
+      clearInterval(popupTimer)
+      popupTimer = null
+    }
+    popupStack = []
+    popupIdx = 0
+  }
 }
 
 // 時刻 HUD を毎分更新する glass-local タイマー。er-clock 式: builtin status を直接再計算して
@@ -198,6 +273,12 @@ function cleanup(): void {
     clearTimeout(glassClock)
     glassClock = null
   }
+  if (popupTimer) {
+    clearInterval(popupTimer)
+    popupTimer = null
+  }
+  popupStack = []
+  popupIdx = 0
   if (typeof window !== 'undefined') {
     window.removeEventListener('toolbar:config-changed', onConfigChangedEvent)
     window.removeEventListener('beforeunload', cleanup)
@@ -279,14 +360,29 @@ function onEvent(event: EvenHubEvent): void {
     lastClickAt = now
     if (et === OsEventTypeList.DOUBLE_CLICK_EVENT) {
       void gbridge?.shutDownPageContainer(1)
+    } else if (isPopupView(views[idx] ?? 'summary') && popupStack.length > 0) {
+      // 表示中の通知を既読にして閉じ、次へ。空になれば base へ戻る。
+      popupStack.splice(popupIdx, 1)
+      if (popupIdx >= popupStack.length) popupIdx = Math.max(0, popupStack.length - 1)
+      refresh()
     } else {
       idx = 0
       refresh()
+      syncPopupDemo()
     }
     return
   }
   const txt = event.textEvent
   if (txt) {
+    // popup スタック表示中はスクロールでスタック内を移動 (端では据え置き)。
+    if (isPopupView(views[idx] ?? 'summary') && popupStack.length > 0) {
+      if (txt.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT)
+        popupIdx = Math.min(popupIdx + 1, popupStack.length - 1)
+      else if (txt.eventType === OsEventTypeList.SCROLL_TOP_EVENT)
+        popupIdx = Math.max(popupIdx - 1, 0)
+      refresh()
+      return
+    }
     if (txt.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) cycle(1)
     else if (txt.eventType === OsEventTypeList.SCROLL_TOP_EVENT) cycle(-1)
   }
@@ -361,4 +457,5 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   await initDeviceBattery(bridge) // HUD のグラスバッテリー (builtin に反映)
   await applyImuConfig() // config.imu.enabled なら IMU 起動 (onEvent 登録後・前提コンテナ作成後)
   scheduleGlassClock() // 時刻 HUD を毎分更新 (store.notify を介さない glass-local タイマー)
+  syncPopupDemo() // idx=0 (summary) では no-op。popup ページに入ると timer 開始
 }
