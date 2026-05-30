@@ -222,7 +222,8 @@ type ImageSource =
 - レイアウト変更 = `rebuildPageContainer`（ちらつき）/ 中身更新 = `textContainerUpgrade`・`updateImageRawData`（ちらつき無し）→ 配置（grid）は固定運用し、データをセルに流し込む 2 層構成。
 - **全角 / grapheme（重要）**: 幅は px（`getTextWidth`）で測る。現状の `formatSegmentValue` / `pad` は `.length`（UTF-16 code unit）ベースで、全角・絵文字で列ズレ / 誤切り詰め / サロゲート分断が起きる既存バグ（`widthChars` 使用時に顕在）。grid の text-fit ではこれを使わず **px + grapheme** に統一する。行全体の overflow 防止（`justifyClusters`）は既に px なので全角でも 2 ページ目には溢れない。
 - 実機確認（0.1.54 / build #24909, 2026-05-30）: firmware font は **CJK（漢字 / かな / 全角数字 / 円）＋ 絵文字（☀ ☁ ☂ 😀 🎉 🔥）とも描画される**。10 行も維持。
-- 実機で **列は揃わないことを確認**（`|...|` の右端が縦に揃わない）。proportional フォントでは space パディングで px 揃えは原理的に不可。→ **厳密な列揃えは grid の座標配置コンテナ専用**とする。EAW 修正は「列揃え」のためではなく **絵文字分断・過大幅・誤切り詰めの是正**として維持し、線形 status line の widthChars は近似のまま割り切る。
+- 実機で **線形(page2)は列が揃わないことを確認**（`|...|` の右端が縦に揃わない）。proportional フォントでは space パディングで px 揃えは原理的に不可。→ **厳密な列揃えは grid の座標配置コンテナ専用**とする。EAW 修正は「列揃え」のためではなく **絵文字分断・過大幅・誤切り詰めの是正**として維持し、線形 status line の widthChars は近似のまま割り切る。
+- **grid PoC 実機検証 OK（0.1.55 / build #24920, 2026-05-30）**: page3 の grid が描画され、**multi-container（createStartUp/rebuild）が動作**、枠付き値セル（col3=x144）の**左端が px で揃う**ことを確認。→「厳密な列揃えは grid で担保」を実機で裏取り。grid MVP の方向が成立。
 
 ### データ束縛
 - text cell: 既存 segment 参照（groupId/segmentId）を N 行表示。現状 `renderGlass` のロジックをセル内寸に一般化。
