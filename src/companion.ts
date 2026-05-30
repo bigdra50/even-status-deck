@@ -1132,6 +1132,9 @@ async function onClick(e: MouseEvent): Promise<void> {
       dbgOpen = !dbgOpen
       render()
       break
+    case 'console-copy':
+      await copyDbgLogs(t)
+      break
     case 'console-clear':
       dbgLogs.length = 0
       updateDbgListDom()
@@ -1607,6 +1610,76 @@ function appendDbgLineToDom(e: DbgEntry): void {
   scrollDbgBottom()
 }
 
+// クリップボードへ書き込む。Clipboard API → 失敗時は textarea+execCommand にフォールバック
+// (WKWebView や非セキュアコンテキストで API が使えない場合に備える)。
+async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // フォールバックへ
+  }
+  // textarea+execCommand フォールバック。select() が現在の focus/選択を奪うため、
+  // 直前の active 要素・入力カーソル・document 選択範囲を保存し finally で復元する。
+  // textarea 除去も finally に置き、例外時に DOM へ残らないようにする。
+  const prevActive = document.activeElement
+  const prevInput =
+    prevActive instanceof HTMLInputElement || prevActive instanceof HTMLTextAreaElement
+      ? prevActive
+      : null
+  const inputSel = prevInput
+    ? { start: prevInput.selectionStart, end: prevInput.selectionEnd }
+    : null
+  const sel = window.getSelection()
+  const ranges: Range[] = sel
+    ? Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i))
+    : []
+  const ta = document.createElement('textarea')
+  try {
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    return document.execCommand('copy')
+  } catch {
+    return false
+  } finally {
+    ta.remove()
+    if (sel) {
+      sel.removeAllRanges()
+      for (const r of ranges) sel.addRange(r)
+    }
+    if (prevActive instanceof HTMLElement) prevActive.focus()
+    if (prevInput && inputSel && inputSel.start != null && inputSel.end != null) {
+      try {
+        prevInput.setSelectionRange(inputSel.start, inputSel.end)
+      } catch {
+        // 一部の input type は setSelectionRange 非対応 (無視)
+      }
+    }
+  }
+}
+
+// ボタン文言を一時的に差し替えて結果を知らせる (Copied / Failed)。
+function flashBtn(btn: HTMLElement, label: string): void {
+  const prev = btn.textContent ?? ''
+  btn.textContent = label
+  window.setTimeout(() => {
+    btn.textContent = prev
+  }, 1200)
+}
+
+// 表示中 (フィルタ適用後) のログをテキストでコピーする。
+async function copyDbgLogs(btn: HTMLElement | null): Promise<void> {
+  const rows = dbgLogs.filter((e) => matchesFilter(e.text))
+  const text = rows.map((e) => `${dbgTime(e.t)} ${e.level.toUpperCase()} ${e.text}`).join('\n')
+  const ok = await writeClipboard(text)
+  if (btn) flashBtn(btn, ok ? 'Copied' : 'Failed')
+}
+
 // glass preview の下に出す折りたたみコンソール。閉じている間はヘッダ 1 行のみ。
 function renderDbgConsole(): string {
   const caret = icon(dbgOpen ? 'chevron-down' : 'chevron-right', { size: 16 })
@@ -1615,6 +1688,7 @@ function renderDbgConsole(): string {
         <button class="link-btn" data-action="probe-userinfo" title="bridge.getUserInfo()">User</button>
         <button class="link-btn" data-action="probe-geo" title="navigator.geolocation">Geo</button>
         <button class="link-btn" data-action="probe-ip" title="IP ジオロケーション">IP</button>
+        <button class="link-btn" data-action="console-copy" title="表示中のログをコピー">Copy</button>
         <button class="link-btn" data-action="console-clear">Clear</button>
       </span>`
     : ''
