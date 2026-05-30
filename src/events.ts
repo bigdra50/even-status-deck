@@ -12,9 +12,11 @@ export type EventSource = { id: string; urls: string[] }
 
 type Loop = {
   ctl: AbortController
+  id: string // source id (since 永続化のキー)
   urls: string[]
   since: number
   seen: Map<string, number> // key=`<len>:<providerId>:<id>` -> ts (dedupe, 挿入順で古いものから落とす)
+  storage: StorageLike | undefined // since 永続化先 (無ければ非永続)
 }
 
 const loops = new Map<string, Loop>()
@@ -22,6 +24,53 @@ const loops = new Map<string, Loop>()
 const SEEN_MAX = 256
 const ERROR_BACKOFF_MS = 5_000
 const WAIT_MS = 25_000
+
+// since (cursor) を reload 跨ぎで永続化する。WKWebView は前面でも数分で reload され、
+// その度に since=0 に戻ると直近の overlay を再生してしまう。source 単位で保存/復元する。
+const SINCE_KEY_PREFIX = 'eveng2:events:since:'
+
+// localStorage 互換の最小インターフェース (テスト用にモックを差せる)。
+type StorageLike = Pick<Storage, 'getItem' | 'setItem'>
+
+function sinceKey(sourceId: string): string {
+  return `${SINCE_KEY_PREFIX}${sourceId}`
+}
+
+// 既定の storage (window.localStorage)。無い環境では undefined。
+function defaultStorage(): StorageLike | undefined {
+  try {
+    if (typeof window === 'undefined') return undefined
+    return window.localStorage
+  } catch {
+    return undefined // localStorage アクセスが例外を投げる環境 (privacy mode 等)
+  }
+}
+
+// 保存済み since を復元する。未保存・不正・例外は 0 (= 従来挙動)。
+export function loadSince(storage: StorageLike | undefined, sourceId: string): number {
+  if (!storage) return 0
+  try {
+    const raw = storage.getItem(sinceKey(sourceId))
+    if (!raw) return 0
+    // localStorage は外部から改竄され得る。saveSince は String(非負整数)=/^\d+$/ しか書かないので、
+    // 読み側も部分パース (parseInt の "42abc"→42 等) を許さず、純粋な非負整数のみ採用する。
+    // 桁あふれ ("9".repeat(20) 等) は isSafeInteger で弾く。不正は 0 (= 従来挙動)。
+    const n = /^\d+$/.test(raw) ? Number(raw) : Number.NaN
+    return Number.isSafeInteger(n) && n >= 0 ? n : 0
+  } catch {
+    return 0 // getItem が例外を投げる場合は no-op
+  }
+}
+
+// since を保存する。storage 無し・quota 例外等は no-op (従来通り)。
+export function saveSince(storage: StorageLike | undefined, sourceId: string, since: number): void {
+  if (!storage || !Number.isInteger(since) || since < 0) return
+  try {
+    storage.setItem(sinceKey(sourceId), String(since))
+  } catch {
+    // quota 超過等は無視 (永続化は best-effort)
+  }
+}
 
 // wire event → glass の 'toolbar:overlay' detail (onOverlayEvent が受ける)。
 // dialog は応答を返す先 (replyUrl) と requestId を載せる。
@@ -119,6 +168,8 @@ async function runLoop(loop: Loop): Promise<void> {
       remember(loop.seen, k, e.ts)
       dispatchOverlay(e, replyUrl)
     }
+    // cursor が進んだら reload 跨ぎ用に保存する (再開時の重複表示を防ぐ)。
+    if (doc.cursor > loop.since) saveSince(loop.storage, loop.id, doc.cursor)
     loop.since = doc.cursor
   }
 }
@@ -140,10 +191,18 @@ export function startEvents(sources: EventSource[]): void {
       loops.delete(id)
     }
   }
-  // 未登録の source にループを張る。
+  // 未登録の source にループを張る。since は reload 跨ぎの保存値から復元する。
+  const storage = defaultStorage()
   for (const s of sources) {
     if (loops.has(s.id) || !s.urls.length) continue
-    const loop: Loop = { ctl: new AbortController(), urls: [...s.urls], since: 0, seen: new Map() }
+    const loop: Loop = {
+      ctl: new AbortController(),
+      id: s.id,
+      urls: [...s.urls],
+      since: loadSince(storage, s.id),
+      seen: new Map(),
+      storage,
+    }
     loops.set(s.id, loop)
     void runLoop(loop)
   }
