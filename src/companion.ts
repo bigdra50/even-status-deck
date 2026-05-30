@@ -333,6 +333,18 @@ function worstReportedState(sourceId: string): { state: SourceState; message?: s
 // transport が online でもソースが degraded を報告していれば琥珀 + message を出す (2 軸)。
 function sourceDotNote(s: SourceDef): { dotCls: string; note: string } {
   const health = getSourceHealth(s.id)
+  // client (weather): URL は無く現在地ベース。health と reported state で位置の note を出す。
+  if (s.kind === 'client') {
+    if (health === 'offline') return { dotCls: 'off', note: 'Uses device location' }
+    const reported = worstReportedState(s.id)
+    if (reported.state === 'error') {
+      return { dotCls: 'off', note: reported.message ?? 'Location unavailable' }
+    }
+    if (reported.state === 'stale' || health === 'stale') {
+      return { dotCls: 'stale', note: 'Cached weather' }
+    }
+    return { dotCls: '', note: 'Device location' }
+  }
   if (health === 'offline') return { dotCls: 'off', note: lastSeenText(s.id) }
   if (health === 'online') {
     const reported = worstReportedState(s.id)
@@ -626,7 +638,8 @@ function renderHome(): string {
 
 // Sources 一覧: 全 source 実体 (preset 非依存)。編集・削除はここに集約。
 function renderSources(): string {
-  const sources = config.sources.filter((s) => s.kind !== 'builtin')
+  // Manage all は URL を持つ server source のみ (client=weather は Home の Add/Remove で管理)。
+  const sources = config.sources.filter((s) => s.kind === 'server')
   const html = sources.length
     ? sources.map(sourceManageRow).join('')
     : '<div class="cmp-sub">No sources yet.</div>'
