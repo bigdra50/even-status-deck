@@ -10,7 +10,7 @@
     "**/*.test.ts"
   ],
   "project": ["src/**/*.ts", "server/**/*.ts", "e2e/**/*.ts", "scripts/**/*.mjs"],
-  "ignoreBinaries": ["evenhub", "evenhub-simulator", "ipconfig"],
+  "ignoreBinaries": ["ipconfig"],
   "ignoreExportsUsedInFile": true,
   "tags": ["-public"]
 }
