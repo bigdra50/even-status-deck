@@ -10,5 +10,11 @@
     "en",
     "ja"
   ],
-  "permissions": []
+  "permissions": [
+    {
+      "name": "network",
+      "desc": "Fetch current weather for your location",
+      "whitelist": ["https://api.open-meteo.com"]
+    }
+  ]
 }
