@@ -15,6 +15,8 @@ export const BUILTIN_SOURCE_ID = 'builtin.local'
 export const LOCAL_SOURCE_ID = 'server.local'
 // 気象 client source の決定的 ID。位置は companion WebView の geolocation で取る(SDK に GPS 無し)。
 export const WEATHER_SOURCE_ID = 'client.weather'
+// 標高/タイムゾーン client source の決定的 ID (#45)。weather と同じ geolocation を使う別 source。
+export const GEOINFO_SOURCE_ID = 'client.geoinfo'
 export const DEFAULT_PROFILE_ID = 'default'
 
 // glass layout の「ラベル chip」を表す予約 segId。items の key が `src|grp|@label` のとき、
@@ -312,6 +314,19 @@ function ensureClientWeather(cfg: Config): void {
   cfg.groups[WEATHER_SOURCE_ID] ??= {}
 }
 
+// 標高/タイムゾーン client source (#45)。weather と同様に既定無効(opt-in)。素材 group は status sync が補充する。
+function ensureClientGeoinfo(cfg: Config): void {
+  const existing = cfg.sources.find((s) => s.id === GEOINFO_SOURCE_ID)
+  if (existing) {
+    existing.kind = 'client'
+    existing.label = 'Location'
+    existing.urls ??= []
+  } else {
+    cfg.sources.push({ id: GEOINFO_SOURCE_ID, kind: 'client', label: 'Location', urls: [] })
+  }
+  cfg.groups[GEOINFO_SOURCE_ID] ??= {}
+}
+
 // 旧 builtin group 'hud' (時刻/電池を 1 group に詰めていた) を clock/g2 へ再構成する。
 // segment は id が変わる (g2→level, drain→rate, est→eta) ため旧トグルは引き継がず、
 // sync が status から既定 ON で補充する。builtin の表示順 (先頭) は維持する。
@@ -346,6 +361,7 @@ export function emptyConfig(): Config {
   }
   ensureBuiltin(c)
   ensureClientWeather(c)
+  ensureClientGeoinfo(c)
   return c
 }
 
@@ -429,6 +445,7 @@ function migrateV4Same(c: Config): Config {
   for (const s of c.sources) normalizeSourceUrls(s)
   ensureBuiltin(c)
   ensureClientWeather(c)
+  ensureClientGeoinfo(c)
   c.imu ??= defaultImuConfig()
   delete (c as Record<string, unknown>).batteryRate
   delete (c as Record<string, unknown>).glassHints
@@ -551,6 +568,7 @@ function migrateV3ToV4(old: V3Config): Config {
   // builtin が先頭に来るよう ensureBuiltin を再適用 (順序 + enabledSourceIds)。
   ensureBuiltin(cfg)
   ensureClientWeather(cfg)
+  ensureClientGeoinfo(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
   consolidateClock(cfg)
@@ -616,6 +634,7 @@ function migrateLegacyToV4(parsed: Record<string, unknown>): Config {
   def.enabledSourceIds = cfg.sources.map((s) => s.id)
   ensureBuiltin(cfg)
   ensureClientWeather(cfg)
+  ensureClientGeoinfo(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
   pruneOrphans(cfg)

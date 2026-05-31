@@ -5,12 +5,14 @@ import { localStatus } from './builtins'
 import {
   type Config,
   enabledSources,
+  GEOINFO_SOURCE_ID,
   type OptionValues,
   type SourceDef,
   sourceUrls,
   WEATHER_SOURCE_ID,
 } from './config'
 import { fetchStatusFromUrls } from './data'
+import { geoinfoStatus } from './geoinfo'
 import type { StatusDoc } from './status-types'
 import { weatherStatus } from './weather'
 
@@ -229,6 +231,7 @@ function clientProducer(
   id: string,
 ): ((signal: AbortSignal, options?: OptionValues) => Promise<StatusDoc | null>) | undefined {
   if (id === WEATHER_SOURCE_ID) return weatherStatus
+  if (id === GEOINFO_SOURCE_ID) return geoinfoStatus
   return undefined
 }
 
