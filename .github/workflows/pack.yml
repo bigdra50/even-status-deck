@@ -1,16 +1,19 @@
 name: Pack
 
-# .ehpk を CI でビルドして artifact 化する（再現性のある成果物の取得が目的）。
-# Even Hub への Add build（upload）は CI では行わない。認証情報を CI に置かないため、
-# artifact をダウンロードしてローカルで `npm run upload` する運用とする。
+# .ehpk を CI でビルドして配布する。
+# - 常に artifact 化する（再現性のある成果物。workflow_dispatch / デバッグ用。retention 14日）。
+# - git tag v* の push 時は GitHub Release にも .ehpk を添付する（恒久・公開 DL 用。GITHUB_TOKEN で完結）。
+# Even Hub への Add build（upload）は CI では行わない（認証情報を CI に置かない）。
+# Even Hub へ上げるときは artifact / release の .ehpk を取得してローカルで `npm run upload`。
 on:
   workflow_dispatch:
   push:
     tags:
       - 'v*'
 
+# release 作成/添付に contents: write が要る（artifact だけなら read で足りるが pack は release も担う）。
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   pack:
@@ -19,14 +22,32 @@ jobs:
       - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
-      - name: Pack .ehpk
-        run: bun run pack
       - name: Read app.json version
         id: meta
         run: echo "version=$(jq -r .version app.json)" >> "$GITHUB_OUTPUT"
+      # tag(vX.Y.Z) と app.json version の不一致は release asset の名前/中身ズレを生むので事前に弾く。
+      - name: Verify tag matches app.json version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver="${{ steps.meta.outputs.version }}"
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match app.json version ${ver}. Bump app.json or fix the tag."
+            exit 1
+          fi
+      - name: Pack .ehpk
+        run: bun run pack
       - uses: actions/upload-artifact@v4
         with:
           name: status-deck-${{ steps.meta.outputs.version }}-ehpk
           path: status-deck.ehpk
           if-no-files-found: error
           retention-days: 14
+      # git tag v* の push 時のみ: GitHub Release を作成（無ければ）して .ehpk を添付する。
+      - name: Attach .ehpk to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: status-deck.ehpk
+          fail_on_unmatched_files: true
+          generate_release_notes: true
