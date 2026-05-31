@@ -125,6 +125,8 @@ export function setSources(next: SourceDef[]): void {
   const prev = new Map(defs.map((d) => [d.id, d]))
   // config.sources と同一参照にすると後続の push/mutation で diff が壊れるためクローンする。
   defs = next.map((d) => ({ ...d }))
+  // 診断: 有効ソースの id:kind を出す (weather が client として登録されているか確認用)。
+  console.log('[store] sources:', defs.map((d) => `${d.id}:${d.kind}`).join(', ') || '(none)')
   const ids = new Set(defs.map((d) => d.id))
   // 消えたソースは status を捨て、in-flight fetch を abort + revision を進めて遅延応答を無効化する。
   // (mountCompanion の暫定既定ソースのように、bridge 準備前に開始した fetch が後から
@@ -232,6 +234,7 @@ async function refreshSource(def: SourceDef): Promise<void> {
   // 遅延応答を破棄し、applyResult で鮮度/notify を共通処理する。producer 内で TTL キャッシュする。
   if (def.kind === 'client') {
     const produce = clientProducers[def.id]
+    console.log(`[store] client refresh ${def.id} producer=${produce ? 'yes' : 'NO'}`) // 診断
     if (!produce) return
     const rev = (revisions.get(def.id) ?? 0) + 1
     revisions.set(def.id, rev)
