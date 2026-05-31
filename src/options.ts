@@ -100,7 +100,7 @@ export function segmentOptionSchema(
   return []
 }
 
-// weather (client.weather) source 単位の表示オプション (#38 sunFormat / #40 単位・感度)。
+// weather (client.weather) source 単位の表示オプション (#38 sunFormat / #40 単位・感度 / #39 降水)。
 // 値の永続は SourceDef.options、型への解決は weather.ts(readWeatherOptions)。temp/wind は open-meteo の
 // クエリ単位で正確に取り、pres は producer 内で hPa→inHg 換算。単位/感度を変えると optSig が変わり即再取得する。
 const WEATHER_OPTION_FIELDS: OptionField[] = [
@@ -164,6 +164,38 @@ const WEATHER_OPTION_FIELDS: OptionField[] = [
       { value: 'auto', label: 'Auto (locale)' },
       { value: '24h', label: '24h (19:01)' },
       { value: '12h', label: '12h (7:01p)' },
+    ],
+    default: 'auto',
+  },
+  // #39 降水ナウキャスト。rainin の表示モード + 降水しきい値(mm)+ 取得粒度。
+  {
+    kind: 'select',
+    id: 'rainMode',
+    label: 'Rain shows',
+    choices: [
+      { value: 'nextrain', label: 'Next rain' },
+      { value: '1hchance', label: '1h chance' },
+      { value: 'recent', label: 'Recent mm' },
+    ],
+    default: 'nextrain',
+  },
+  {
+    kind: 'number',
+    id: 'rainThreshold',
+    label: 'Rain threshold',
+    min: 0,
+    max: 5,
+    step: 0.1,
+    unit: 'mm',
+    default: 0.1,
+  },
+  {
+    kind: 'select',
+    id: 'rainGranularity',
+    label: 'Rain detail',
+    choices: [
+      { value: 'auto', label: 'Auto (15min)' },
+      { value: 'hourly', label: 'Hourly' },
     ],
     default: 'auto',
   },
