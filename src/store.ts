@@ -220,10 +220,16 @@ function applyResult(def: SourceDef, next: StatusDoc | null): void {
 
 // client source の producer (現状 weather のみ)。位置は WebView の geolocation でしか取れないため
 // server ではなく client 側で計算する。store は kind==='client' でこれを呼ぶ。
-// Map にして get が undefined を返す型にする (未登録 id の guard を tsc が dead code 扱いしないよう)。
-const clientProducers = new Map<string, (signal: AbortSignal) => Promise<StatusDoc | null>>([
-  [WEATHER_SOURCE_ID, weatherStatus],
-])
+// client source id → producer。**call 時に解決する**のが要点。
+// module-init 時に WEATHER_SOURCE_ID を Map/Record のキーに使うと、循環 import の評価順で
+// WEATHER_SOURCE_ID が未初期化(undefined)になりキーがズレ、'client.weather' を引けず
+// producer=NO になる(weather が一度も動かなかった真因)。関数なら参照は呼び出し時=初期化後。
+function clientProducer(
+  id: string,
+): ((signal: AbortSignal) => Promise<StatusDoc | null>) | undefined {
+  if (id === WEATHER_SOURCE_ID) return weatherStatus
+  return undefined
+}
 
 async function refreshSource(def: SourceDef): Promise<void> {
   if (def.kind === 'builtin') {
@@ -234,7 +240,7 @@ async function refreshSource(def: SourceDef): Promise<void> {
   // client: producer (geolocation→open-meteo 等) を呼ぶ。server と同じ revision/abort で
   // 遅延応答を破棄し、applyResult で鮮度/notify を共通処理する。producer 内で TTL キャッシュする。
   if (def.kind === 'client') {
-    const produce = clientProducers.get(def.id)
+    const produce = clientProducer(def.id)
     console.log(`[store] client refresh ${def.id} producer=${produce ? 'yes' : 'NO'}`) // 診断
     if (!produce) return
     const rev = (revisions.get(def.id) ?? 0) + 1
