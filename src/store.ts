@@ -220,9 +220,10 @@ function applyResult(def: SourceDef, next: StatusDoc | null): void {
 
 // client source の producer (現状 weather のみ)。位置は WebView の geolocation でしか取れないため
 // server ではなく client 側で計算する。store は kind==='client' でこれを呼ぶ。
-const clientProducers: Record<string, (signal: AbortSignal) => Promise<StatusDoc | null>> = {
-  [WEATHER_SOURCE_ID]: weatherStatus,
-}
+// Map にして get が undefined を返す型にする (未登録 id の guard を tsc が dead code 扱いしないよう)。
+const clientProducers = new Map<string, (signal: AbortSignal) => Promise<StatusDoc | null>>([
+  [WEATHER_SOURCE_ID, weatherStatus],
+])
 
 async function refreshSource(def: SourceDef): Promise<void> {
   if (def.kind === 'builtin') {
@@ -233,7 +234,7 @@ async function refreshSource(def: SourceDef): Promise<void> {
   // client: producer (geolocation→open-meteo 等) を呼ぶ。server と同じ revision/abort で
   // 遅延応答を破棄し、applyResult で鮮度/notify を共通処理する。producer 内で TTL キャッシュする。
   if (def.kind === 'client') {
-    const produce = clientProducers[def.id]
+    const produce = clientProducers.get(def.id)
     console.log(`[store] client refresh ${def.id} producer=${produce ? 'yes' : 'NO'}`) // 診断
     if (!produce) return
     const rev = (revisions.get(def.id) ?? 0) + 1
