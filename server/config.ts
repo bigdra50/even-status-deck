@@ -40,7 +40,10 @@ const OLD_STATE_DIR = join(
   'eveng2-toolbar',
 )
 let legacyMigrated = false
-function migrateLegacyDirs(): void {
+// 旧 dir → 新 dir 移行を1度だけ実行する。dir を作成/読み書きする全 runtime 入口
+// (index.ts の CLI 各サブコマンド + loadServerConfig) の手前で呼ぶこと。provider CLI 等が
+// loadServerConfig を経ずに新 dir を作ると以後の移行条件が崩れるため (codex 指摘)。
+export function ensureLegacyDirsMigrated(): void {
   if (legacyMigrated) return
   legacyMigrated = true
   try {
@@ -162,7 +165,7 @@ export function mergeProviders(
 }
 
 export async function loadServerConfig(): Promise<ServerConfig> {
-  migrateLegacyDirs()
+  ensureLegacyDirsMigrated()
   if (cache && Date.now() - cache.at < CONFIG_TTL_MS) return cache.data
   const parsed = ((await readConfigFile('config.toml')) ??
     (await readConfigFile('config.json'))) as {
