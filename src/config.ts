@@ -15,6 +15,8 @@ export const BUILTIN_SOURCE_ID = 'builtin.local'
 export const LOCAL_SOURCE_ID = 'server.local'
 // 気象 client source の決定的 ID。位置は companion WebView の geolocation で取る(SDK に GPS 無し)。
 export const WEATHER_SOURCE_ID = 'client.weather'
+// 標高/タイムゾーン client source の決定的 ID (#45)。weather と同じ geolocation を使う別 source。
+export const GEOINFO_SOURCE_ID = 'client.geoinfo'
 export const DEFAULT_PROFILE_ID = 'default'
 
 // glass layout の「ラベル chip」を表す予約 segId。items の key が `src|grp|@label` のとき、
@@ -312,6 +314,19 @@ function ensureClientWeather(cfg: Config): void {
   cfg.groups[WEATHER_SOURCE_ID] ??= {}
 }
 
+// 標高/タイムゾーン client source (#45)。weather と同様に既定無効(opt-in)。素材 group は status sync が補充する。
+function ensureClientGeoinfo(cfg: Config): void {
+  const existing = cfg.sources.find((s) => s.id === GEOINFO_SOURCE_ID)
+  if (existing) {
+    existing.kind = 'client'
+    existing.label = 'Location'
+    existing.urls ??= []
+  } else {
+    cfg.sources.push({ id: GEOINFO_SOURCE_ID, kind: 'client', label: 'Location', urls: [] })
+  }
+  cfg.groups[GEOINFO_SOURCE_ID] ??= {}
+}
+
 // 旧 builtin group 'hud' (時刻/電池を 1 group に詰めていた) を clock/g2 へ再構成する。
 // segment は id が変わる (g2→level, drain→rate, est→eta) ため旧トグルは引き継がず、
 // sync が status から既定 ON で補充する。builtin の表示順 (先頭) は維持する。
@@ -346,6 +361,7 @@ export function emptyConfig(): Config {
   }
   ensureBuiltin(c)
   ensureClientWeather(c)
+  ensureClientGeoinfo(c)
   return c
 }
 
@@ -413,7 +429,8 @@ type OldMachine = {
   sources?: Record<string, { enabled?: boolean; expanded?: boolean; metrics?: OldSegCfg[] }>
 }
 
-function migrate(parsed: Record<string, unknown>): Config {
+// 任意 version の生 config を v4 へ移行する。export は単体テスト用(loadConfig は bridge 依存で叩けない)。
+export function migrate(parsed: Record<string, unknown>): Config {
   if (parsed.version === CONFIG_VERSION) return migrateV4Same(parsed as unknown as Config)
   if (parsed.version === 3) return migrateV3ToV4(parsed as unknown as V3Config)
   return migrateLegacyToV4(parsed)
@@ -429,6 +446,7 @@ function migrateV4Same(c: Config): Config {
   for (const s of c.sources) normalizeSourceUrls(s)
   ensureBuiltin(c)
   ensureClientWeather(c)
+  ensureClientGeoinfo(c)
   c.imu ??= defaultImuConfig()
   delete (c as Record<string, unknown>).batteryRate
   delete (c as Record<string, unknown>).glassHints
@@ -546,11 +564,13 @@ function migrateV3ToV4(old: V3Config): Config {
   view.groupOrder = [...(old.groupOrder ?? [])]
   const lay = normalizeGlassLayout(old.glassLayout)
   if (lay) view.glassLayout = lay
-  // 全 source を Default の enabledSourceIds に含める (見た目不変 = v3 は全集約)。
-  def.enabledSourceIds = cfg.sources.map((s) => s.id)
+  // 旧 source を Default の enabledSourceIds に集約する(v3 の見た目を維持)。ただし client source
+  // (weather/geoinfo 等)は opt-in なので既定 ON にしない(さもないと旧 config の升級で位置許可/外部 fetch が走る)。
+  def.enabledSourceIds = cfg.sources.filter((s) => s.kind !== 'client').map((s) => s.id)
   // builtin が先頭に来るよう ensureBuiltin を再適用 (順序 + enabledSourceIds)。
   ensureBuiltin(cfg)
   ensureClientWeather(cfg)
+  ensureClientGeoinfo(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
   consolidateClock(cfg)
@@ -613,9 +633,12 @@ function migrateLegacyToV4(parsed: Record<string, unknown>): Config {
     splitGroupsInto(cfg, view, id, groups)
     for (const gid of mc.sourceOrder ?? []) view.groupOrder.push({ sourceId: id, groupId: gid })
   }
-  def.enabledSourceIds = cfg.sources.map((s) => s.id)
+  // client source(weather/geoinfo 等)は opt-in なので既定 ON にしない。移行で見た目を変えない対象は
+  // builtin + 旧ユーザー source(server)のみ。さもないと旧 config の升級で位置許可/外部 fetch が走る。
+  def.enabledSourceIds = cfg.sources.filter((s) => s.kind !== 'client').map((s) => s.id)
   ensureBuiltin(cfg)
   ensureClientWeather(cfg)
+  ensureClientGeoinfo(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
   pruneOrphans(cfg)
@@ -735,13 +758,14 @@ export function setActiveProfile(cfg: Config, id: string): void {
   if (cfg.profiles.some((p) => p.id === id)) cfg.activeProfileId = id
 }
 
-// 空 view の新規 profile を追加し、active にする。enabledSourceIds は builtin + 全 server
-// (新規 profile でも何も出ないと混乱するため既定で全 source を有効化)。追加した profile を返す。
+// 空 view の新規 profile を追加し、active にする。enabledSourceIds は builtin + 全 server を既定で
+// 有効化する(新規 profile でも何も出ないと混乱するため)。ただし client source(weather/geoinfo 等)は
+// opt-in なので含めない(さもないと preset 追加だけで位置許可ダイアログ/外部 fetch が走る)。追加した profile を返す。
 export function addProfile(cfg: Config, name: string): Profile {
   const prof: Profile = {
     id: genProfileId(),
     name: name || 'New preset',
-    enabledSourceIds: cfg.sources.map((s) => s.id),
+    enabledSourceIds: cfg.sources.filter((s) => s.kind !== 'client').map((s) => s.id),
     view: emptyProfileView(),
   }
   cfg.profiles.push(prof)

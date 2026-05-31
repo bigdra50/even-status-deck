@@ -18,6 +18,7 @@ import {
 import {
   BUILTIN_SOURCE_ID,
   type Config,
+  GEOINFO_SOURCE_ID,
   type OptionValues,
   type SegMeta,
   sourceById,
@@ -202,8 +203,23 @@ const WEATHER_OPTION_FIELDS: OptionField[] = [
 ]
 
 // source 単位オプションのスキーマ (sourceId → fields)。無ければ空配列。
+// geoinfo (client.geoinfo) source 単位の表示オプション (#45)。標高の単位のみ(表示の純変換、URL に影響しない)。
+const GEOINFO_OPTION_FIELDS: OptionField[] = [
+  {
+    kind: 'select',
+    id: 'elevUnit',
+    label: 'Altitude unit',
+    choices: [
+      { value: 'm', label: 'Meters' },
+      { value: 'ft', label: 'Feet' },
+    ],
+    default: 'm',
+  },
+]
+
 export function sourceOptionSchema(sourceId: string): OptionField[] {
   if (sourceId === WEATHER_SOURCE_ID) return WEATHER_OPTION_FIELDS
+  if (sourceId === GEOINFO_SOURCE_ID) return GEOINFO_OPTION_FIELDS
   return []
 }
 
