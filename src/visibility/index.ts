@@ -9,12 +9,13 @@
 // pure render(glass-render.ts) へ引数で渡す。条件は segment 単位
 // config.groups[*][*].segments[*].visibility に永続 (leaf の AND/OR 複合)。
 
+export { computeVisibleMap, defaultVisibilityCond, isVisible } from './conditions'
 export type {
   OnChangeState,
   VisibilityCond,
   VisibilityLeaf,
   VisibleMap,
   VisStates,
-} from './conditions'
-export { computeVisibleMap, defaultVisibilityCond, isVisible, segKey } from './conditions'
+} from './keys'
+export { segKey } from './keys'
 export { computeVisible, resetVisibility } from './runtime'

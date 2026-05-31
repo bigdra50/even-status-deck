@@ -5,7 +5,8 @@
 import type { Config } from '../config'
 import type { StatusDoc } from '../status-types'
 import { pokeListeners } from '../store'
-import { computeVisibleMap, type VisibleMap, type VisStates } from './conditions'
+import { computeVisibleMap } from './conditions'
+import type { VisibleMap, VisStates } from './keys'
 
 let states: VisStates = new Map()
 let wakeTimer: ReturnType<typeof setTimeout> | null = null
