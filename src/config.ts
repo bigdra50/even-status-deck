@@ -19,6 +19,8 @@ export const WEATHER_SOURCE_ID = 'client.weather'
 export const GEOINFO_SOURCE_ID = 'client.geoinfo'
 // 空気質(AQI/PM/花粉) client source の決定的 ID (#41)。別ホスト(air-quality-api.open-meteo.com)を使う。
 export const AIRQUALITY_SOURCE_ID = 'client.airquality'
+// 地名(逆ジオコーディング) client source の決定的 ID (#37)。別ホスト(api.bigdatacloud.net)を使う。
+export const GEOCODE_SOURCE_ID = 'client.geocode'
 export const DEFAULT_PROFILE_ID = 'default'
 
 // glass layout の「ラベル chip」を表す予約 segId。items の key が `src|grp|@label` のとき、
@@ -342,6 +344,19 @@ function ensureClientAirquality(cfg: Config): void {
   cfg.groups[AIRQUALITY_SOURCE_ID] ??= {}
 }
 
+// 地名(逆ジオコーディング) client source (#37)。weather と同様に既定無効(opt-in)。素材 group は status sync が補充する。
+function ensureClientGeocode(cfg: Config): void {
+  const existing = cfg.sources.find((s) => s.id === GEOCODE_SOURCE_ID)
+  if (existing) {
+    existing.kind = 'client'
+    existing.label = 'Place'
+    existing.urls ??= []
+  } else {
+    cfg.sources.push({ id: GEOCODE_SOURCE_ID, kind: 'client', label: 'Place', urls: [] })
+  }
+  cfg.groups[GEOCODE_SOURCE_ID] ??= {}
+}
+
 // 旧 builtin group 'hud' (時刻/電池を 1 group に詰めていた) を clock/g2 へ再構成する。
 // segment は id が変わる (g2→level, drain→rate, est→eta) ため旧トグルは引き継がず、
 // sync が status から既定 ON で補充する。builtin の表示順 (先頭) は維持する。
@@ -378,6 +393,7 @@ export function emptyConfig(): Config {
   ensureClientWeather(c)
   ensureClientGeoinfo(c)
   ensureClientAirquality(c)
+  ensureClientGeocode(c)
   return c
 }
 
@@ -464,6 +480,7 @@ function migrateV4Same(c: Config): Config {
   ensureClientWeather(c)
   ensureClientGeoinfo(c)
   ensureClientAirquality(c)
+  ensureClientGeocode(c)
   c.imu ??= defaultImuConfig()
   delete (c as Record<string, unknown>).batteryRate
   delete (c as Record<string, unknown>).glassHints
@@ -589,6 +606,7 @@ function migrateV3ToV4(old: V3Config): Config {
   ensureClientWeather(cfg)
   ensureClientGeoinfo(cfg)
   ensureClientAirquality(cfg)
+  ensureClientGeocode(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
   consolidateClock(cfg)
@@ -658,6 +676,7 @@ function migrateLegacyToV4(parsed: Record<string, unknown>): Config {
   ensureClientWeather(cfg)
   ensureClientGeoinfo(cfg)
   ensureClientAirquality(cfg)
+  ensureClientGeocode(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
   pruneOrphans(cfg)

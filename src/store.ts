@@ -8,6 +8,7 @@ import {
   AIRQUALITY_SOURCE_ID,
   type Config,
   enabledSources,
+  GEOCODE_SOURCE_ID,
   GEOINFO_SOURCE_ID,
   type OptionValues,
   type SourceDef,
@@ -15,6 +16,7 @@ import {
   WEATHER_SOURCE_ID,
 } from './config'
 import { fetchStatusFromUrls } from './data'
+import { geocodeStatus } from './geocode'
 import { geoinfoStatus } from './geoinfo'
 import type { StatusDoc } from './status-types'
 import { weatherStatus } from './weather'
@@ -236,6 +238,7 @@ function clientProducer(
   if (id === WEATHER_SOURCE_ID) return weatherStatus
   if (id === GEOINFO_SOURCE_ID) return geoinfoStatus
   if (id === AIRQUALITY_SOURCE_ID) return airqualityStatus
+  if (id === GEOCODE_SOURCE_ID) return geocodeStatus
   return undefined
 }
 
