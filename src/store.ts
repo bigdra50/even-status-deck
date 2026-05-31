@@ -1,8 +1,11 @@
 // 共有 runtime store。複数ソース (builtin 算出 + server 並列 fetch) を集約し、
 // glass / companion は購読して描画する。取得は 1 系統 (二重ポーリングなし)。
 // 失敗ソースは直近成功値を stale 保持。revision + abort で遅延応答を破棄。
+
+import { airqualityStatus } from './airquality'
 import { localStatus } from './builtins'
 import {
+  AIRQUALITY_SOURCE_ID,
   type Config,
   enabledSources,
   GEOINFO_SOURCE_ID,
@@ -232,6 +235,7 @@ function clientProducer(
 ): ((signal: AbortSignal, options?: OptionValues) => Promise<StatusDoc | null>) | undefined {
   if (id === WEATHER_SOURCE_ID) return weatherStatus
   if (id === GEOINFO_SOURCE_ID) return geoinfoStatus
+  if (id === AIRQUALITY_SOURCE_ID) return airqualityStatus
   return undefined
 }
 
