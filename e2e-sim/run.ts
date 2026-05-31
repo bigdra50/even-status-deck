@@ -18,7 +18,7 @@
 const PORT = Number(process.env.SIM_PORT ?? 9898)
 const BASE = `http://127.0.0.1:${PORT}`
 const READY_MARK = 'Bridge initialized' // EvenAppBridge 初期化ログ
-const SCREENSHOT_MIN_BYTES = 1500 // 空 (全透過) PNG 除外の下限
+const SCREENSHOT_MIN_BYTES = 1500 // 空 (全透過) PNG 除外の smoke 下限。厳密な blank 検出ではない (将来 pngjs で点灯ピクセル数を検証)
 
 type ConsoleEntry = { id: number; level: string; message: string; ts: number }
 type InputAction = 'up' | 'down' | 'click' | 'double_click'
@@ -28,6 +28,10 @@ const log = (m: string): void => console.log(`[sim-e2e] ${m}`)
 const fail = (m: string): never => {
   console.error(`[sim-e2e] FAIL: ${m}`)
   process.exit(1)
+}
+
+if (!Number.isInteger(PORT) || PORT <= 0 || PORT > 65535) {
+  fail(`invalid SIM_PORT: ${process.env.SIM_PORT ?? '(unset)'}`)
 }
 
 async function ping(): Promise<boolean> {
@@ -88,7 +92,7 @@ async function main(): Promise<void> {
 
   // 2. アプリ ready 待ち
   let ready = false
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 60; i++) {
     const entries = await getConsole()
     if (entries.some((e) => e.message.includes(READY_MARK))) {
       ready = true
@@ -130,6 +134,15 @@ async function main(): Promise<void> {
   await sleep(1000)
   const shotAfter = await getScreenshot()
   if (!isPng(shotAfter)) fail('post-input screenshot is not a PNG (simulator may have crashed)')
+  // input 後に新たな console error が出ていないか (input handler の例外 / 失敗 fetch を検出)
+  const errorsAfterInput = findErrors(await getConsole())
+  if (errorsAfterInput.length > 0) {
+    fail(
+      `console has ${errorsAfterInput.length} error(s) after input:\n${errorsAfterInput
+        .map((e) => `  [${e.level}] ${e.message}`)
+        .join('\n')}`,
+    )
+  }
   log('input(down) accepted, simulator still rendering')
 
   log('SIMULATOR E2E PASSED')
