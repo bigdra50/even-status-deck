@@ -21,6 +21,7 @@ import {
   type Config,
   GEOINFO_SOURCE_ID,
   type OptionValues,
+  PLACES_SOURCE_ID,
   type SegMeta,
   sourceById,
   WEATHER_SOURCE_ID,
@@ -232,10 +233,36 @@ const AIRQUALITY_OPTION_FIELDS: OptionField[] = [
   },
 ]
 
+// places (client.places) source 単位の表示オプション (#42)。距離単位と方位スタイル。
+const PLACES_OPTION_FIELDS: OptionField[] = [
+  {
+    kind: 'select',
+    id: 'distUnit',
+    label: 'Distance unit',
+    choices: [
+      { value: 'km', label: 'km' },
+      { value: 'mi', label: 'mi' },
+    ],
+    default: 'km',
+  },
+  {
+    kind: 'select',
+    id: 'bearingStyle',
+    label: 'Bearing',
+    choices: [
+      { value: 'text', label: 'Text (N/NE)' },
+      { value: 'compass16', label: '16-point (NNE)' },
+      { value: 'arrow', label: 'Arrow' },
+    ],
+    default: 'text',
+  },
+]
+
 export function sourceOptionSchema(sourceId: string): OptionField[] {
   if (sourceId === WEATHER_SOURCE_ID) return WEATHER_OPTION_FIELDS
   if (sourceId === GEOINFO_SOURCE_ID) return GEOINFO_OPTION_FIELDS
   if (sourceId === AIRQUALITY_SOURCE_ID) return AIRQUALITY_OPTION_FIELDS
+  if (sourceId === PLACES_SOURCE_ID) return PLACES_OPTION_FIELDS
   return []
 }
 

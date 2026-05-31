@@ -4,6 +4,7 @@ import { localStatus } from './builtins'
 import {
   activeProfile,
   activeView,
+  addPlace,
   addProfile,
   addServer,
   BUILTIN_GROUP_LABELS,
@@ -25,10 +26,14 @@ import {
   isSourceEnabled,
   loadConfig,
   type OptionValues,
+  PLACES_SOURCE_ID,
+  type Place,
   RIGHT_DIVIDER,
   reconcileSourceMachine,
+  removePlace,
   removeProfile,
   removeSource,
+  renamePlace,
   renameProfile,
   type SegMeta,
   type SourceDef,
@@ -79,7 +84,7 @@ import { computeVisible, segKey, type VisibilityLeaf } from './visibility'
 const MAX_CONDS = 4
 
 // companion (スマホ WebView) の Home / Source 編集。複数ソースを横断して設定する。
-let view: 'home' | 'source-edit' | 'sources' | 'add-source' = 'home'
+let view: 'home' | 'source-edit' | 'sources' | 'add-source' | 'places' = 'home'
 // source-edit から戻る先 (Sources 一覧経由か / Home への新規追加経由か)
 let sourceEditBack: 'home' | 'sources' = 'home'
 let editingSourceId: string | null = null
@@ -665,6 +670,9 @@ function renderHome(): string {
     ${sourcesHtml}
     <button class="save-btn sm" data-action="open-add-source">${icon('plus', { size: 14 })} Add source</button>
 
+    <div class="cmp-label cmp-label-row">Places<span class="cmp-actions"><button class="link-btn" data-action="manage-places">Manage</button></span></div>
+    <div class="cmp-sub">Saved spots for the Places source (distance &amp; bearing from here).</div>
+
     <div class="cmp-label">Items (drag ${icon('grip', { size: 12 })} to reorder)</div>
     <div id="source-list">${renderItems()}</div>
 
@@ -706,6 +714,54 @@ function renderAddSource(): string {
     <div class="cmp-label">New</div>
     <button class="save-btn sm" data-action="create-new-source">${icon('plus', { size: 14 })} Create new source</button>
   `
+}
+
+// ── 保存地点管理 (#42) ──
+// 各保存地点を name + 座標 + 削除で並べ、現在地を新規保存できる。地点ナビ(Places source)が
+// ここの保存地点までの距離・方位を出す。
+function placeManageRow(p: Place): string {
+  return `<div class="src"><div class="src-head">
+    <span class="src-name">${esc(p.label)}</span>
+    <span class="src-note mono">${p.lat.toFixed(3)}, ${p.lon.toFixed(3)}</span>
+    <button class="link-btn" data-action="rename-place" data-place="${esc(p.id)}" title="Rename">Rename</button>
+    <button class="link-btn" data-action="delete-place" data-place="${esc(p.id)}" title="Delete">Delete</button></div></div>`
+}
+
+function renderPlaces(): string {
+  const places = config.places ?? []
+  const html = places.length
+    ? places.map(placeManageRow).join('')
+    : '<div class="cmp-sub">No saved places yet. Save your current location to start.</div>'
+  return `
+    <div class="topbar"><button class="nav-btn" data-action="home">${icon('arrow-left', { size: 16 })} Home</button>
+      <span class="h-title">Places</span><span></span></div>
+    <div class="cmp-sub">Distance and bearing to these spots show under the Places source (enable it in Add source).</div>
+    ${html}
+    <button class="save-btn sm" data-action="add-current-place">${icon('plus', { size: 14 })} Save current location</button>
+  `
+}
+
+// companion(iPhone WebView)で現在地を 1 回取得する。地点保存用なので高精度を要求する。
+function getCompanionPosition(): Promise<{ lat: number; lon: number }> {
+  return new Promise((resolve, reject) => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      reject(new Error('geolocation unavailable'))
+      return
+    }
+    navigator.geolocation.getCurrentPosition(
+      (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude }),
+      (e) => reject(new Error(`geolocation error ${e.code}`)),
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 },
+    )
+  })
+}
+
+// 保存地点変更後の共通処理: 永続化 → store へ反映(setSavedPlaces 経由) → 地点ナビ再計算 → 再描画。
+function afterPlacesChange(): void {
+  void saveConfig(config)
+  setSourcesFromConfig(config) // store の savedPlaces を最新化(Places source が有効なら再 fetch 範囲も同期)
+  refreshSourceById(PLACES_SOURCE_ID) // 現在地から距離・方位を再計算
+  render()
 }
 
 // ── ソース編集 ──
@@ -760,7 +816,9 @@ function render(): void {
         ? renderSources()
         : view === 'add-source'
           ? renderAddSource()
-          : renderHome()
+          : view === 'places'
+            ? renderPlaces()
+            : renderHome()
   if (view === 'home') {
     lastVisibleSig = visibleSig()
     attachSortables()
@@ -953,6 +1011,39 @@ async function onClick(e: MouseEvent): Promise<void> {
       view = 'sources'
       render()
       break
+    case 'manage-places':
+      view = 'places'
+      render()
+      break
+    case 'add-current-place': {
+      // 現在地を取得して名前を付けて保存する。位置許可が無ければ案内して中断。
+      const name = window.prompt('Place name', 'Home')
+      if (!name?.trim()) break
+      try {
+        const pos = await getCompanionPosition()
+        addPlace(config, name.trim(), pos.lat, pos.lon)
+        afterPlacesChange()
+      } catch {
+        window.alert('Could not get your location. Allow location access and try again.')
+      }
+      break
+    }
+    case 'rename-place': {
+      const id = t.dataset.place
+      const p = config.places?.find((x) => x.id === id)
+      if (!id || !p) break
+      const name = window.prompt('Place name', p.label)
+      if (name?.trim() && renamePlace(config, id, name.trim())) afterPlacesChange()
+      break
+    }
+    case 'delete-place': {
+      const id = t.dataset.place
+      if (!id) break
+      const p = config.places?.find((x) => x.id === id)
+      if (p && window.confirm(`Delete "${p.label}"?`) && removePlace(config, id))
+        afterPlacesChange()
+      break
+    }
     case 'open-add-source':
       view = 'add-source'
       render()

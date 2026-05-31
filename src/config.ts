@@ -21,6 +21,8 @@ export const GEOINFO_SOURCE_ID = 'client.geoinfo'
 export const AIRQUALITY_SOURCE_ID = 'client.airquality'
 // 地名(逆ジオコーディング) client source の決定的 ID (#37)。別ホスト(api.bigdatacloud.net)を使う。
 export const GEOCODE_SOURCE_ID = 'client.geocode'
+// 地点ナビ client source の決定的 ID (#42)。外部 fetch なし(geolocation + Config.places から純計算)。
+export const PLACES_SOURCE_ID = 'client.places'
 export const DEFAULT_PROFILE_ID = 'default'
 
 // glass layout の「ラベル chip」を表す予約 segId。items の key が `src|grp|@label` のとき、
@@ -153,6 +155,14 @@ export type RemovedView = {
 
 // IMU 方向検出は src/imu ライブラリが所有。Config は enable + キャリブの永続先として imu? を持つ。
 // recentlyRemoved: 削除済み source の表示レシピ tombstone (machineId -> snapshot)。additive optional。
+// 保存地点 (#42)。地点ナビが現在地からの距離・方位を出す対象。profile 非依存の素材。
+export type Place = {
+  id: string
+  label: string
+  lat: number
+  lon: number
+}
+
 export type Config = {
   version: number
   sources: SourceDef[]
@@ -161,6 +171,7 @@ export type Config = {
   activeProfileId: string
   imu?: ImuConfig
   recentlyRemoved?: Record<string, RemovedView>
+  places?: Place[] // #42 保存地点 (additive)
 }
 
 // tombstone の保持上限 (古いものから間引く)。無制限に溜めない。
@@ -357,6 +368,107 @@ function ensureClientGeocode(cfg: Config): void {
   cfg.groups[GEOCODE_SOURCE_ID] ??= {}
 }
 
+// 地点ナビ client source (#42)。weather と同様に既定無効(opt-in)。保存地点ごとの segment は status sync が補充する。
+function ensureClientPlaces(cfg: Config): void {
+  const existing = cfg.sources.find((s) => s.id === PLACES_SOURCE_ID)
+  if (existing) {
+    existing.kind = 'client'
+    existing.label = 'Places'
+    existing.urls ??= []
+  } else {
+    cfg.sources.push({ id: PLACES_SOURCE_ID, kind: 'client', label: 'Places', urls: [] })
+  }
+  cfg.groups[PLACES_SOURCE_ID] ??= {}
+  cfg.places ??= []
+}
+
+// 地点ナビの group id (#42)。保存地点ごとの segment(id=place.id)をこの 1 group に集約する。
+export const PLACES_GROUP_ID = 'nav'
+const MAX_PLACES = 16 // 保存地点の上限(glass 行数 + UI が現実的な範囲)
+const MAX_PLACE_LABEL = 24
+
+// 保存地点配列を sanitize する(壊れた places でクラッシュさせない)。id/label/緯度経度を検証し、上限で切る。
+function normalizePlaces(cfg: Config): void {
+  if (!Array.isArray(cfg.places)) {
+    cfg.places = []
+    return
+  }
+  const seen = new Set<string>()
+  const out: Place[] = []
+  for (const p of cfg.places) {
+    if (out.length >= MAX_PLACES) break
+    if (!p || typeof p !== 'object') continue
+    const id = typeof p.id === 'string' ? p.id : ''
+    const label = typeof p.label === 'string' ? p.label.slice(0, MAX_PLACE_LABEL) : ''
+    const lat = p.lat
+    const lon = p.lon
+    if (!id || seen.has(id)) continue
+    if (
+      typeof lat !== 'number' ||
+      typeof lon !== 'number' ||
+      !Number.isFinite(lat) ||
+      !Number.isFinite(lon)
+    )
+      continue
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) continue
+    seen.add(id)
+    out.push({ id, label: label || 'Place', lat, lon })
+  }
+  cfg.places = out
+}
+
+export function genPlaceId(): string {
+  return `pl_${genSourceId().slice(0, 8)}`
+}
+
+// 保存地点 CRUD (companion から呼ぶ)。素材 segment は producer の status sync が補充するので、ここでは
+// places 配列のみ操作する。削除時だけ素材/view に残る孤立 segment を掃除する。
+export function addPlace(cfg: Config, label: string, lat: number, lon: number): Place {
+  cfg.places ??= []
+  const place: Place = {
+    id: genPlaceId(),
+    label: label.slice(0, MAX_PLACE_LABEL) || 'Place',
+    lat,
+    lon,
+  }
+  cfg.places.push(place)
+  return place
+}
+
+export function renamePlace(cfg: Config, id: string, label: string): boolean {
+  const p = cfg.places?.find((x) => x.id === id)
+  if (!p) return false
+  p.label = label.slice(0, MAX_PLACE_LABEL) || 'Place'
+  return true
+}
+
+export function updatePlaceLocation(cfg: Config, id: string, lat: number, lon: number): boolean {
+  const p = cfg.places?.find((x) => x.id === id)
+  if (!p || !Number.isFinite(lat) || !Number.isFinite(lon)) return false
+  p.lat = lat
+  p.lon = lon
+  return true
+}
+
+export function removePlace(cfg: Config, id: string): boolean {
+  if (!cfg.places) return false
+  const before = cfg.places.length
+  cfg.places = cfg.places.filter((p) => p.id !== id)
+  if (cfg.places.length === before) return false
+  // 孤立 segment を掃除する(素材 + 全 profile view + glassLayout 配置)。さもないと削除後に
+  // layout editor が glassLayout.rows の stale chip を描き続ける(discardSource と同じ理由)。
+  const key = segKey(PLACES_SOURCE_ID, PLACES_GROUP_ID, id)
+  const meta = cfg.groups[PLACES_SOURCE_ID]?.[PLACES_GROUP_ID]
+  if (meta) meta.segments = meta.segments.filter((s) => s.id !== id)
+  for (const prof of cfg.profiles) {
+    const vg = prof.view.groups[PLACES_SOURCE_ID]?.[PLACES_GROUP_ID]
+    if (vg) delete vg.segments[id]
+    const lay = prof.view.glassLayout
+    if (lay) lay.rows = lay.rows.map((row) => row.filter((k) => k !== key))
+  }
+  return true
+}
+
 // 旧 builtin group 'hud' (時刻/電池を 1 group に詰めていた) を clock/g2 へ再構成する。
 // segment は id が変わる (g2→level, drain→rate, est→eta) ため旧トグルは引き継がず、
 // sync が status から既定 ON で補充する。builtin の表示順 (先頭) は維持する。
@@ -394,6 +506,8 @@ export function emptyConfig(): Config {
   ensureClientGeoinfo(c)
   ensureClientAirquality(c)
   ensureClientGeocode(c)
+  ensureClientPlaces(c)
+  normalizePlaces(c)
   return c
 }
 
@@ -481,6 +595,8 @@ function migrateV4Same(c: Config): Config {
   ensureClientGeoinfo(c)
   ensureClientAirquality(c)
   ensureClientGeocode(c)
+  ensureClientPlaces(c)
+  normalizePlaces(c)
   c.imu ??= defaultImuConfig()
   delete (c as Record<string, unknown>).batteryRate
   delete (c as Record<string, unknown>).glassHints
@@ -607,6 +723,8 @@ function migrateV3ToV4(old: V3Config): Config {
   ensureClientGeoinfo(cfg)
   ensureClientAirquality(cfg)
   ensureClientGeocode(cfg)
+  ensureClientPlaces(cfg)
+  normalizePlaces(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
   consolidateClock(cfg)
@@ -677,6 +795,8 @@ function migrateLegacyToV4(parsed: Record<string, unknown>): Config {
   ensureClientGeoinfo(cfg)
   ensureClientAirquality(cfg)
   ensureClientGeocode(cfg)
+  ensureClientPlaces(cfg)
+  normalizePlaces(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
   pruneOrphans(cfg)
