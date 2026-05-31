@@ -161,6 +161,7 @@ export type Place = {
   label: string
   lat: number
   lon: number
+  radiusM?: number // ジオフェンス半径(m, #43)。未設定は既定 150m。この圏内を「ここに居る」とみなす。
 }
 
 export type Config = {
@@ -386,6 +387,14 @@ function ensureClientPlaces(cfg: Config): void {
 export const PLACES_GROUP_ID = 'nav'
 const MAX_PLACES = 16 // 保存地点の上限(glass 行数 + UI が現実的な範囲)
 const MAX_PLACE_LABEL = 24
+export const DEFAULT_PLACE_RADIUS_M = 150 // ジオフェンス既定半径(m, #43)
+const MIN_PLACE_RADIUS_M = 20
+const MAX_PLACE_RADIUS_M = 50_000
+
+function clampRadius(r: unknown): number {
+  if (typeof r !== 'number' || !Number.isFinite(r)) return DEFAULT_PLACE_RADIUS_M
+  return Math.min(MAX_PLACE_RADIUS_M, Math.max(MIN_PLACE_RADIUS_M, Math.round(r)))
+}
 
 // 保存地点配列を sanitize する(壊れた places でクラッシュさせない)。id/label/緯度経度を検証し、上限で切る。
 function normalizePlaces(cfg: Config): void {
@@ -412,7 +421,7 @@ function normalizePlaces(cfg: Config): void {
       continue
     if (lat < -90 || lat > 90 || lon < -180 || lon > 180) continue
     seen.add(id)
-    out.push({ id, label: label || 'Place', lat, lon })
+    out.push({ id, label: label || 'Place', lat, lon, radiusM: clampRadius(p.radiusM) })
   }
   cfg.places = out
 }
@@ -430,6 +439,7 @@ export function addPlace(cfg: Config, label: string, lat: number, lon: number): 
     label: label.slice(0, MAX_PLACE_LABEL) || 'Place',
     lat,
     lon,
+    radiusM: DEFAULT_PLACE_RADIUS_M,
   }
   cfg.places.push(place)
   return place
@@ -439,6 +449,14 @@ export function renamePlace(cfg: Config, id: string, label: string): boolean {
   const p = cfg.places?.find((x) => x.id === id)
   if (!p) return false
   p.label = label.slice(0, MAX_PLACE_LABEL) || 'Place'
+  return true
+}
+
+// ジオフェンス半径(m)を設定する(#43)。範囲外は clamp。
+export function setPlaceRadius(cfg: Config, id: string, radiusM: number): boolean {
+  const p = cfg.places?.find((x) => x.id === id)
+  if (!p) return false
+  p.radiusM = clampRadius(radiusM)
   return true
 }
 
@@ -465,6 +483,21 @@ export function removePlace(cfg: Config, id: string): boolean {
     if (vg) delete vg.segments[id]
     const lay = prof.view.glassLayout
     if (lay) lay.rows = lay.rows.map((row) => row.filter((k) => k !== key))
+  }
+  // 全 segment の visibility から、削除 place を参照する inPlace leaf を除去する(#43)。残すと「At place:
+  // <deleted>」条件が常に圏外扱い(insidePlaceIds.has(deletedId)=false)になり segment が予期せず消え、
+  // editor の place select も誤表示になる。条件が空になったら visibility ごと外す(=常時表示へ戻す)。
+  for (const groups of Object.values(cfg.groups)) {
+    for (const m of Object.values(groups)) {
+      for (const sm of m.segments) {
+        const vis = sm.visibility
+        if (!vis) continue
+        const kept = vis.conditions.filter((c) => !(c.kind === 'inPlace' && c.placeId === id))
+        if (kept.length === vis.conditions.length) continue
+        if (kept.length === 0) sm.visibility = undefined
+        else vis.conditions = kept
+      }
+    }
   }
   return true
 }
@@ -818,6 +851,11 @@ function sanitizeLeaf(x: unknown): VisibilityLeaf | null {
   }
   if (o.kind === 'onChange' && typeof o.holdMs === 'number') {
     return { kind: 'onChange', holdMs: o.holdMs }
+  }
+  if (o.kind === 'inPlace' && typeof o.placeId === 'string' && o.placeId !== '') {
+    const leaf: VisibilityLeaf = { kind: 'inPlace', placeId: o.placeId }
+    if (o.outside === true) leaf.outside = true
+    return leaf
   }
   return null
 }

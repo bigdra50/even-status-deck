@@ -95,3 +95,28 @@ export function formatDistance(km: number, unit: DistanceUnit): string {
   if (km < 10) return `${km.toFixed(1)}km`
   return `${Math.round(km)}km`
 }
+
+// 2 点間距離(m)。ジオフェンス判定用(haversine の m 版)。
+export function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  return haversineKm(lat1, lon1, lat2, lon2) * 1000
+}
+
+// ジオフェンス判定用の最小地点形(config の Place 型に依存させない=geo は純数学)。
+export type GeoPlace = { id: string; lat: number; lon: number; radiusM?: number }
+
+// pos が各地点の半径(radiusM, 未設定は defaultRadiusM)圏内かを判定し、圏内の地点を距離昇順で返す(#43)。
+export function placesInRange(
+  pos: { lat: number; lon: number },
+  places: GeoPlace[],
+  defaultRadiusM: number,
+): { id: string; distM: number }[] {
+  return places
+    .map((p) => ({
+      id: p.id,
+      distM: haversineMeters(pos.lat, pos.lon, p.lat, p.lon),
+      r: p.radiusM ?? defaultRadiusM,
+    }))
+    .filter((x) => x.distM <= x.r)
+    .sort((a, b) => a.distM - b.distM)
+    .map(({ id, distM }) => ({ id, distM }))
+}

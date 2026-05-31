@@ -5,6 +5,7 @@ import { expect, test } from 'bun:test'
 import {
   activeProfile,
   addPlace,
+  DEFAULT_PLACE_RADIUS_M,
   emptyConfig,
   GEOINFO_SOURCE_ID,
   migrate,
@@ -12,6 +13,7 @@ import {
   PLACES_SOURCE_ID,
   removePlace,
   renamePlace,
+  setPlaceRadius,
   updatePlaceLocation,
   WEATHER_SOURCE_ID,
 } from './config'
@@ -64,6 +66,38 @@ test('places CRUD: 追加/改名/座標更新/削除', () => {
   expect(removePlace(cfg, home.id)).toBe(false) // 既に無い
 })
 
+test('removePlace: 他 segment の visibility から inPlace leaf を掃除する (#43)', () => {
+  const cfg = emptyConfig()
+  const home = addPlace(cfg, 'Home', 35, 139)
+  // 別 source の segment が「At Home」(+ threshold)条件を持つ状態を作る。
+  cfg.groups['server.x'] = {
+    g: {
+      segments: [
+        {
+          id: 's1',
+          visibility: {
+            combinator: 'and',
+            conditions: [
+              { kind: 'inPlace', placeId: home.id },
+              { kind: 'threshold', op: 'gte', value: 50 },
+            ],
+          },
+        },
+        {
+          id: 's2',
+          visibility: { combinator: 'and', conditions: [{ kind: 'inPlace', placeId: home.id }] },
+        },
+      ],
+    },
+  }
+  expect(removePlace(cfg, home.id)).toBe(true)
+  const segs = cfg.groups['server.x'].g.segments
+  // s1: inPlace 除去、threshold は残る
+  expect(segs[0].visibility?.conditions).toEqual([{ kind: 'threshold', op: 'gte', value: 50 }])
+  // s2: 条件が空になったので visibility ごと外れる(= 常時表示へ)
+  expect(segs[1].visibility).toBeUndefined()
+})
+
 test('removePlace: 素材/view/glassLayout の孤立 chip を掃除する', () => {
   const cfg = emptyConfig()
   const home = addPlace(cfg, 'Home', 35, 139)
@@ -81,6 +115,23 @@ test('removePlace: 素材/view/glassLayout の孤立 chip を掃除する', () =
   expect(cfg.groups[PLACES_SOURCE_ID][PLACES_GROUP_ID].segments).toEqual([]) // 素材掃除
   expect(prof.view.groups[PLACES_SOURCE_ID][PLACES_GROUP_ID].segments[home.id]).toBeUndefined() // view 掃除
   expect(prof.view.glassLayout?.rows[0]).toEqual(['builtin.local|clock|datetime']) // place chip だけ除去
+})
+
+test('places radius: 既定 150m / clamp / migrate 補完 (#43)', () => {
+  const cfg = emptyConfig()
+  const p = addPlace(cfg, 'Home', 35, 139)
+  expect(p.radiusM).toBe(DEFAULT_PLACE_RADIUS_M)
+  expect(setPlaceRadius(cfg, p.id, 300)).toBe(true)
+  expect(cfg.places?.[0].radiusM).toBe(300)
+  expect(setPlaceRadius(cfg, p.id, 5)).toBe(true) // 下限 clamp(20)
+  expect(cfg.places?.[0].radiusM).toBe(20)
+  expect(setPlaceRadius(cfg, p.id, 999_999)).toBe(true) // 上限 clamp(50000)
+  expect(cfg.places?.[0].radiusM).toBe(50_000)
+  // migrate: radiusM 欠落は既定で補完
+  const v4 = emptyConfig()
+  ;(v4 as unknown as { places: unknown[] }).places = [{ id: 'x', label: 'X', lat: 0, lon: 0 }]
+  const migrated = migrate(v4 as unknown as Record<string, unknown>)
+  expect(migrated.places?.[0].radiusM).toBe(DEFAULT_PLACE_RADIUS_M)
 })
 
 test('migrate(v4 same): 不正な places を sanitize する', () => {

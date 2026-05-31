@@ -8,7 +8,28 @@ import {
   formatBearing,
   formatDistance,
   haversineKm,
+  haversineMeters,
+  placesInRange,
 } from './geo'
+
+test('haversineMeters: km の 1000 倍', () => {
+  expect(haversineMeters(0, 0, 0, 0)).toBe(0)
+  expect(haversineMeters(0, 0, 1, 0)).toBeCloseTo(111200, -2)
+})
+
+test('placesInRange: 半径圏内の地点を距離昇順で返す(#43)', () => {
+  const pos = { lat: 35.681, lon: 139.767 }
+  const places = [
+    { id: 'near', lat: 35.6812, lon: 139.7672 }, // 約 25m → 既定 150m 圏内
+    { id: 'far', lat: 35.69, lon: 139.7 }, // 約 6km → 既定 150m 圏外
+    { id: 'bigr', lat: 35.69, lon: 139.7, radiusM: 10000 }, // far と同座標だが半径 10km → 圏内
+  ]
+  const inside = placesInRange(pos, places, 150)
+  expect(inside.map((x) => x.id)).toEqual(['near', 'bigr']) // 近い順、far は除外
+  expect(inside[0].distM).toBeLessThan(150)
+  // 圏内が無ければ空
+  expect(placesInRange(pos, [places[1]], 150)).toEqual([])
+})
 
 test('haversineKm: 既知 2 点の距離(東京駅→新宿駅 ≒ 6.6km)', () => {
   const d = haversineKm(35.681, 139.767, 35.69, 139.7) // Tokyo → Shinjuku

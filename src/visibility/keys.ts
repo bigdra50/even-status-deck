@@ -3,9 +3,11 @@
 // ここを leaf 化して config → visibility(barrel=index, runtime を re-export) の循環依存を断つ。
 
 // leaf = 条件の最小単位。threshold は seg.percent を比較、onChange は seg.value 変化で holdMs 表示。
+// inPlace(#43) は現在地が保存地点(placeId)のジオフェンス圏内か(outside=圏外か)で判定。位置不明は na。
 export type VisibilityLeaf =
   | { kind: 'threshold'; op: 'lte' | 'gte'; value: number }
   | { kind: 'onChange'; holdMs: number }
+  | { kind: 'inPlace'; placeId: string; outside?: boolean }
 
 // 複合条件: leaf 列を単一 combinator(and/or) で結合。conditions 空 = 常時表示。
 export type VisibilityCond = { combinator: 'and' | 'or'; conditions: VisibilityLeaf[] }
