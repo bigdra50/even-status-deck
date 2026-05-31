@@ -9,7 +9,7 @@
 //   - 本アプリは音を使わないので、WebAudio の native footprint を持つ意味が無い。
 let releaseLock: (() => void) | null = null
 
-export function activateKeepAlive(lockName = 'eveng2_toolbar_keep_alive'): void {
+export function activateKeepAlive(lockName = 'status_deck_keep_alive'): void {
   // ページが閉じるまで解放されない lock を保持し、WebView の凍結を防ぐ。
   if (typeof navigator !== 'undefined' && navigator.locks && !releaseLock) {
     void navigator.locks.request(

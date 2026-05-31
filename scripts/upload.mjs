@@ -130,7 +130,7 @@ async function api(path, makeForm, pkg, retried = false) {
 async function main() {
   const app = JSON.parse(readFileSync('app.json', 'utf8'))
   const pkg = arg('--package') || app.package_id
-  const file = arg('--file') || 'eveng2-toolbar.ehpk'
+  const file = arg('--file') || 'status-deck.ehpk'
   const changelog = (arg('-m', '--changelog') || '').slice(0, 500)
   const addBuild = !has('--draft-only') // 既定で Add build (create) まで。--draft-only で draft 止め
   state.creds = readCreds()

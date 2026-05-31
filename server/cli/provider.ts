@@ -1,4 +1,4 @@
-// `eveng2-toolbar provider <subcmd>` の dispatch。
+// `status-deck provider <subcmd>` の dispatch。
 // list / enable / disable / install / update / remove / check-updates。
 // install は引数の形で判別: 1 つ = JS plugin、2 つ以上 = subprocess (id + command)。
 import { readdir } from 'node:fs/promises'
@@ -243,7 +243,7 @@ async function cmdUpdateAll(acceptRisk: RiskTag[]): Promise<void> {
 
 function requireValidId(sub: string, id: string | undefined): id is string {
   if (!id) {
-    console.error(`usage: eveng2-toolbar provider ${sub} <id>`)
+    console.error(`usage: status-deck provider ${sub} <id>`)
     process.exitCode = 1
     return false
   }
@@ -334,7 +334,7 @@ export async function runProviderCli(argv: string[]): Promise<void> {
     }
     default:
       console.log(
-        'usage: eveng2-toolbar provider <list|enable|disable|install|update|remove|check-updates> ...',
+        'usage: status-deck provider <list|enable|disable|install|update|remove|check-updates> ...',
       )
       process.exitCode = sub ? 1 : 0
   }

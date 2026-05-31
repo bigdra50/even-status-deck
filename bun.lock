@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "eveng2-toolbar",
+      "name": "even-status-deck",
       "dependencies": {
         "@evenrealities/even_hub_sdk": "^0.0.10",
         "@evenrealities/pretext": "^0.1.4",

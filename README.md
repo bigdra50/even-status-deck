@@ -1,4 +1,4 @@
-# eveng2-toolbar
+# Status Deck
 
 Even Realities G2 スマートグラスに、時刻 / 電池 / 各種ステータスを HUD 表示する companion アプリ。
 複数のデータソース（時刻・日付、グラスの電池、PC のシステム情報、AI ツールの利用状況など）を 1 つのグラス表示に集約し、
@@ -27,8 +27,8 @@ PC のシステム情報や provider を配信するローカルサーバー。�
 1. ローカルサーバーを起動する（`/api` を `0.0.0.0:8723` で配信し、起動時に接続用の LAN IP を表示する）。
 
    ```bash
-   bunx eveng2-toolbar server   # Bun
-   npx eveng2-toolbar server    # Node.js
+   bunx even-status-deck server   # Bun
+   npx even-status-deck server    # Node.js
    ```
 
    > npm 公開後に有効。公開前は[開発者向けセットアップ](#開発者向けセットアップ)の clone 手順（`bun run server`）で起動する。
@@ -36,7 +36,7 @@ PC のシステム情報や provider を配信するローカルサーバー。�
 2. companion（スマホ UI）の「+ サーバーを追加」に、表示された `http://<LAN-IP>:8723` を登録して Test する。
 3. グラス（スマホ）とサーバーのマシンを同じ Wi-Fi に置く。サーバー稼働中だけ更新され、マシンがスリープすると止まる。
 
-provider の管理は `bun run provider`（公開後は `bunx eveng2-toolbar provider`）。追加・カスタマイズは下記参照。
+provider の管理は `bun run provider`（公開後は `bunx even-status-deck provider`）。追加・カスタマイズは下記参照。
 
 ## 仕組み
 
@@ -103,7 +103,7 @@ provider は「1 ソース分の `StatusDoc`（または単一 `Group`）を供�
 `config.toml` に `command` を明示登録すると、server が**毎 poll でそのコマンドを実行し、標準出力の `StatusDoc`（または単一 `Group`）JSON を 1 ソースとして取り込む**。任意言語で書ける（`command` 指定なので shebang / Windows PATHEXT に依存しない）。常駐不要。
 
 ```toml
-# ~/.config/eveng2-toolbar/config.toml
+# ~/.config/status-deck/config.toml
 [providers.weather]
 command = "python"
 args = ["${configDir}/providers/weather.py"]   # 絶対パス or ${configDir} のみ
@@ -113,7 +113,7 @@ ttlMs = 30000
 
 ```python
 #!/usr/bin/env python3
-# ~/.config/eveng2-toolbar/providers/weather.py
+# ~/.config/status-deck/providers/weather.py
 import json
 print(json.dumps({
   "id": "weather", "label": "Weather",
@@ -141,7 +141,7 @@ print(json.dumps({
 
 ### (4) JS plugin（autoload）
 
-`$XDG_CONFIG_HOME/eveng2-toolbar/providers/<id>.{ts,mjs,js}`（既定 `~/.config/eveng2-toolbar/providers/`）に置き、`config.toml` に `[providers.<id>]` を書くと有効になる。本体ランタイム実行（`bunx` / `npx` / `bun run server`）で有効（autoload はバンドル配布でも効く）。`npx`（Node.js）で動かすときはプラグインを `.mjs` / `.js` で書く（`.ts` は Bun 実行時のみ読める）。
+`$XDG_CONFIG_HOME/status-deck/providers/<id>.{ts,mjs,js}`（既定 `~/.config/status-deck/providers/`）に置き、`config.toml` に `[providers.<id>]` を書くと有効になる。本体ランタイム実行（`bunx` / `npx` / `bun run server`）で有効（autoload はバンドル配布でも効く）。`npx`（Node.js）で動かすときはプラグインを `.mjs` / `.js` で書く（`.ts` は Bun 実行時のみ読める）。
 
 **置くだけでは動かない（gate）**: セキュリティのため、`config.toml` に `[providers.<id>]` で**明示登録した id の `<id>.<ext>` だけ**が import・実行される。未登録ファイルは import すらされない（sync ツールや誤って置いたファイルが勝手に走らない）。よって **ファイル名は id に一致**させる。`enabled = false` にすると import もしない。
 
@@ -150,7 +150,7 @@ print(json.dumps({
 - 例: [`examples/provider.example.ts`](./examples/provider.example.ts)（`<id>.ts` にリネームして置く）。
 
 ```ts
-// ~/.config/eveng2-toolbar/providers/weather.ts
+// ~/.config/status-deck/providers/weather.ts
 export default {
   id: 'weather',
   group: async (ctx) => {
@@ -166,11 +166,11 @@ export default {
 apiKey = "xxxx"
 ```
 
-実例: [`eveng2-claude-usage-provider`](https://github.com/bigdra50/eveng2-claude-usage-provider)（Claude の rate-limit % を返す drop-in プラグイン。非公式 API のため本体から切り出した opt-in の別 repo）。`provider install <url> --accept-risk unofficial-api`（下記 CLI）で入れるか、手動なら `providers/claude-limits.mjs` に置き `[providers.claude-limits]` を登録する。`group()` がハングしても `/api/status` を止めないよう、fetch には必ずタイムアウトを入れる。
+実例: [`even-claude-usage-provider`](https://github.com/bigdra50/even-claude-usage-provider)（Claude の rate-limit % を返す drop-in プラグイン。非公式 API のため本体から切り出した opt-in の別 repo）。`provider install <url> --accept-risk unofficial-api`（下記 CLI）で入れるか、手動なら `providers/claude-limits.mjs` に置き `[providers.claude-limits]` を登録する。`group()` がハングしても `/api/status` を止めないよう、fetch には必ずタイムアウトを入れる。
 
 ### サーバー側 config（有効/無効・オプション）
 
-`$XDG_CONFIG_HOME/eveng2-toolbar/config.toml`（`config.json` でも可）で、サーバーが**どの provider を計算・送信するか**を制御する。companion の表示トグル（送信はされるがグラス非表示）とは別の層。
+`$XDG_CONFIG_HOME/status-deck/config.toml`（`config.json` でも可）で、サーバーが**どの provider を計算・送信するか**を制御する。companion の表示トグル（送信はされるがグラス非表示）とは別の層。
 
 - `enabled = false` → その provider は**計算も送信もしない**（重い codex を止める / privacy）。
 - subprocess (2) は `command` を書いた時点で有効。
@@ -187,11 +187,11 @@ apiKey = "xxxx"        # group(ctx) で ctx.options.apiKey として受け取る
 
 ### provider CLI（管理）
 
-provider の管理は `eveng2-toolbar` バイナリの **`provider` サブコマンド**（`claude mcp` / `git remote` と同じ構造。単独 install するものではない）。
+provider の管理は `status-deck` バイナリの **`provider` サブコマンド**（`claude mcp` / `git remote` と同じ構造。単独 install するものではない）。
 
 ```
-bunx eveng2-toolbar provider <cmd>   # 公開後: install 不要でそのまま実行 (Bun)
-npx eveng2-toolbar provider <cmd>    # 同上 (Node.js)
+bunx even-status-deck provider <cmd>   # 公開後: install 不要でそのまま実行 (Bun)
+npx even-status-deck provider <cmd>    # 同上 (Node.js)
 bun run provider <cmd>               # clone 実行の近道 (= bun server/index.ts provider <cmd>)
 ```
 
@@ -209,14 +209,14 @@ config / ledger を書き換えるだけなので、**実行中サーバーの�
 
 `install` は**引数の数で JS / subprocess を判別**する（JS は id が manifest 由来なので 1 つ、subprocess は id を明示するので 2 つ以上）。共通フラグ: `[--accept-risk a,b] [--force]`。
 
-risk のある provider（非公式 API 等）は `--accept-risk <tag>` で明示承認が要る。CLI 経由でインストールしたものは managed として ledger（`$XDG_STATE_HOME/eveng2-toolbar/provider-ledger.json`）に記録され、update / drift 検知の対象になる。
+risk のある provider（非公式 API 等）は `--accept-risk <tag>` で明示承認が要る。CLI 経由でインストールしたものは managed として ledger（`$XDG_STATE_HOME/status-deck/provider-ledger.json`）に記録され、update / drift 検知の対象になる。
 
 ```bash
 # 例: claude-limits プラグイン (rate-limit %、非公式 API) をインストール
-bunx eveng2-toolbar provider install \
-  https://raw.githubusercontent.com/bigdra50/eveng2-claude-usage-provider/main/provider.mjs \
+bunx even-status-deck provider install \
+  https://raw.githubusercontent.com/bigdra50/even-claude-usage-provider/main/provider.mjs \
   --accept-risk unofficial-api
-bunx eveng2-toolbar provider list
+bunx even-status-deck provider list
 ```
 
 #### 手動配置からの移行（gate）
@@ -224,8 +224,8 @@ bunx eveng2-toolbar provider list
 gate 導入後、`providers/` にファイルを置くだけでは動かない（未登録ファイルは import すらされない）。以前から手動配置していたものは登録する:
 
 ```bash
-bunx eveng2-toolbar provider list        # 未登録は "unregistered" として表示
-bunx eveng2-toolbar provider enable <id> # [providers.<id>] を登録して有効化 (ファイル名=id にしておく)
+bunx even-status-deck provider list        # 未登録は "unregistered" として表示
+bunx even-status-deck provider enable <id> # [providers.<id>] を登録して有効化 (ファイル名=id にしておく)
 ```
 
 ## プロトコル
@@ -281,7 +281,7 @@ bun run build:server # server を bunx/npx 配布用の単一 dist-server/index.
 bun run sim          # evenhub-simulator で動作確認
 bun run qr           # 接続先 URL の QR を表示 (スマホから dev-URL sideload)
 bun run build        # tsc && vite build
-bun run pack         # build + .ehpk 生成 (eveng2-toolbar.ehpk)
+bun run pack         # build + .ehpk 生成 (status-deck.ehpk)
 bun run lint         # biome
 ```
 

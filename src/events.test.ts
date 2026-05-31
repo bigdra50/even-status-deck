@@ -21,7 +21,7 @@ function mockStorage(init?: Record<string, string>): Mock {
   }
 }
 
-const KEY = 'eveng2:events:since:src1'
+const KEY = 'status-deck:events:since:src1'
 
 test('saveSince → loadSince で round-trip する', () => {
   const s = mockStorage()

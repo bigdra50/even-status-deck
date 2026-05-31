@@ -2,7 +2,7 @@
 // /api/status のワイヤ型 StatusDoc に集約する (vite.config.ts:413-507 の移植・統合)。
 //
 // builtin: claude-code / codex / system (SYSTEM_GROUP_ID)。
-// JS autoload: $XDG_CONFIG_HOME/eveng2-toolbar/providers/*.{ts,mjs,js} を pathToFileURL で動的 import。
+// JS autoload: $XDG_CONFIG_HOME/status-deck/providers/*.{ts,mjs,js} を pathToFileURL で動的 import。
 //   OD-2 (配布=clone + `bun run server`) のため、autoload は runtime で常に有効
 //   (compile バイナリ向けの IS_COMPILED 無効化は入れない)。
 // subprocess: config.providers[id].command がある場合に runSubprocess へ委譲する (PROTOCOL §9c)。

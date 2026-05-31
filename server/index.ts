@@ -2,9 +2,9 @@
 import { runAskCli } from './cli/ask.ts'
 import { runProviderCli } from './cli/provider.ts'
 import { loadServerConfig } from './config.ts'
-// standalone エントリ。`eveng2-toolbar provider <subcmd>` は provider 管理 CLI へ、
-// `eveng2-toolbar watch <name>` は overlay イベント watcher を起動、
-// `eveng2-toolbar ask <message> [...actions]` は dialog を出して選択を待つ、
+// standalone エントリ。`status-deck provider <subcmd>` は provider 管理 CLI へ、
+// `status-deck watch <name>` は overlay イベント watcher を起動、
+// `status-deck ask <message> [...actions]` は dialog を出して選択を待つ、
 // それ以外 (引数なし / `server`) は node:http の HTTP サーバーを起動する。
 import { startServer } from './http-server.ts'
 
