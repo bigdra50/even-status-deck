@@ -8,6 +8,8 @@ import {
   emptyConfig,
   GEOINFO_SOURCE_ID,
   migrate,
+  PLACES_GROUP_ID,
+  PLACES_SOURCE_ID,
   removePlace,
   renamePlace,
   updatePlaceLocation,
@@ -60,6 +62,25 @@ test('places CRUD: 追加/改名/座標更新/削除', () => {
   expect(removePlace(cfg, home.id)).toBe(true)
   expect(cfg.places).toHaveLength(1)
   expect(removePlace(cfg, home.id)).toBe(false) // 既に無い
+})
+
+test('removePlace: 素材/view/glassLayout の孤立 chip を掃除する', () => {
+  const cfg = emptyConfig()
+  const home = addPlace(cfg, 'Home', 35, 139)
+  const prof = activeProfile(cfg)
+  // sync が補充した想定で素材/view/glassLayout に place segment を手で配置する。
+  cfg.groups[PLACES_SOURCE_ID] ??= {}
+  cfg.groups[PLACES_SOURCE_ID][PLACES_GROUP_ID] = { segments: [{ id: home.id }] }
+  prof.view.groups[PLACES_SOURCE_ID] = {
+    [PLACES_GROUP_ID]: { enabled: true, segments: { [home.id]: true } },
+  }
+  const placeKey = `${PLACES_SOURCE_ID}|${PLACES_GROUP_ID}|${home.id}`
+  prof.view.glassLayout = { rows: [[placeKey, 'builtin.local|clock|datetime']] }
+
+  expect(removePlace(cfg, home.id)).toBe(true)
+  expect(cfg.groups[PLACES_SOURCE_ID][PLACES_GROUP_ID].segments).toEqual([]) // 素材掃除
+  expect(prof.view.groups[PLACES_SOURCE_ID][PLACES_GROUP_ID].segments[home.id]).toBeUndefined() // view 掃除
+  expect(prof.view.glassLayout?.rows[0]).toEqual(['builtin.local|clock|datetime']) // place chip だけ除去
 })
 
 test('migrate(v4 same): 不正な places を sanitize する', () => {

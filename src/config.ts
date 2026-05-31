@@ -455,12 +455,16 @@ export function removePlace(cfg: Config, id: string): boolean {
   const before = cfg.places.length
   cfg.places = cfg.places.filter((p) => p.id !== id)
   if (cfg.places.length === before) return false
-  // 孤立 segment(素材 + 全 profile view)を掃除する。
+  // 孤立 segment を掃除する(素材 + 全 profile view + glassLayout 配置)。さもないと削除後に
+  // layout editor が glassLayout.rows の stale chip を描き続ける(discardSource と同じ理由)。
+  const key = segKey(PLACES_SOURCE_ID, PLACES_GROUP_ID, id)
   const meta = cfg.groups[PLACES_SOURCE_ID]?.[PLACES_GROUP_ID]
   if (meta) meta.segments = meta.segments.filter((s) => s.id !== id)
   for (const prof of cfg.profiles) {
     const vg = prof.view.groups[PLACES_SOURCE_ID]?.[PLACES_GROUP_ID]
     if (vg) delete vg.segments[id]
+    const lay = prof.view.glassLayout
+    if (lay) lay.rows = lay.rows.map((row) => row.filter((k) => k !== key))
   }
   return true
 }
