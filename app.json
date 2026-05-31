@@ -2,7 +2,7 @@
   "package_id": "com.bigdra50.statusdeck",
   "edition": "202601",
   "name": "Status Deck",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "min_app_version": "2.0.0",
   "min_sdk_version": "0.0.10",
   "entrypoint": "index.html",
@@ -14,7 +14,9 @@
     {
       "name": "network",
       "desc": "Fetch current weather for your location",
-      "whitelist": ["https://api.open-meteo.com"]
+      "whitelist": [
+        "https://api.open-meteo.com"
+      ]
     }
   ]
 }
