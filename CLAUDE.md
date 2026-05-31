@@ -12,3 +12,10 @@ Even Hub への再アップロード（Add build）時は、**毎回 `app.json` 
   3. `npm run pack`
   4. `node ~/.claude/skills/evenhub-upload/upload.mjs -m "<changelog>"`
 - アップロードは Private build。公開は Even Hub UI で Private→Public に切り替える（スクリプトは行わない）。
+
+## セカンドオピニオン・レビューに使う LLM
+
+GPT-5.5 を使ってコードレビューや設計のセカンドオピニオンを得る場合は、OpenAI Codex 経由を GitHub Copilot 経由より優先する。
+
+- 複数の GPT-5.5 アクセス手段を持っている場合の優先順位。いずれも無い環境では適用しない（このリポジトリは特定ツールのインストールを前提にしない）。
+- 使用する CLI・認証・モデル設定は各自の環境に従う。
