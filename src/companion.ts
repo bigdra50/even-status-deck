@@ -286,12 +286,15 @@ function groupRow(ref: GroupRef): string {
   const segById = new Map(g.segments.map((s) => [s.id, s]))
   // segment の並びは素材 (meta.segments)、ON/OFF・条件は view/素材から引く。
   // source 単位の表示オプション (#36)。素材 = 全 profile 共有。スキーマが空なら描かない。
+  // srcOpts は .src-metrics の「外」(直前) に出す。.src-metrics は SortableJS の segment 並べ替え
+  // コンテナで、onSegReorder が e.oldIndex(= 全直接子の index) を meta.segments index として使うため、
+  // 非 segment ノードを中に混ぜると index が +1 ずれて別 segment を動かす (silent なデータ破損)。
   const srcFields = sourceOptionSchema(ref.sourceId)
   const srcOpts = srcFields.length
     ? optionControls(key, '', 'source', srcFields, resolveSourceOptions(config, ref.sourceId))
     : ''
   const metrics = vg.expanded
-    ? `<div class="src-metrics" data-key="${key}">${srcOpts}${meta.segments
+    ? `${srcOpts}<div class="src-metrics" data-key="${key}">${meta.segments
         .map((sm) => {
           const seg = segById.get(sm.id)
           if (!seg) return ''
