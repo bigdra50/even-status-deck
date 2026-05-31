@@ -106,7 +106,8 @@ export function sourceOptionSchema(_sourceId: string): OptionField[] {
 }
 
 // 1 値を field の型へ正規化する (select は choices 検証、toggle は bool、number は clamp)。
-function coerce(field: OptionField, raw: unknown): string | number | boolean {
+// export は単体テスト用 (foundation の中核バリデーション。公開 schema が clock/空のみで API 経由到達不能なため)。
+export function coerce(field: OptionField, raw: unknown): string | number | boolean {
   if (field.kind === 'select') {
     const v = String(raw)
     return field.choices.some((c) => c.value === v) ? v : field.default
@@ -121,7 +122,8 @@ function coerce(field: OptionField, raw: unknown): string | number | boolean {
 }
 
 // バッグを default 込みで解決する (未設定/未知キーは field.default、不正値は coerce で矯正)。
-function applyDefaults(fields: OptionField[], bag: OptionValues | undefined): OptionValues {
+// export は単体テスト用 (coerce と同じ理由)。
+export function applyDefaults(fields: OptionField[], bag: OptionValues | undefined): OptionValues {
   const out: OptionValues = {}
   for (const f of fields) {
     const v = bag?.[f.id]

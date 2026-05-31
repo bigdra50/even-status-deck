@@ -3,6 +3,9 @@
 import { expect, test } from 'bun:test'
 import { BUILTIN_SOURCE_ID, type Config, emptyConfig } from './config'
 import {
+  applyDefaults,
+  coerce,
+  type OptionField,
   resolveSegmentOptions,
   resolveSourceOptions,
   segmentOptionSchema,
@@ -63,4 +66,71 @@ test('resolveSourceOptions / resolveSegmentOptions: スキーマ空なら {}', (
   const c = emptyConfig()
   expect(resolveSourceOptions(c, 'client.weather')).toEqual({})
   expect(resolveSegmentOptions(c, BUILTIN_SOURCE_ID, 'g2', 'level')).toEqual({})
+})
+
+// ── coerce / applyDefaults (#36 の中核バリデーション。clock 以外の利用者が乗る前にここで回帰を止める) ──
+// 現状 toggle/number/select-非clock を叩く公開 schema が無いため、後続 issue が乗る前の唯一の網。
+const SEL: OptionField = {
+  kind: 'select',
+  id: 'unit',
+  label: 'Unit',
+  choices: [
+    { value: 'C', label: 'C' },
+    { value: 'F', label: 'F' },
+  ],
+  default: 'C',
+}
+const TOG: OptionField = { kind: 'toggle', id: 'flag', label: 'Flag', default: false }
+const NUM: OptionField = { kind: 'number', id: 'n', label: 'N', min: 0, max: 10, default: 3 }
+
+test('coerce(select): 有効 choice はそのまま、未知値は default', () => {
+  const cases: [unknown, string][] = [
+    ['F', 'F'],
+    ['C', 'C'],
+    ['bogus', 'C'], // 未知 → default
+    [undefined, 'C'], // String(undefined)='undefined' は choice 外 → default
+    [1, 'C'], // String(1)='1' は choice 外 → default
+  ]
+  for (const [raw, want] of cases) expect(coerce(SEL, raw)).toBe(want)
+})
+
+test('coerce(toggle): boolean は素通し、文字列/数値は truthy 表現のみ true', () => {
+  const cases: [unknown, boolean][] = [
+    [true, true],
+    [false, false],
+    ['true', true],
+    ['1', true],
+    [1, true],
+    ['false', false],
+    ['0', false],
+    [0, false],
+    ['no', false],
+    [undefined, false],
+    [null, false],
+  ]
+  for (const [raw, want] of cases) expect(coerce(TOG, raw)).toBe(want)
+})
+
+test('coerce(number): clamp と不正値の default フォールバック', () => {
+  const cases: [unknown, number][] = [
+    [5, 5],
+    [0, 0],
+    [10, 10],
+    [-3, 0], // min clamp
+    [99, 10], // max clamp
+    ['7', 7], // 数値文字列
+    ['abc', 3], // NaN → default
+    [Number.NaN, 3],
+    [Number.POSITIVE_INFINITY, 3], // 非有限 → default
+    [null, 0], // Number(null)=0 → clamp 内
+  ]
+  for (const [raw, want] of cases) expect(coerce(NUM, raw)).toBe(want)
+})
+
+test('applyDefaults: 未設定は default、未知キーは無視、不正値は coerce で矯正', () => {
+  expect(applyDefaults([SEL, NUM], undefined)).toEqual({ unit: 'C', n: 3 })
+  expect(applyDefaults([SEL, NUM], { unit: 'F' })).toEqual({ unit: 'F', n: 3 }) // 部分指定
+  expect(applyDefaults([NUM], { n: 99, extra: 'x' })).toEqual({ n: 10 }) // 未知キー無視 + clamp
+  expect(applyDefaults([NUM], { n: -5 })).toEqual({ n: 0 })
+  expect(applyDefaults([], { whatever: 1 })).toEqual({}) // field が無ければ常に空
 })
