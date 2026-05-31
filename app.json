@@ -2,7 +2,7 @@
   "package_id": "com.bigdra50.statusdeck",
   "edition": "202601",
   "name": "Status Deck",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "min_app_version": "2.0.0",
   "min_sdk_version": "0.0.10",
   "entrypoint": "index.html",
@@ -13,10 +13,11 @@
   "permissions": [
     {
       "name": "network",
-      "desc": "Fetch weather, location and air quality for your location",
+      "desc": "Fetch weather, location, air quality and place name for your location",
       "whitelist": [
         "https://api.open-meteo.com",
-        "https://air-quality-api.open-meteo.com"
+        "https://air-quality-api.open-meteo.com",
+        "https://api.bigdatacloud.net"
       ]
     }
   ]
