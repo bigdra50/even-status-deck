@@ -1,0 +1,88 @@
+name: Simulator E2E
+
+# simulator-automation を使ったグラス表示の E2E。
+# WebKitGTK 製ネイティブ simulator を xvfb 配下で起動し、HTTP API (e2e-sim/run.ts) で
+# console エラー / glasses 描画 / input 受理を検証する。
+# WebKitGTK 導入 + simulator 起動でジョブが重く flaky 要素もあるため、PR では回さず
+# main push と手動 dispatch のみで実行する (回帰は main マージ後に検出)。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sim-e2e:
+    runs-on: ubuntu-latest
+    env:
+      SIM_PORT: '9898'
+      DEV_PORT: '5173'
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      GALLIUM_DRIVER: llvmpipe
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install deps (frozen)
+        run: bun install --frozen-lockfile
+
+      - name: Install xvfb + WebKitGTK runtime libs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb \
+            libwebkit2gtk-4.1-0 \
+            libgtk-3-0 \
+            libsoup-3.0-0 \
+            librsvg2-2 \
+            libgl1 libegl1 \
+            libfontconfig1 libfreetype6
+
+      - name: Start dev server (target URL)
+        run: |
+          nohup bun run dev -- --host 127.0.0.1 --port "$DEV_PORT" --strictPort \
+            > devserver.log 2>&1 &
+          echo $! > devserver.pid
+
+      - name: Wait for dev server
+        run: |
+          for i in $(seq 1 60); do
+            curl -fsS "http://127.0.0.1:${DEV_PORT}/" >/dev/null 2>&1 && { echo "dev up (${i}s)"; exit 0; }
+            sleep 1
+          done
+          echo "dev server never came up"; cat devserver.log; exit 1
+
+      - name: Start simulator under xvfb
+        run: |
+          nohup xvfb-run -a --server-args="-screen 0 1024x768x24" \
+            node_modules/.bin/evenhub-simulator \
+              "http://127.0.0.1:${DEV_PORT}" --automation-port "$SIM_PORT" \
+            > sim.log 2>&1 &
+          echo $! > sim.pid
+
+      - name: Run simulator E2E
+        run: bun run e2e-sim/run.ts
+
+      - name: Capture screenshot for artifact (always)
+        if: ${{ !cancelled() }}
+        run: |
+          curl -fsS "http://127.0.0.1:${SIM_PORT}/api/screenshot/glasses" -o glasses.png || true
+          ls -l glasses.png || true
+
+      - name: Upload artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-e2e-output
+          path: |
+            glasses.png
+            sim.log
+            devserver.log
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Teardown
+        if: always()
+        run: |
+          [ -f sim.pid ] && kill "$(cat sim.pid)" 2>/dev/null || true
+          [ -f devserver.pid ] && kill "$(cat devserver.pid)" 2>/dev/null || true
+          true
