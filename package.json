@@ -17,6 +17,8 @@
     "provider": "bun run server/index.ts provider",
     "build:server": "bun run scripts/build-server.mjs",
     "sim": "evenhub-simulator http://localhost:5173",
+    "sim:auto": "evenhub-simulator http://localhost:5173 --automation-port 9898",
+    "test:sim": "bun run e2e-sim/run.ts",
     "pack": "npm run build && evenhub pack app.json dist -o status-deck.ehpk",
     "upload": "node scripts/upload.mjs",
     "qr": "evenhub qr --url \"http://$(ipconfig getifaddr en0):5173\"",

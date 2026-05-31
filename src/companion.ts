@@ -1,14 +1,6 @@
 import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
 import Sortable from 'sortablejs'
-import {
-  CLOCK_DATE_OPTS,
-  CLOCK_SEG,
-  CLOCK_TIME_OPTS,
-  composeClockFormat,
-  defaultClockFormat,
-  localStatus,
-  parseClockFormat,
-} from './builtins'
+import { localStatus } from './builtins'
 import {
   activeProfile,
   activeView,
@@ -32,6 +24,7 @@ import {
   isRightDivider,
   isSourceEnabled,
   loadConfig,
+  type OptionValues,
   RIGHT_DIVIDER,
   reconcileSourceMachine,
   removeProfile,
@@ -56,6 +49,16 @@ import {
   summarySections,
 } from './glass-render'
 import { icon } from './icons'
+import {
+  type OptionField,
+  type OptionScope,
+  resolveSegmentOptions,
+  resolveSourceOptions,
+  segmentOptionSchema,
+  setSegmentOption,
+  setSourceOption,
+  sourceOptionSchema,
+} from './options'
 import type { Group, Segment, SourceState } from './status-types'
 import {
   getAllStatuses,
@@ -64,6 +67,7 @@ import {
   getRenderableStatuses,
   getSourceHealth,
   getSourceStatus,
+  refreshSourceById,
   setSourcesFromConfig,
   startPolling,
   subscribe,
@@ -230,23 +234,40 @@ function segVisEditor(key: string, sm: SegMeta, seg: Segment): string {
     <div class="vis-conds">${rows}${add}</div>`
 }
 
-// clock (datetime) segment の合成フォーマット UI: Time / Date / 順序 の 3 select。
-// 現在の SegMeta.format (素材。無ければロケール既定) を逆解析して選択状態を復元する。
-function clockFormatControls(key: string, sm: SegMeta): string {
-  const cur = parseClockFormat(sm.format ?? defaultClockFormat())
-  const opt = (o: { format: string; label: string }, selected: string) =>
-    `<option value="${esc(o.format)}" ${o.format === selected ? 'selected' : ''}>${esc(o.label)}</option>`
-  const time = CLOCK_TIME_OPTS.map((o) => opt(o, cur.time)).join('')
-  const date = CLOCK_DATE_OPTS.map((o) => opt(o, cur.date)).join('')
-  const a = `data-key="${key}" data-seg="${esc(sm.id)}"`
-  return `<div class="clock-ctl">
-    <label class="clock-fld">Time<select class="format-select" data-action="clock-time" ${a}>${time}</select></label>
-    <label class="clock-fld">Date<select class="format-select" data-action="clock-date" ${a}>${date}</select></label>
-    <label class="clock-fld">Order<select class="format-select" data-action="clock-order" ${a}>
-      <option value="time" ${cur.order === 'time' ? 'selected' : ''}>Time → Date</option>
-      <option value="date" ${cur.order === 'date' ? 'selected' : ''}>Date → Time</option>
-    </select></label>
-  </div>`
+// 表示オプションの汎用レンダラ (#36)。schema (OptionField[]) を select / toggle / number で描く。
+// scope で segment/source を区別し、segId は segment scope のときのみ意味を持つ (source は空)。
+// select / number は change イベント (onOptionChange)、toggle は click イベント (onClick の opt-set) で届く。
+// clock の Time/Date/順序 もこのレンダラで描かれ、値解決/書込は options.ts が format に合成する。
+function optionControls(
+  key: string,
+  segId: string,
+  scope: OptionScope,
+  fields: OptionField[],
+  values: OptionValues,
+): string {
+  if (!fields.length) return ''
+  const a = `data-action="opt-set" data-key="${key}" data-seg="${esc(segId)}" data-scope="${scope}"`
+  const ctl = (f: OptionField): string => {
+    if (f.kind === 'select') {
+      const cur = String(values[f.id] ?? f.default)
+      const opts = f.choices
+        .map(
+          (c) =>
+            `<option value="${esc(c.value)}" ${c.value === cur ? 'selected' : ''}>${esc(c.label)}</option>`,
+        )
+        .join('')
+      return `<label class="clock-fld">${esc(f.label)}<select class="format-select" ${a} data-field="${esc(f.id)}" data-kind="select">${opts}</select></label>`
+    }
+    if (f.kind === 'toggle') {
+      const raw = values[f.id]
+      const on = typeof raw === 'boolean' ? raw : f.default
+      return `<label class="clock-fld">${esc(f.label)}<button class="tg sm ${on ? 'on' : ''}" ${a} data-field="${esc(f.id)}" data-kind="toggle" data-val="${on ? '0' : '1'}"></button></label>`
+    }
+    const cur = Number(values[f.id] ?? f.default)
+    const step = f.step ? `step="${f.step}"` : ''
+    return `<label class="clock-fld">${esc(f.label)}<input class="vis-num" type="number" min="${f.min}" max="${f.max}" ${step} ${a} data-field="${esc(f.id)}" data-kind="number" value="${cur}" />${f.unit ? esc(f.unit) : ''}</label>`
+  }
+  return `<div class="clock-ctl">${fields.map(ctl).join('')}</div>`
 }
 
 function groupRow(ref: GroupRef): string {
@@ -264,19 +285,36 @@ function groupRow(ref: GroupRef): string {
   const caret = icon(vg.expanded ? 'chevron-down' : 'chevron-right', { size: 16 })
   const segById = new Map(g.segments.map((s) => [s.id, s]))
   // segment の並びは素材 (meta.segments)、ON/OFF・条件は view/素材から引く。
+  // source 単位の表示オプション (#36)。素材 = 全 profile 共有。スキーマが空なら描かない。
+  // srcOpts は .src-metrics の「外」(直前) に出す。.src-metrics は SortableJS の segment 並べ替え
+  // コンテナで、onSegReorder が e.oldIndex(= 全直接子の index) を meta.segments index として使うため、
+  // 非 segment ノードを中に混ぜると index が +1 ずれて別 segment を動かす (silent なデータ破損)。
+  const srcFields = sourceOptionSchema(ref.sourceId)
+  const srcOpts = srcFields.length
+    ? optionControls(key, '', 'source', srcFields, resolveSourceOptions(config, ref.sourceId))
+    : ''
   const metrics = vg.expanded
-    ? `<div class="src-metrics" data-key="${key}">${meta.segments
+    ? `${srcOpts}<div class="src-metrics" data-key="${key}">${meta.segments
         .map((sm) => {
           const seg = segById.get(sm.id)
           if (!seg) return ''
           const enabled = vg.segments[sm.id] ?? true
-          // clock の datetime segment は Time/Date/順序 の合成フォーマット UI を出す。
-          const isClock = isBuiltin && ref.groupId === 'clock' && sm.id === CLOCK_SEG
+          // segment 単位の表示オプション (#36)。clock の Time/Date/順序 もこの schema 経由で描く。
+          const segFields = segmentOptionSchema(ref.sourceId, ref.groupId, sm.id)
+          const segOpts = segFields.length
+            ? optionControls(
+                key,
+                sm.id,
+                'segment',
+                segFields,
+                resolveSegmentOptions(config, ref.sourceId, ref.groupId, sm.id),
+              )
+            : ''
           return `<div class="metric"><div class="metric-row"><span class="mgrip">${icon('grip', { size: 16 })}</span>
               <span class="mname">${esc(isBuiltin ? (BUILTIN_SEG_LABELS[seg.id] ?? seg.id) : seg.label || seg.id)}</span>
               <span class="mval">${esc(seg.value)}</span>
               <button class="tg sm ${enabled ? 'on' : ''}" data-action="toggle-seg" data-key="${key}" data-seg="${esc(sm.id)}"></button></div>
-            ${isClock ? clockFormatControls(key, sm) : ''}
+            ${segOpts}
             ${segVisEditor(key, sm, seg)}</div>`
         })
         .join('')}</div>`
@@ -1034,6 +1072,12 @@ async function onClick(e: MouseEvent): Promise<void> {
       }
       break
     }
+    case 'opt-set': {
+      // toggle オプション (#36。button)。select / number は change 経路 (onOptionChange) で処理する。
+      // data-val は「クリック後に設定する値」(現在 OFF=1 / 現在 ON=0)。
+      if (t.dataset.kind === 'toggle') applyOptionChange(t.dataset, t.dataset.val === '1')
+      break
+    }
     case 'seg-vis-add': {
       // 表示条件は素材 (SegMeta.visibility。profile 非依存)。
       const ref = parseKey(t.dataset.key ?? '')
@@ -1169,11 +1213,11 @@ async function onClick(e: MouseEvent): Promise<void> {
 
 // segment 条件エディタ (combinator select / leaf の kind・op・value・hold) の変更を
 // 素材 config.groups[*][*].segments[*].visibility に反映する。leaf は data-idx で特定する。
-// change イベントの振り分け: clock フォーマット (Time/Date/順序) → onClockFormatChange、それ以外 → onSegVisChange。
+// change イベントの振り分け: 表示オプション (#36) → onOptionChange、それ以外 → onSegVisChange。
 function onChange(e: Event): void {
   const action = (e.target as HTMLElement).dataset.action ?? ''
   if (action === 'profile-switch') onProfileSwitch(e)
-  else if (action.startsWith('clock-')) onClockFormatChange(e)
+  else if (action === 'opt-set') onOptionChange(e)
   else onSegVisChange(e)
 }
 
@@ -1196,21 +1240,32 @@ function onSuggestAccept(): void {
   applyProfileChange()
 }
 
-// clock の Time/Date/順序 select 変更を合成して素材 SegMeta.format に保存。
+// 表示オプション (#36) の select / number 変更を素材へ書き込む (clock は SegMeta.format に合成)。
 // saveConfig が config-changed を dispatch → glass が loadConfig して実機描画にも反映。
-function onClockFormatChange(e: Event): void {
-  const t = e.target as HTMLSelectElement
-  const key = t.dataset.key
-  const segId = t.dataset.seg
-  if (!key || !segId) return
+function onOptionChange(e: Event): void {
+  const t = e.target as HTMLSelectElement | HTMLInputElement
+  applyOptionChange(t.dataset, t.value)
+}
+
+// 表示オプション 1 値の適用 (change 経路 = select/number、click 経路 = toggle で共通)。
+// scope で segment/source を分け、kind による型変換と clamp は options.ts (setSegmentOption/setSourceOption)
+// が行う。source 単位で再取得が要るオプションは当該 source を再 fetch する。
+function applyOptionChange(ds: DOMStringMap, rawValue: unknown): void {
+  const key = ds.key
+  const scope = ds.scope
+  const fieldId = ds.field
+  if (!key || !fieldId || (scope !== 'segment' && scope !== 'source')) return
   const ref = parseKey(key)
-  const sm = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find((s) => s.id === segId)
-  if (!sm) return
-  const cur = parseClockFormat(sm.format ?? defaultClockFormat())
-  if (t.dataset.action === 'clock-time') cur.time = t.value
-  else if (t.dataset.action === 'clock-date') cur.date = t.value
-  else if (t.dataset.action === 'clock-order') cur.order = t.value === 'date' ? 'date' : 'time'
-  sm.format = composeClockFormat(cur.time, cur.date, cur.order) || undefined
+  let ok = false
+  if (scope === 'segment') {
+    const segId = ds.seg
+    if (!segId) return
+    ok = setSegmentOption(config, ref.sourceId, ref.groupId, segId, fieldId, rawValue)
+  } else {
+    ok = setSourceOption(config, ref.sourceId, fieldId, rawValue)
+    if (ok) refreshSourceById(ref.sourceId)
+  }
+  if (!ok) return
   void saveConfig(config)
   render()
 }
@@ -1825,7 +1880,7 @@ export async function mountCompanion(el: HTMLElement): Promise<void> {
   root = el
   hookConsole() // 早期の console も拾えるよう最初に仕込む
   el.addEventListener('click', (e) => void onClick(e))
-  el.addEventListener('change', (e) => void onChange(e)) // segment 条件 / clock フォーマットの select/number
+  el.addEventListener('change', (e) => void onChange(e)) // segment 条件 / 表示オプションの select/number
   el.addEventListener('input', onInput) // デバッグコンソールのフィルタ
   subscribe(onStoreUpdate)
 
