@@ -205,6 +205,31 @@ export type WeatherReading = {
   rainLabel?: string // 'Rain ~20m' / 'Stops ~10m' / 'Dry' / 'Rain'(降り続く)
   pop1h?: number // 次 1 時間の降水確率 max (%)
   precip1h?: number // 次 1 時間の降水量合計 (mm)
+  // #38 suncountdown: 日の出/日の入りの epoch(ms)。glass が毎分カウントダウンを再計算する anchor。
+  sunEpochs?: { sunrise: number; sunset: number; nextSunrise: number }
+}
+
+// suncountdown の残り時間 ASCII。1h 以上 "2h13m"、1h 未満 "47m"、1 分未満 "now"。
+export function formatEta(ms: number): string {
+  if (ms < 60_000) return 'now' // 1 分未満(過ぎている=負も含む)
+  const min = Math.round(ms / 60_000)
+  if (min < 60) return `${min}m`
+  return `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}m`
+}
+
+// 現在時刻と sun epoch から「次の日没/日の出までの残り」を出す(#38)。glass が毎分呼ぶ純計算。
+// 日の出前=次は日の出(Rise)、昼=次は日没(Set)、日没後=翌日の日の出(Rise)。
+export function formatSunCountdown(
+  now: number,
+  e: {
+    sunrise: number
+    sunset: number
+    nextSunrise: number
+  },
+): string {
+  if (now < e.sunrise) return `Rise ${formatEta(e.sunrise - now)}`
+  if (now < e.sunset) return `Set ${formatEta(e.sunset - now)}`
+  return `Rise ${formatEta(e.nextSunrise - now)}`
 }
 
 // 降水スロット 1 点。min = 現在からの相対分(負=過去)。precip=mm、prob=%。
@@ -369,7 +394,7 @@ export function buildWeatherDoc(
     })
   }
 
-  // #38 静的 sun segment(既定 OFF)。daily が取れたときのみ。残り時間カウントダウンは別 issue(毎分 glass 更新)。
+  // #38 静的 sun segment(既定 OFF)。daily が取れたときのみ。
   if (r.sunriseIso && r.sunsetIso) {
     segments.push({
       id: 'sunrise',
@@ -395,9 +420,55 @@ export function buildWeatherDoc(
   }
 
   const group: Group = { id: WEATHER_GROUP_ID, label: 'Weather', segments }
+  // #38 suncountdown(既定 ON): 値は描画時刻依存なので glass が anchors から毎分再計算する。ここでは初期値を焼く。
+  if (r.sunEpochs) {
+    group.anchors = { ...r.sunEpochs }
+    segments.push({
+      id: 'suncountdown',
+      label: '',
+      // 最長 "Rise 23h59m"=11 桁(Set 4+eta 6 / Rise 5+eta 6)。9 だと長い eta が切れる。
+      value: formatSunCountdown(ts, r.sunEpochs),
+      defaultEnabled: true,
+      widthChars: 11,
+    })
+  }
   if (state) group.state = state
   if (message) group.message = message
   return { version: 1, ts, groups: [group] }
+}
+
+// glass が毎分呼ぶ: weather doc の suncountdown segment 値を group.anchors から現在時刻で再計算した
+// 新 doc を返す(anchors/suncountdown が無ければそのまま)。store の doc は変更せず clone を返す
+// (= store.notify/computeVisible を介さない glass-local 再計算。iOS WebContent jettison を避ける)。
+export function recomputeSunCountdown(doc: StatusDoc, now: number): StatusDoc {
+  const g = doc.groups.find((x) => x.id === WEATHER_GROUP_ID)
+  const e = g?.anchors
+  if (
+    !g ||
+    !e ||
+    typeof e.sunrise !== 'number' ||
+    typeof e.sunset !== 'number' ||
+    typeof e.nextSunrise !== 'number'
+  ) {
+    return doc
+  }
+  if (!g.segments.some((s) => s.id === 'suncountdown')) return doc
+  const value = formatSunCountdown(now, {
+    sunrise: e.sunrise,
+    sunset: e.sunset,
+    nextSunrise: e.nextSunrise,
+  })
+  return {
+    ...doc,
+    groups: doc.groups.map((gr) =>
+      gr.id !== WEATHER_GROUP_ID
+        ? gr
+        : {
+            ...gr,
+            segments: gr.segments.map((s) => (s.id !== 'suncountdown' ? s : { ...s, value })),
+          },
+    ),
+  }
 }
 
 // 取得不能時の最小 StatusDoc(source を消さず n/a + error 状態で残す)。
@@ -522,6 +593,21 @@ function firstString(v: unknown): string | undefined {
   return Array.isArray(v) && typeof v[0] === 'string' ? v[0] : undefined
 }
 
+// daily.sunrise/sunset(現地時刻 ISO 配列)から suncountdown 用の epoch を取り出す(#38)。
+// 今日の sunrise/sunset + 翌日の sunrise(日没後のカウントダウン基準)。いずれか欠けたら undefined。
+function sunEpochsFrom(
+  sunrise: unknown,
+  sunset: unknown,
+): { sunrise: number; sunset: number; nextSunrise: number } | undefined {
+  if (!Array.isArray(sunrise) || !Array.isArray(sunset)) return undefined
+  const parse = (s: unknown): number => (typeof s === 'string' ? Date.parse(s) : Number.NaN)
+  const sr = parse(sunrise[0])
+  const ss = parse(sunset[0])
+  const nsr = parse(sunrise[1])
+  if (Number.isNaN(sr) || Number.isNaN(ss) || Number.isNaN(nsr)) return undefined
+  return { sunrise: sr, sunset: ss, nextSunrise: nsr }
+}
+
 // open-meteo の時刻 ISO 配列 + precip/prob 配列を相対分スロット列へ。
 // Date.parse は現地時刻 ISO(timezone=auto)= 端末 TZ 前提(weather 既存の前提と同じ)。
 // precip が finite number でない点(配列長不一致・null 欠落含む)は除外する。0 扱いにすると
@@ -626,6 +712,7 @@ async function fetchOpenMeteo(
       pressureDelta3h: pressureDelta(pressureHpa, json.hourly),
       sunriseIso: firstString(json.daily?.sunrise),
       sunsetIso: firstString(json.daily?.sunset),
+      sunEpochs: sunEpochsFrom(json.daily?.sunrise, json.daily?.sunset),
       rainLabel: rain.rainLabel,
       pop1h: rain.pop1h,
       precip1h: rain.precip1h,

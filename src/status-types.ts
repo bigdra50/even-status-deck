@@ -36,6 +36,8 @@ export type Group = {
   state?: SourceState
   /** state の補助メッセージ。 */
   message?: string
+  /** 描画時刻に依存する segment の再計算 anchor (#38 weather の sun epoch 等)。数値のみ。glass が毎分読む。 */
+  anchors?: Record<string, number>
 }
 
 export type StatusDoc = {
@@ -53,6 +55,7 @@ const MAX_ID_LEN = 64 // 異常に長い id はキーを汚すため破棄 (trun
 const MAX_LABEL_LEN = 48 // 表示ラベル (1 行に収まる範囲)
 const MAX_VALUE_LEN = 128 // 表示値 (server は widthChars 無しで raw 長が幅計算に乗る)
 const MAX_RESET_LEN = 32
+const MAX_ANCHORS = 8 // group.anchors の数値キー上限 (#38 sun epoch 等。巨大マップを注入させない)
 const MAX_MESSAGE_LEN = 120 // state の補助メッセージ (companion tooltip 1 行に収まる範囲)
 
 function clip(s: string, n: number): string {
@@ -110,6 +113,16 @@ export function parseStatusDoc(x: unknown): StatusDoc | null {
     const grpState = asState(gg.state)
     if (grpState) group.state = grpState
     if (typeof gg.message === 'string') group.message = clip(gg.message, MAX_MESSAGE_LEN)
+    // anchors (#38): 数値のみの小さなマップ。weather cache の readback で sun epoch を保持する
+    // (落とすと reload 後に suncountdown が次の weather 再取得まで固まる)。
+    if (gg.anchors && typeof gg.anchors === 'object') {
+      const a: Record<string, number> = {}
+      for (const [k, v] of Object.entries(gg.anchors as Record<string, unknown>)) {
+        if (Object.keys(a).length >= MAX_ANCHORS) break
+        if (typeof v === 'number' && Number.isFinite(v) && k.length <= MAX_ID_LEN) a[k] = v
+      }
+      if (Object.keys(a).length) group.anchors = a
+    }
     groups.push(group)
   }
   return { version: d.version, ts: typeof d.ts === 'number' ? d.ts : Date.now(), groups }

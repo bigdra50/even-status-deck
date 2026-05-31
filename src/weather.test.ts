@@ -6,6 +6,8 @@ import {
   buildWeatherDoc,
   DEFAULT_WEATHER_OPTIONS,
   formatDayLength,
+  formatEta,
+  formatSunCountdown,
   formatSunTime,
   hpaToInHg,
   openMeteoUrl,
@@ -15,12 +17,76 @@ import {
   pressureTrend,
   rainNowcastLabel,
   readWeatherOptions,
+  recomputeSunCountdown,
   WEATHER_GROUP_ID,
   type WeatherOptions,
   type WeatherReading,
   weatherCodeText,
   windDir8,
 } from './weather'
+
+// #38 suncountdown 用の epoch(now 基準)。
+const NOW = 1_700_000_000_000
+const HOUR = 3_600_000
+
+test('formatEta: 残り時間 ASCII', () => {
+  expect(formatEta(0)).toBe('now')
+  expect(formatEta(30_000)).toBe('now') // <1分
+  expect(formatEta(47 * 60_000)).toBe('47m')
+  expect(formatEta(2 * HOUR + 13 * 60_000)).toBe('2h13m')
+  expect(formatEta(23 * HOUR + 59 * 60_000)).toBe('23h59m')
+  expect(formatEta(-5000)).toBe('now') // 過ぎていても負にしない
+})
+
+test('formatSunCountdown: 日の出前=Rise / 昼=Set / 日没後=翌Rise', () => {
+  const e = { sunrise: NOW + 2 * HOUR, sunset: NOW + 10 * HOUR, nextSunrise: NOW + 26 * HOUR }
+  // 日の出前(now < sunrise) → 次は日の出
+  expect(formatSunCountdown(NOW, e)).toBe('Rise 2h00m')
+  // 昼(sunrise < now < sunset)
+  expect(formatSunCountdown(NOW + 3 * HOUR, e)).toBe('Set 7h00m')
+  // 日没後 → 翌日の日の出
+  expect(formatSunCountdown(NOW + 11 * HOUR, e)).toBe('Rise 15h00m')
+})
+
+test('recomputeSunCountdown: anchors から suncountdown 値を再計算(他 segment は不変・clone)', () => {
+  const reading: WeatherReading = {
+    temp: 20,
+    code: 0,
+    wind: 5,
+    sunriseIso: '2026-05-31T04:25',
+    sunsetIso: '2026-05-31T19:01',
+    sunEpochs: { sunrise: NOW + 2 * HOUR, sunset: NOW + 10 * HOUR, nextSunrise: NOW + 26 * HOUR },
+  }
+  const doc = buildWeatherDoc(reading, DEFAULT_WEATHER_OPTIONS, NOW)
+  const before = new Map(doc.groups[0].segments.map((s) => [s.id, s.value]))
+  expect(before.get('suncountdown')).toBe('Rise 2h00m') // ts=NOW
+  // 1 時間後に再計算 → 残り 1h
+  const next = recomputeSunCountdown(doc, NOW + HOUR)
+  const after = new Map(next.groups[0].segments.map((s) => [s.id, s.value]))
+  expect(after.get('suncountdown')).toBe('Rise 1h00m')
+  expect(after.get('temp')).toBe('20C') // 他 segment は不変
+  expect(next).not.toBe(doc) // clone(store の doc を変更しない)
+  // anchors 無し doc は no-op で同一参照
+  const plain = buildWeatherDoc({ temp: 20, code: 0, wind: 5 }, DEFAULT_WEATHER_OPTIONS, NOW)
+  expect(recomputeSunCountdown(plain, NOW + HOUR)).toBe(plain)
+})
+
+test('buildWeatherDoc: suncountdown は既定 ON、anchors を group に載せる(#38)', () => {
+  const reading: WeatherReading = {
+    temp: 20,
+    code: 0,
+    wind: 5,
+    sunEpochs: { sunrise: NOW + 2 * HOUR, sunset: NOW + 10 * HOUR, nextSunrise: NOW + 26 * HOUR },
+  }
+  const g = buildWeatherDoc(reading, DEFAULT_WEATHER_OPTIONS, NOW).groups[0]
+  const sc = g.segments.find((s) => s.id === 'suncountdown')
+  expect(sc?.defaultEnabled).toBe(true)
+  expect(g.anchors).toEqual({
+    sunrise: NOW + 2 * HOUR,
+    sunset: NOW + 10 * HOUR,
+    nextSunrise: NOW + 26 * HOUR,
+  })
+})
 
 const baseReading: WeatherReading = { temp: 12.4, code: 2, wind: 18.6 }
 
