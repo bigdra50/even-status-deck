@@ -66,6 +66,38 @@ test('places CRUD: 追加/改名/座標更新/削除', () => {
   expect(removePlace(cfg, home.id)).toBe(false) // 既に無い
 })
 
+test('removePlace: 他 segment の visibility から inPlace leaf を掃除する (#43)', () => {
+  const cfg = emptyConfig()
+  const home = addPlace(cfg, 'Home', 35, 139)
+  // 別 source の segment が「At Home」(+ threshold)条件を持つ状態を作る。
+  cfg.groups['server.x'] = {
+    g: {
+      segments: [
+        {
+          id: 's1',
+          visibility: {
+            combinator: 'and',
+            conditions: [
+              { kind: 'inPlace', placeId: home.id },
+              { kind: 'threshold', op: 'gte', value: 50 },
+            ],
+          },
+        },
+        {
+          id: 's2',
+          visibility: { combinator: 'and', conditions: [{ kind: 'inPlace', placeId: home.id }] },
+        },
+      ],
+    },
+  }
+  expect(removePlace(cfg, home.id)).toBe(true)
+  const segs = cfg.groups['server.x'].g.segments
+  // s1: inPlace 除去、threshold は残る
+  expect(segs[0].visibility?.conditions).toEqual([{ kind: 'threshold', op: 'gte', value: 50 }])
+  // s2: 条件が空になったので visibility ごと外れる(= 常時表示へ)
+  expect(segs[1].visibility).toBeUndefined()
+})
+
 test('removePlace: 素材/view/glassLayout の孤立 chip を掃除する', () => {
   const cfg = emptyConfig()
   const home = addPlace(cfg, 'Home', 35, 139)

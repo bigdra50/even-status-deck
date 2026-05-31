@@ -484,6 +484,21 @@ export function removePlace(cfg: Config, id: string): boolean {
     const lay = prof.view.glassLayout
     if (lay) lay.rows = lay.rows.map((row) => row.filter((k) => k !== key))
   }
+  // 全 segment の visibility から、削除 place を参照する inPlace leaf を除去する(#43)。残すと「At place:
+  // <deleted>」条件が常に圏外扱い(insidePlaceIds.has(deletedId)=false)になり segment が予期せず消え、
+  // editor の place select も誤表示になる。条件が空になったら visibility ごと外す(=常時表示へ戻す)。
+  for (const groups of Object.values(cfg.groups)) {
+    for (const m of Object.values(groups)) {
+      for (const sm of m.segments) {
+        const vis = sm.visibility
+        if (!vis) continue
+        const kept = vis.conditions.filter((c) => !(c.kind === 'inPlace' && c.placeId === id))
+        if (kept.length === vis.conditions.length) continue
+        if (kept.length === 0) sm.visibility = undefined
+        else vis.conditions = kept
+      }
+    }
+  }
   return true
 }
 
