@@ -7,7 +7,32 @@ import {
   GEOCODE_GROUP_ID,
   type GeocodeReading,
   geocodeUrl,
+  placeFromResponse,
 } from './geocode'
+
+test('placeFromResponse: city 昇格と area 重複回避', () => {
+  // city あり + locality 別名 → area に locality
+  expect(placeFromResponse({ city: 'Paris', locality: 'Sorbonne', countryName: 'France' })).toEqual(
+    {
+      city: 'Paris',
+      area: 'Sorbonne',
+      region: undefined,
+      country: 'France',
+    },
+  )
+  // city 欠落 → locality を city へ昇格、area には重複させない
+  expect(placeFromResponse({ locality: 'Shibuya', countryName: 'Japan' })).toEqual({
+    city: 'Shibuya',
+    region: undefined,
+    country: 'Japan',
+  })
+  // city===locality(同名)→ area 無し
+  expect(placeFromResponse({ city: 'Tokyo', locality: 'Tokyo' })).toEqual({
+    city: 'Tokyo',
+    region: undefined,
+    country: undefined,
+  })
+})
 
 test('asciiFold: アクセント除去・非 ASCII 空白化', () => {
   expect(asciiFold('Paris')).toBe('Paris')
@@ -47,6 +72,17 @@ test('buildGeocodeDoc: 欠落フィールドは push しない', () => {
   expect(byId.has('area')).toBe(false)
   expect(byId.has('region')).toBe(false)
   expect(byId.get('country')?.value).toBe('France')
+})
+
+test('buildGeocodeDoc: asciiFold 後に空になる地名(CJK のみ)は segment を出さない', () => {
+  // city が純 CJK で fold 後に空 → city segment 無し。country(ASCII)は出る。
+  const byId = new Map(
+    buildGeocodeDoc({ city: '東京', country: 'Japan' }, undefined, 1).groups[0].segments.map(
+      (s) => [s.id, s],
+    ),
+  )
+  expect(byId.has('city')).toBe(false)
+  expect(byId.get('country')?.value).toBe('Japan')
 })
 
 test('buildGeocodeDoc: state/message を載せられる (stale/error)', () => {

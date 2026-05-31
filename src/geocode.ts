@@ -36,6 +36,20 @@ export type GeocodeReading = {
   country?: string
 }
 
+// raw を asciiFold して非空なら segment を push する。CJK のみの地名は fold 後に空になるので出さない
+// (空文字 segment を描画しない)。
+function addPlaceSeg(
+  segments: Segment[],
+  id: string,
+  raw: string | undefined,
+  defaultEnabled: boolean,
+  widthChars: number,
+): void {
+  if (!raw) return
+  const value = asciiFold(raw)
+  if (value) segments.push({ id, label: '', value, defaultEnabled, widthChars })
+}
+
 // reading から place group の StatusDoc を組む。city は既定 ON(headline)、他は既定 OFF。値は asciiFold 済み。
 export function buildGeocodeDoc(
   r: GeocodeReading,
@@ -45,42 +59,10 @@ export function buildGeocodeDoc(
   message?: string,
 ): StatusDoc {
   const segments: Segment[] = []
-  if (r.city) {
-    segments.push({
-      id: 'city',
-      label: '',
-      value: asciiFold(r.city),
-      defaultEnabled: true,
-      widthChars: 12,
-    })
-  }
-  if (r.area) {
-    segments.push({
-      id: 'area',
-      label: '',
-      value: asciiFold(r.area),
-      defaultEnabled: false,
-      widthChars: 14,
-    })
-  }
-  if (r.region) {
-    segments.push({
-      id: 'region',
-      label: '',
-      value: asciiFold(r.region),
-      defaultEnabled: false,
-      widthChars: 14,
-    })
-  }
-  if (r.country) {
-    segments.push({
-      id: 'country',
-      label: '',
-      value: asciiFold(r.country),
-      defaultEnabled: false,
-      widthChars: 12,
-    })
-  }
+  addPlaceSeg(segments, 'city', r.city, true, 12)
+  addPlaceSeg(segments, 'area', r.area, false, 14)
+  addPlaceSeg(segments, 'region', r.region, false, 14)
+  addPlaceSeg(segments, 'country', r.country, false, 12)
   const group: Group = { id: GEOCODE_GROUP_ID, label: 'Place', segments }
   if (state) group.state = state
   if (message) group.message = message
@@ -156,6 +138,20 @@ function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim() !== '' ? v : undefined
 }
 
+// BigDataCloud レスポンスから GeocodeReading を組む(純関数)。city 欠落時は locality を市名へ昇格し、
+// area は「解決後の city と別名の locality」のときだけ出す(city 昇格時は area に同名を重複させない)。
+export function placeFromResponse(json: Record<string, unknown>): GeocodeReading {
+  const locality = str(json.locality)
+  const city = str(json.city) ?? locality
+  const reading: GeocodeReading = {
+    region: str(json.principalSubdivision),
+    country: str(json.countryName),
+  }
+  if (city) reading.city = city
+  if (locality && locality !== city) reading.area = locality
+  return reading
+}
+
 async function fetchGeocode(
   lat: number,
   lon: number,
@@ -169,15 +165,7 @@ async function fetchGeocode(
     const res = await fetch(geocodeUrl(lat, lon), { signal: ctl.signal })
     if (!res.ok) throw new Error(`bigdatacloud HTTP ${res.status}`)
     const json = (await res.json()) as Record<string, unknown>
-    const city = str(json.city)
-    const locality = str(json.locality)
-    const reading: GeocodeReading = {
-      city: city ?? locality,
-      // locality が city と別名(より詳細な地区)のときだけ area として出す
-      area: locality && locality !== city ? locality : undefined,
-      region: str(json.principalSubdivision),
-      country: str(json.countryName),
-    }
+    const reading = placeFromResponse(json)
     if (!reading.city && !reading.region && !reading.country) {
       throw new Error('bigdatacloud: no place')
     }
