@@ -47,7 +47,10 @@ async function queryNewRows(lastRecId: number): Promise<Row[]> {
 
 async function maxRecId(): Promise<number> {
   try {
-    const { stdout } = await pexec('sqlite3', [`file:${DB}?immutable=1`, 'SELECT max(rec_id) FROM record'])
+    const { stdout } = await pexec('sqlite3', [
+      `file:${DB}?immutable=1`,
+      'SELECT max(rec_id) FROM record',
+    ])
     const n = Number.parseInt(stdout.trim(), 10)
     return Number.isFinite(n) ? n : 0
   } catch {

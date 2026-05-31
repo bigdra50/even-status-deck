@@ -64,7 +64,10 @@ async function handleEvents(res: ServerResponse, url: URL): Promise<void> {
   const since = Math.max(0, parseIntParam(url.searchParams.get('since'), 0))
   const waitMs = Math.max(
     0,
-    Math.min(parseIntParam(url.searchParams.get('waitMs'), EVENTS_WAIT_DEFAULT_MS), EVENTS_WAIT_MAX_MS),
+    Math.min(
+      parseIntParam(url.searchParams.get('waitMs'), EVENTS_WAIT_DEFAULT_MS),
+      EVENTS_WAIT_MAX_MS,
+    ),
   )
   const result = await pollEvents(since, waitMs, (cb) => {
     res.on('close', cb) // client 切断時に待機を解除 (リーク防止)
@@ -157,7 +160,10 @@ async function handleActionResult(
   }
   const waitMs = Math.max(
     0,
-    Math.min(parseIntParam(url.searchParams.get('waitMs'), EVENTS_WAIT_DEFAULT_MS), EVENTS_WAIT_MAX_MS),
+    Math.min(
+      parseIntParam(url.searchParams.get('waitMs'), EVENTS_WAIT_DEFAULT_MS),
+      EVENTS_WAIT_MAX_MS,
+    ),
   )
   const result = await pollDialogResult(requestId, waitMs)
   if (!result) {

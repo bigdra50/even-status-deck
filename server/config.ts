@@ -47,7 +47,8 @@ export function ensureLegacyDirsMigrated(): void {
   if (legacyMigrated) return
   legacyMigrated = true
   try {
-    if (!existsSync(CONFIG_DIR) && existsSync(OLD_CONFIG_DIR)) renameSync(OLD_CONFIG_DIR, CONFIG_DIR)
+    if (!existsSync(CONFIG_DIR) && existsSync(OLD_CONFIG_DIR))
+      renameSync(OLD_CONFIG_DIR, CONFIG_DIR)
   } catch {}
   try {
     if (!existsSync(STATE_DIR) && existsSync(OLD_STATE_DIR)) renameSync(OLD_STATE_DIR, STATE_DIR)

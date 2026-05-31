@@ -18,7 +18,11 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 const BASE = process.env.EVENHUB_API_URL || 'https://hub.evenrealities.com'
-const CRED = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'evenhub', 'credentials.yaml')
+const CRED = join(
+  process.env.XDG_CONFIG_HOME || join(homedir(), '.config'),
+  'evenhub',
+  'credentials.yaml',
+)
 
 function arg(...names) {
   for (const n of names) {
@@ -38,7 +42,9 @@ function readCreds() {
   try {
     text = readFileSync(CRED, 'utf8')
   } catch {
-    throw new Error(`認証情報が読めません: ${CRED}\nまず自分のターミナルで \`evenhub login\` を実行してください。`)
+    throw new Error(
+      `認証情報が読めません: ${CRED}\nまず自分のターミナルで \`evenhub login\` を実行してください。`,
+    )
   }
   const lines = text.split('\n')
   const out = {}
@@ -122,7 +128,9 @@ async function api(path, makeForm, pkg, retried = false) {
     body = { code: -1, message: `非JSON応答 (HTTP ${res.status})` }
   }
   if (body.code !== 0) {
-    throw new Error(`API エラー (HTTP ${res.status}, code ${body.code}): ${body.message ?? JSON.stringify(body)}`)
+    throw new Error(
+      `API エラー (HTTP ${res.status}, code ${body.code}): ${body.message ?? JSON.stringify(body)}`,
+    )
   }
   return body.data
 }
@@ -138,7 +146,9 @@ async function main() {
 
   console.log(`package : ${pkg}`)
   console.log(`file    : ${file} (app.json version ${version})`)
-  console.log(`mode    : ${addBuild ? 'draft → create (Add build, Private 追加)' : 'draft のみ (検証)'}`)
+  console.log(
+    `mode    : ${addBuild ? 'draft → create (Add build, Private 追加)' : 'draft のみ (検証)'}`,
+  )
 
   // 1) draft upload
   const buf = readFileSync(file)
@@ -160,7 +170,9 @@ async function main() {
   }
 
   if (!addBuild) {
-    console.log('\ndraft のみ完了 (ビルドは追加していません)。Add build するには --draft-only を外して再実行してください。')
+    console.log(
+      '\ndraft のみ完了 (ビルドは追加していません)。Add build するには --draft-only を外して再実行してください。',
+    )
     return
   }
 
@@ -176,7 +188,9 @@ async function main() {
     pkg,
   )
   console.log(`✓ Add build 完了 (Private で追加): ${JSON.stringify(created)}`)
-  console.log('公開する場合はハブの UI で Private→Public を切り替えてください (本スクリプトは行いません)。')
+  console.log(
+    '公開する場合はハブの UI で Private→Public を切り替えてください (本スクリプトは行いません)。',
+  )
 }
 
 main().catch((e) => {

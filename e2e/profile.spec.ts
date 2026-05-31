@@ -6,9 +6,7 @@ import { attachConsoleErrors, key, MACHINE, STATUS } from './fixtures'
 
 const profileSelect = (p: Page) => p.locator('.profile-select')
 const activeProfileName = (p: Page) =>
-  profileSelect(p).evaluate(
-    (el) => (el as HTMLSelectElement).selectedOptions[0]?.textContent ?? '',
-  )
+  profileSelect(p).evaluate((el) => (el as HTMLSelectElement).selectedOptions[0]?.textContent ?? '')
 const groupTitles = (p: Page) => p.locator('#source-list .src-head .src-name').allInnerTexts()
 
 // SortableJS のマウスドラッグ (companion.spec と同じ手順)。
@@ -99,9 +97,7 @@ test('switching presets restores per-preset group order independently', async ({
 test('rename updates the active preset name', async ({ page }) => {
   page.once('dialog', (d) => d.accept('Work'))
   await page.locator('[data-action="profile-rename"]').click()
-  await expect
-    .poll(async () => activeProfileName(page))
-    .toBe('Work')
+  await expect.poll(async () => activeProfileName(page)).toBe('Work')
 })
 
 test('delete removes the active preset and falls back to Default', async ({ page }) => {

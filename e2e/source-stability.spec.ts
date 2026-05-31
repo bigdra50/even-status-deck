@@ -29,13 +29,6 @@ async function editAndTest(p: Page, id: string, url: string): Promise<void> {
   await testConnection(p, url)
 }
 
-// Sources 一覧から新規 source を作成して接続テスト (テスト後は source-edit 画面のまま)。
-async function newAndTest(p: Page, url: string): Promise<void> {
-  await openSources(p)
-  await p.locator('[data-action="new-source"]').click()
-  await testConnection(p, url)
-}
-
 // Sources 一覧での server source 数 (edit-source gear の数)。
 const sourceCount = (p: Page) => p.locator('[data-action="edit-source"]').count()
 
