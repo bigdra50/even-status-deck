@@ -291,8 +291,7 @@ export async function updateJs(
 ): Promise<'updated' | 'uptodate' | 'risk'> {
   const ledger = await loadLedger()
   const entry = ledger.providers[id]
-  if (!entry || entry.kind !== 'js')
-    throw new Error(`${id} は managed な JS provider ではありません`)
+  if (entry?.kind !== 'js') throw new Error(`${id} は managed な JS provider ではありません`)
   const source = entry.source.startsWith('local:')
     ? entry.source.slice('local:'.length)
     : entry.source

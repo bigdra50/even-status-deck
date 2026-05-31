@@ -4,8 +4,7 @@ import { attachConsoleErrors, key, MACHINE, STATUS } from './fixtures'
 // caret と name の両方に data-action="expand" が付くため caret に限定する。
 const expandBtn = (p: Page, groupId: string) =>
   p.locator(`.src-caret[data-action="expand"][data-key="${key(groupId)}"]`)
-const metrics = (p: Page, groupId: string) =>
-  p.locator(`.src-metrics[data-key="${key(groupId)}"]`)
+const metrics = (p: Page, groupId: string) => p.locator(`.src-metrics[data-key="${key(groupId)}"]`)
 
 // 並べ替え (SortableJS) をマウスで実行する。delayOnTouchOnly:true なのでマウスは遅延なしで
 // drag 開始する。SortableJS が反応するよう途中に複数の mousemove を挟む。
@@ -57,9 +56,7 @@ test('expand shows metrics, collapse hides them', async ({ page }) => {
 
 test('segment toggle flips immediately (non-blocking render)', async ({ page }) => {
   await expandBtn(page, 'cpu').click()
-  const seg = page.locator(
-    `[data-action="toggle-seg"][data-key="${key('cpu')}"][data-seg="usage"]`,
-  )
+  const seg = page.locator(`[data-action="toggle-seg"][data-key="${key('cpu')}"][data-seg="usage"]`)
   const wasOn = await seg.evaluate((el) => el.classList.contains('on'))
   await seg.click()
   if (wasOn) await expect(seg).not.toHaveClass(/\bon\b/)
@@ -68,9 +65,7 @@ test('segment toggle flips immediately (non-blocking render)', async ({ page }) 
 
 test('rapid toggles stay consistent and error-free', async ({ page }) => {
   await expandBtn(page, 'cpu').click()
-  const seg = page.locator(
-    `[data-action="toggle-seg"][data-key="${key('cpu')}"][data-seg="usage"]`,
-  )
+  const seg = page.locator(`[data-action="toggle-seg"][data-key="${key('cpu')}"][data-seg="usage"]`)
   const start = await seg.evaluate((el) => el.classList.contains('on'))
   for (let i = 0; i < 6; i++) await seg.click() // 偶数回 → 元の状態に戻る
   if (start) await expect(seg).toHaveClass(/\bon\b/)

@@ -97,7 +97,8 @@ export function completeDialogRequest(
   if (r.status !== 'pending') return { ok: false, reason: 'already_completed' }
   if (index < 0 || index >= r.actions.length) return { ok: false, reason: 'bad_index' }
   // action(ラベル) を併送してきた場合は index と一致するか検証する (取り違え/競合の検出)。
-  if (action !== undefined && action !== r.actions[index]) return { ok: false, reason: 'action_mismatch' }
+  if (action !== undefined && action !== r.actions[index])
+    return { ok: false, reason: 'action_mismatch' }
   r.status = 'completed'
   r.result = { index, action: r.actions[index] ?? '', ts: now }
   wake(requestId)
