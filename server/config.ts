@@ -1,3 +1,4 @@
+import { existsSync, renameSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -11,21 +12,47 @@ import type {
   WatchersConfig,
 } from './types.ts'
 
-// $XDG_CONFIG_HOME/eveng2-toolbar/ (未設定なら ~/.config/eveng2-toolbar/)。
+// $XDG_CONFIG_HOME/status-deck/ (未設定なら ~/.config/status-deck/)。
 export const CONFIG_DIR = join(
   process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'),
-  'eveng2-toolbar',
+  'status-deck',
 )
 // JS plugin provider の autoload 先 (status.ts が走査する)。
 export const PROVIDER_DIR = join(CONFIG_DIR, 'providers')
 
-// $XDG_STATE_HOME/eveng2-toolbar/ (未設定なら ~/.local/state/eveng2-toolbar/)。
+// $XDG_STATE_HOME/status-deck/ (未設定なら ~/.local/state/status-deck/)。
 // ledger は「ツールが管理する状態の記録」なので config ではなく STATE に置く。
 export const STATE_DIR = join(
   process.env.XDG_STATE_HOME ?? join(homedir(), '.local', 'state'),
-  'eveng2-toolbar',
+  'status-deck',
 )
 export const LEDGER_PATH = join(STATE_DIR, 'provider-ledger.json')
+
+// 旧 eveng2-toolbar dir からの best-effort 移行。
+// リブランド前の config/state を新 dir 名へ引き継ぐ。新 dir が既に存在する場合や
+// 旧 dir が無い場合は何もしない。失敗 (権限・競合等) は握り潰し、起動を妨げない。
+const OLD_CONFIG_DIR = join(
+  process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'),
+  'eveng2-toolbar',
+)
+const OLD_STATE_DIR = join(
+  process.env.XDG_STATE_HOME ?? join(homedir(), '.local', 'state'),
+  'eveng2-toolbar',
+)
+let legacyMigrated = false
+// 旧 dir → 新 dir 移行を1度だけ実行する。dir を作成/読み書きする全 runtime 入口
+// (index.ts の CLI 各サブコマンド + loadServerConfig) の手前で呼ぶこと。provider CLI 等が
+// loadServerConfig を経ずに新 dir を作ると以後の移行条件が崩れるため (codex 指摘)。
+export function ensureLegacyDirsMigrated(): void {
+  if (legacyMigrated) return
+  legacyMigrated = true
+  try {
+    if (!existsSync(CONFIG_DIR) && existsSync(OLD_CONFIG_DIR)) renameSync(OLD_CONFIG_DIR, CONFIG_DIR)
+  } catch {}
+  try {
+    if (!existsSync(STATE_DIR) && existsSync(OLD_STATE_DIR)) renameSync(OLD_STATE_DIR, STATE_DIR)
+  } catch {}
+}
 
 // config.toml (smol-toml) か config.json で provider の有効/無効・オプション・port を指定。
 // standalone は高頻度に /api/status を poll するため、毎リクエストの I/O を避けて 3s TTL で
@@ -138,6 +165,7 @@ export function mergeProviders(
 }
 
 export async function loadServerConfig(): Promise<ServerConfig> {
+  ensureLegacyDirsMigrated()
   if (cache && Date.now() - cache.at < CONFIG_TTL_MS) return cache.data
   const parsed = ((await readConfigFile('config.toml')) ??
     (await readConfigFile('config.json'))) as {

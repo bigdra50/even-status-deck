@@ -1,4 +1,4 @@
-# eveng2-toolbar 開発ルール
+# Status Deck 開発ルール
 
 ## Even Hub へのアップロード（必須）
 

@@ -1,4 +1,4 @@
-# eveng2 status protocol
+# Status Deck status protocol
 
 Even G2 toolbar が複数のデータソースから取り込み、グラスに描画するための公開仕様。
 データソース (Mac/PC のローカルサーバー / iPhone bridge / サードパーティ) はこの仕様に従って
@@ -218,7 +218,7 @@ ttlMs = 30000
 
 - provider は stdout に StatusDoc（または単一 Group）の JSON を print して exit するだけ。言語非依存（`command` 指定なので shebang / Windows PATHEXT に依存しない）。
 - **パス展開はしない**。spawn は shell を介さない（`shell:false`）ため、`args` の `~` / `$VAR` / `%VAR%` は展開されない（POSIX/Windows とも）。`command`/`args` は **絶対パス**にするか、本体が置換する既知 token だけを使う:
-  - `${configDir}` → 設定ディレクトリ (`$XDG_CONFIG_HOME/eveng2-toolbar` 等) の絶対パス。
+  - `${configDir}` → 設定ディレクトリ (`$XDG_CONFIG_HOME/status-deck` 等) の絶対パス。
   - 置換後は必ず絶対パスになること。相対パスや未知 token は拒否する。
 - Windows: `command` は実行ファイル解決を本体が担う（`.cmd`/PATHEXT・loopback firewall・env 差は実装側で吸収）。パス区切りはどちらでも本体が正規化する。
 - 受信は `parseStatusDoc()`（§6）でサニタイズ。spawn は timeout + kill、結果は `ttlMs` キャッシュ、同時実行は抑止、出力サイズ上限あり。

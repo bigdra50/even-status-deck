@@ -1,5 +1,5 @@
-# $XDG_CONFIG_HOME/eveng2-toolbar/config.toml にコピー
-# (既定 ~/.config/eveng2-toolbar/config.toml)。config.json でも可。
+# $XDG_CONFIG_HOME/status-deck/config.toml にコピー
+# (既定 ~/.config/status-deck/config.toml)。config.json でも可。
 #
 # server が「どの provider を計算・送信するか」と provider オプションを指定する。
 # - 既定はすべて有効。ここに書いた provider だけ設定が上書きされる。

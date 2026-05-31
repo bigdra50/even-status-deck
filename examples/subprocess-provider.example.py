@@ -5,8 +5,8 @@
 # するだけ。server が毎 poll で実行し、parseStatusDoc でサニタイズして 1 ソースとして集約する。
 #
 # 使い方:
-#   1. このファイルを ~/.config/eveng2-toolbar/providers/weather.py に置く (任意の名前で可)。
-#   2. ~/.config/eveng2-toolbar/config.toml に command を明示登録する:
+#   1. このファイルを ~/.config/status-deck/providers/weather.py に置く (任意の名前で可)。
+#   2. ~/.config/status-deck/config.toml に command を明示登録する:
 #        [providers.weather]
 #        command = "python3"
 #        args = ["${configDir}/providers/weather.py"]   # 絶対パス or ${configDir} のみ

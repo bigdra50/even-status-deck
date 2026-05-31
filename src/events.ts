@@ -27,7 +27,7 @@ const WAIT_MS = 25_000
 
 // since (cursor) を reload 跨ぎで永続化する。WKWebView は前面でも数分で reload され、
 // その度に since=0 に戻ると直近の overlay を再生してしまう。source 単位で保存/復元する。
-const SINCE_KEY_PREFIX = 'eveng2:events:since:'
+const SINCE_KEY_PREFIX = 'status-deck:events:since:'
 
 // localStorage 互換の最小インターフェース (テスト用にモックを差せる)。
 type StorageLike = Pick<Storage, 'getItem' | 'setItem'>

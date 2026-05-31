@@ -56,7 +56,7 @@ export type WatchersConfig = {
   'mac-notifications'?: MacNotificationsWatcherConfig
 }
 
-// $XDG_CONFIG_HOME/eveng2-toolbar/config.{toml,json} の解決済み形。
+// $XDG_CONFIG_HOME/status-deck/config.{toml,json} の解決済み形。
 // providers[id] は command 有無で builtin/JS か subprocess かを判別する。
 export type ServerConfig = {
   port?: number
@@ -69,7 +69,7 @@ export type ServerConfig = {
 export type RiskTag = 'unofficial-api' | 'terms-risk' | 'account-limitation-risk'
 
 // ledger は CLI(managed) でインストールした provider の記録。手動配置 (unmanaged) は載らない。
-// $XDG_STATE_HOME/eveng2-toolbar/provider-ledger.json に保存する。
+// $XDG_STATE_HOME/status-deck/provider-ledger.json に保存する。
 export type LedgerEntryJs = {
   id: string
   kind: 'js'

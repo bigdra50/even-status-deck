@@ -175,7 +175,7 @@ export async function runMacNotificationsWatcher(): Promise<void> {
     process.exit(1)
   }
 
-  const dir = await mkdtemp(join(tmpdir(), 'eveng2-noti-'))
+  const dir = await mkdtemp(join(tmpdir(), 'status-deck-noti-'))
   const tmpFile = join(dir, 'n.plist')
   console.log(`[mac-notifications] watching → ${endpoint} (rec_id > ${lastRecId})`)
 

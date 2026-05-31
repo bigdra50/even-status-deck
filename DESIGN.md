@@ -1,4 +1,4 @@
-# 設計: eveng2-toolbar
+# 設計: Status Deck
 
 Even G2 ツールバー風サブモニタの設計。
 Mac のメニューバーのように、AI ツール（Claude Code / Codex …）の利用制限や PC/スマホの状態を、デフォルトは最小表示、選択で詳細表示する。
@@ -189,7 +189,7 @@ Source Edit : 接続先 URL（複数可） + 接続テスト + 「ローカル�
 - rate-limit %（claude-code の session/weekly/sonnet/opus）は標準 provider から除外した。OAuth/keychain 経由の非公式 `/api/oauth/usage` に依存し信頼境界・後方互換が脆いため、外部 subprocess provider（PROTOCOL §9c）として opt-in する。
 - 値の整形はソース（provider）責務、描画は client 責務（status line 型）。新しい group/segment は接続後に自動検出され、各 profile の Unplaced 棚に出る（自動配置はしない）。
 - 将来: Gemini、システムリソース（CPU/メモリ/バッテリー）も同じ Source/Group/Segment 枠で追加。
-- provider プラグイン（`$XDG_CONFIG_HOME/eveng2-toolbar/providers/*.ts` autoload）と server 側 `config.toml` の有効/無効は素材レイヤ。companion の可視性トグルとは別の層（README 参照）。
+- provider プラグイン（`$XDG_CONFIG_HOME/status-deck/providers/*.ts` autoload）と server 側 `config.toml` の有効/無効は素材レイヤ。companion の可視性トグルとは別の層（README 参照）。
 
 ## 8. データ層 / 取得経路
 
@@ -224,7 +224,7 @@ companion が叩く `/api/status`・`/api/machine` を返すローカルサー�
 ### 言語・配布
 
 - 実装は TS のまま。**Bun compile**（`bun build --compile --target=bun-{darwin,linux,windows}-{x64,arm64}`）でランタイム不要の単一バイナリ化。本プロジェクトは Bun 製なので書き換えゼロ。
-- 配布: `bunx eveng2-toolbar-server`（一次・最短）+ Bun compile 単一バイナリを GitHub Releases（`curl|sh` / `irm|iex`、便利配布）。`child_process`/systeminformation が compile 後も解決するかは実機検証する。
+- 配布: `bunx even-status-deck`（一次・最短）+ Bun compile 単一バイナリを GitHub Releases（`curl|sh` / `irm|iex`、便利配布）。`child_process`/systeminformation が compile 後も解決するかは実機検証する。
 - Rust 不採用: 単一バイナリとネイティブ計測は Bun compile + systeminformation で代替でき、TS 資産と「任意言語で provider を書ける」拡張の汎用性を失うため。ネイティブ計測が決定的に要る箇所のみ将来 Go/Rust サイドカーへ疎結合に切り出す（YAGNI）。
 
 ### 標準 provider の境界

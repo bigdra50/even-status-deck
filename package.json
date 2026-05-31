@@ -1,9 +1,9 @@
 {
-  "name": "eveng2-toolbar",
+  "name": "even-status-deck",
   "private": true,
   "type": "module",
   "bin": {
-    "eveng2-toolbar": "./dist-server/index.js"
+    "status-deck": "./dist-server/index.js"
   },
   "exports": {
     ".": "./server/index.ts",
@@ -17,7 +17,7 @@
     "provider": "bun run server/index.ts provider",
     "build:server": "bun run scripts/build-server.mjs",
     "sim": "evenhub-simulator http://localhost:5173",
-    "pack": "npm run build && evenhub pack app.json dist -o eveng2-toolbar.ehpk",
+    "pack": "npm run build && evenhub pack app.json dist -o status-deck.ehpk",
     "upload": "node scripts/upload.mjs",
     "qr": "evenhub qr --url \"http://$(ipconfig getifaddr en0):5173\"",
     "lint": "biome check src/",

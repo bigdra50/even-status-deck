@@ -1,5 +1,5 @@
 // provider プラグインの例 (manifest 形式 / 推奨)。
-// $XDG_CONFIG_HOME/eveng2-toolbar/providers/ (既定 ~/.config/eveng2-toolbar/providers/) に
+// $XDG_CONFIG_HOME/status-deck/providers/ (既定 ~/.config/status-deck/providers/) に
 // コピーすると dev server が起動時に自動で読み込む (Vim 流 autoload)。
 //
 // 契約: default export で { id, group, risk?, version?, dispose? } を返す。

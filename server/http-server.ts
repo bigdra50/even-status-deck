@@ -233,7 +233,7 @@ export function startServer(_cfg: ServerConfig, port: number): void {
     res.end('Not Found')
   })
   server.listen(port, '0.0.0.0', () => {
-    console.log(`eveng2-toolbar-server listening on http://0.0.0.0:${port}`)
+    console.log(`status-deck server listening on http://0.0.0.0:${port}`)
     printAddresses(port)
   })
 }
