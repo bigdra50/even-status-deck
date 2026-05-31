@@ -758,13 +758,14 @@ export function setActiveProfile(cfg: Config, id: string): void {
   if (cfg.profiles.some((p) => p.id === id)) cfg.activeProfileId = id
 }
 
-// 空 view の新規 profile を追加し、active にする。enabledSourceIds は builtin + 全 server
-// (新規 profile でも何も出ないと混乱するため既定で全 source を有効化)。追加した profile を返す。
+// 空 view の新規 profile を追加し、active にする。enabledSourceIds は builtin + 全 server を既定で
+// 有効化する(新規 profile でも何も出ないと混乱するため)。ただし client source(weather/geoinfo 等)は
+// opt-in なので含めない(さもないと preset 追加だけで位置許可ダイアログ/外部 fetch が走る)。追加した profile を返す。
 export function addProfile(cfg: Config, name: string): Profile {
   const prof: Profile = {
     id: genProfileId(),
     name: name || 'New preset',
-    enabledSourceIds: cfg.sources.map((s) => s.id),
+    enabledSourceIds: cfg.sources.filter((s) => s.kind !== 'client').map((s) => s.id),
     view: emptyProfileView(),
   }
   cfg.profiles.push(prof)
