@@ -21,6 +21,7 @@ import {
   type OptionValues,
   type SegMeta,
   sourceById,
+  WEATHER_SOURCE_ID,
 } from './config'
 
 // 1 オプションの宣言。companion はこれを見て select / toggle / number を描く。
@@ -99,9 +100,78 @@ export function segmentOptionSchema(
   return []
 }
 
+// weather (client.weather) source 単位の表示オプション (#38 sunFormat / #40 単位・感度)。
+// 値の永続は SourceDef.options、型への解決は weather.ts(readWeatherOptions)。temp/wind は open-meteo の
+// クエリ単位で正確に取り、pres は producer 内で hPa→inHg 換算。単位/感度を変えると optSig が変わり即再取得する。
+const WEATHER_OPTION_FIELDS: OptionField[] = [
+  {
+    kind: 'select',
+    id: 'tempUnit',
+    label: 'Temp unit',
+    choices: [
+      { value: 'C', label: 'Celsius' },
+      { value: 'F', label: 'Fahrenheit' },
+    ],
+    default: 'C',
+  },
+  {
+    kind: 'select',
+    id: 'windUnit',
+    label: 'Wind unit',
+    choices: [
+      { value: 'kmh', label: 'km/h' },
+      { value: 'ms', label: 'm/s' },
+      { value: 'mph', label: 'mph' },
+    ],
+    default: 'kmh',
+  },
+  {
+    kind: 'select',
+    id: 'windDir',
+    label: 'Wind dir',
+    choices: [
+      { value: 'text', label: 'Text (N/NE)' },
+      { value: 'arrow', label: 'Arrow' },
+    ],
+    default: 'text',
+  },
+  {
+    kind: 'select',
+    id: 'presUnit',
+    label: 'Pressure',
+    choices: [
+      { value: 'hPa', label: 'hPa' },
+      { value: 'inHg', label: 'inHg' },
+    ],
+    default: 'hPa',
+  },
+  {
+    kind: 'select',
+    id: 'stormSensitivity',
+    label: 'Storm alert',
+    choices: [
+      { value: 'low', label: 'Low (4hPa)' },
+      { value: 'normal', label: 'Normal (3hPa)' },
+      { value: 'high', label: 'High (2hPa)' },
+    ],
+    default: 'normal',
+  },
+  {
+    kind: 'select',
+    id: 'sunFormat',
+    label: 'Sun clock',
+    choices: [
+      { value: 'auto', label: 'Auto (locale)' },
+      { value: '24h', label: '24h (19:01)' },
+      { value: '12h', label: '12h (7:01p)' },
+    ],
+    default: 'auto',
+  },
+]
+
 // source 単位オプションのスキーマ (sourceId → fields)。無ければ空配列。
-// 利用者は後続 issue (weather の単位 #40 等)。基盤としては解決/書込/再 fetch の経路だけ用意する。
-export function sourceOptionSchema(_sourceId: string): OptionField[] {
+export function sourceOptionSchema(sourceId: string): OptionField[] {
+  if (sourceId === WEATHER_SOURCE_ID) return WEATHER_OPTION_FIELDS
   return []
 }
 

@@ -5,6 +5,12 @@
 // localStorage に TTL キャッシュして open-meteo を高頻度に叩かない。store の poll(60s)から呼ばれるが、
 // fresh(30分)の間は geolocation も network も呼ばず cache を返す。失敗時は stale(6時間)→error と degrade。
 // glass の tofu を避けるため値は ASCII のみ(絵文字を使わない)。
+//
+// #38(静的 sun)/#40(拡張 segment + 単位 options): 同一 open-meteo リクエストに daily(sunrise/sunset)と
+// 追加 current(体感/湿度/風向/UV/気圧)+ hourly(気圧トレンド)を相乗りさせ、別 source を増やさない。
+// 単位/フォーマットは source 単位の表示オプション(#36 基盤の SourceDef.options)で選び、producer へ渡す。
+import { formatProfile } from './builtins'
+import type { OptionValues } from './config'
 import {
   type Group,
   parseStatusDoc,
@@ -22,7 +28,42 @@ const GEO_TIMEOUT_MS = 10_000
 const GEO_MAX_AGE_MS = 30 * 60_000 // OS の位置キャッシュ許容(初回以外は許可ダイアログを出さない)
 const OPEN_METEO_TIMEOUT_MS = 8_000 // fetch がハングして weather が永遠に pending(灰色)になるのを防ぐ
 
-type Cache = { lat: number; lon: number; fetchedAt: number; doc: StatusDoc }
+// source 単位の表示オプション(#40)。値の永続は SourceDef.options、スキーマ宣言は options.ts。
+// producer はここで型へ解決し、URL のクエリパラメータと segment 整形に反映する。
+export type WeatherOptions = {
+  tempUnit: 'C' | 'F'
+  windUnit: 'kmh' | 'ms' | 'mph'
+  windDir: 'text' | 'arrow'
+  presUnit: 'hPa' | 'inHg'
+  stormSensitivity: 'low' | 'normal' | 'high'
+  sunFormat: 'auto' | '24h' | '12h' // 'auto' は producer 内でロケールから 24h/12h へ解決
+}
+
+export const DEFAULT_WEATHER_OPTIONS: WeatherOptions = {
+  tempUnit: 'C',
+  windUnit: 'kmh',
+  windDir: 'text',
+  presUnit: 'hPa',
+  stormSensitivity: 'normal',
+  sunFormat: 'auto',
+}
+
+// 永続バッグ(string|number|boolean)を型付き WeatherOptions へ防御的に解決する。
+// 未設定/不正値は既定へフォールバック(store は #36 基盤で sanitize 済みだが weather 単体でも安全に)。
+export function readWeatherOptions(bag: OptionValues | undefined): WeatherOptions {
+  const pick = <T extends string>(key: string, allowed: readonly T[], dflt: T): T => {
+    const v = bag?.[key]
+    return typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : dflt
+  }
+  return {
+    tempUnit: pick('tempUnit', ['C', 'F'] as const, 'C'),
+    windUnit: pick('windUnit', ['kmh', 'ms', 'mph'] as const, 'kmh'),
+    windDir: pick('windDir', ['text', 'arrow'] as const, 'text'),
+    presUnit: pick('presUnit', ['hPa', 'inHg'] as const, 'hPa'),
+    stormSensitivity: pick('stormSensitivity', ['low', 'normal', 'high'] as const, 'normal'),
+    sunFormat: pick('sunFormat', ['auto', '24h', '12h'] as const, 'auto'),
+  }
+}
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100
@@ -42,33 +83,217 @@ export function weatherCodeText(code: number): string {
   return 'Wx' // 未知/欠落コード
 }
 
-// 気象値から weather group の StatusDoc を組む。temp/cond は既定 ON、wind は既定 OFF。
+// 風向(度)→ 8 方位の ASCII テキスト。0=N, 時計回り。負値/360 超も正規化する。
+export function windDir8(deg: number): string {
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+  const norm = ((deg % 360) + 360) % 360
+  return dirs[Math.round(norm / 45) % 8]
+}
+
+// 風向(度)→ 矢印グリフ(opt-in)。実機フォントに矢印が無いと tofu になるため既定は text。
+const WIND_ARROWS: Record<string, string> = {
+  N: '↑',
+  NE: '↗',
+  E: '→',
+  SE: '↘',
+  S: '↓',
+  SW: '↙',
+  W: '←',
+  NW: '↖',
+}
+
+function windDirValue(deg: number, mode: 'text' | 'arrow'): string {
+  const text = windDir8(deg)
+  return mode === 'arrow' ? (WIND_ARROWS[text] ?? text) : text
+}
+
+// hPa → inHg(水銀柱インチ)。open-meteo は気圧の単位指定が無いため producer 側で換算する。
+export function hpaToInHg(hpa: number): number {
+  return hpa * 0.0295299830714
+}
+
+// 3 時間の気圧変化量(hPa)→ 荒天前兆ラベル。sensitivity が「急変」しきい値(low=4/normal=3/high=2 hPa)。
+// 気圧の急降下(低気圧接近)を早期警戒として glass に出す。値は ASCII のみ。
+export function pressureTrend(deltaHpa: number, sensitivity: 'low' | 'normal' | 'high'): string {
+  const strong = sensitivity === 'low' ? 4 : sensitivity === 'high' ? 2 : 3
+  if (deltaHpa <= -strong) return 'Fall fast'
+  if (deltaHpa <= -1) return 'Falling'
+  if (deltaHpa < 1) return 'Steady'
+  if (deltaHpa < strong) return 'Rising'
+  return 'Rise fast'
+}
+
+// open-meteo の現地時刻 ISO(例 "2026-05-31T04:25")から HH:mm を取り出して整形する。
+// Date を介さず文字列から取るので端末 TZ に依存しない(open-meteo timezone=auto = 現地時刻が前提)。
+export function formatSunTime(iso: string, hour12: boolean): string {
+  const m = /T(\d{2}):(\d{2})/.exec(iso)
+  if (!m) return 'n/a'
+  const hh = Number(m[1])
+  const mm = m[2]
+  if (!hour12) return `${m[1]}:${mm}`
+  const ap = hh < 12 ? 'a' : 'p'
+  const h12 = hh % 12 === 0 ? 12 : hh % 12
+  return `${h12}:${mm}${ap}`
+}
+
+function isoToMinutes(iso: string): number | null {
+  const m = /T(\d{2}):(\d{2})/.exec(iso)
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null
+}
+
+// 日の出→日の入りの昼の長さ "14h36m"。日跨ぎ(set < rise)は 24h を足して正の長さにする。
+export function formatDayLength(sunriseIso: string, sunsetIso: string): string {
+  const r = isoToMinutes(sunriseIso)
+  const s = isoToMinutes(sunsetIso)
+  if (r == null || s == null) return 'n/a'
+  let diff = s - r
+  if (diff < 0) diff += 24 * 60
+  return `${Math.floor(diff / 60)}h${String(diff % 60).padStart(2, '0')}m`
+}
+
+function tempUnitLabel(u: 'C' | 'F'): string {
+  return u
+}
+
+function windUnitLabel(u: 'kmh' | 'ms' | 'mph'): string {
+  return u === 'kmh' ? 'km/h' : u === 'ms' ? 'm/s' : 'mph'
+}
+
+function pressureValue(hpa: number, unit: 'hPa' | 'inHg'): string {
+  return unit === 'inHg' ? `${hpaToInHg(hpa).toFixed(2)}inHg` : `${Math.round(hpa)}hPa`
+}
+
+// producer が組み立てた素の気象読み取り。単位は openMeteoUrl のクエリで既に要求単位(temp/wind)で返る。
+// 追加(#40/#38)は欠落し得るため optional。欠落フィールドの segment は push しない。
+export type WeatherReading = {
+  temp: number // 要求された温度単位の値(opts.tempUnit)
+  code: number
+  wind: number // 要求された風速単位の値(opts.windUnit)
+  feels?: number
+  humidity?: number
+  windDeg?: number
+  uv?: number
+  pressureHpa?: number
+  pressureDelta3h?: number
+  sunriseIso?: string
+  sunsetIso?: string
+}
+
+// 気象読み取りから weather group の StatusDoc を組む。temp/cond は既定 ON、それ以外は既定 OFF。
+// opts は単位/フォーマット選択(producer で 'auto' は解決済み = sunFormat は '24h'|'12h')。
 export function buildWeatherDoc(
-  tempC: number,
-  code: number,
-  windKmh: number,
+  r: WeatherReading,
+  opts: WeatherOptions,
   ts: number,
   state?: SourceState,
   message?: string,
 ): StatusDoc {
+  const hour12 = opts.sunFormat === '12h'
   const segments: Segment[] = [
     {
       id: 'temp',
       label: '',
-      value: `${Math.round(tempC)}C`, // ASCII のみ (° は実機フォントで tofu になり得るため使わない)
+      value: `${Math.round(r.temp)}${tempUnitLabel(opts.tempUnit)}`, // ASCII のみ (° は tofu になり得る)
       defaultEnabled: true,
       widthChars: 4,
       isNumeric: true,
     },
-    { id: 'cond', label: '', value: weatherCodeText(code), defaultEnabled: true, widthChars: 9 },
+    { id: 'cond', label: '', value: weatherCodeText(r.code), defaultEnabled: true, widthChars: 9 },
     {
       id: 'wind',
       label: 'Wind',
-      value: `${Math.round(windKmh)}km/h`,
+      value: `${Math.round(r.wind)}${windUnitLabel(opts.windUnit)}`,
       defaultEnabled: false,
       widthChars: 8,
     },
   ]
+
+  // #40 拡張 segment(すべて既定 OFF / opt-in)。欠落フィールドは push しない。
+  if (typeof r.feels === 'number') {
+    segments.push({
+      id: 'feels',
+      label: 'Feel',
+      value: `${Math.round(r.feels)}${tempUnitLabel(opts.tempUnit)}`,
+      defaultEnabled: false,
+      widthChars: 7,
+      isNumeric: true,
+    })
+  }
+  if (typeof r.humidity === 'number') {
+    segments.push({
+      id: 'humid',
+      label: 'Hum',
+      value: `${Math.round(r.humidity)}%`,
+      defaultEnabled: false,
+      widthChars: 7,
+      isNumeric: true,
+    })
+  }
+  if (typeof r.windDeg === 'number') {
+    segments.push({
+      id: 'wdir',
+      label: 'Wind',
+      value: windDirValue(r.windDeg, opts.windDir),
+      defaultEnabled: false,
+      widthChars: 7,
+    })
+  }
+  if (typeof r.uv === 'number') {
+    segments.push({
+      id: 'uv',
+      label: 'UV',
+      value: `${Math.round(r.uv)}`,
+      defaultEnabled: false,
+      widthChars: 5,
+      isNumeric: true,
+    })
+  }
+  if (typeof r.pressureHpa === 'number') {
+    segments.push({
+      id: 'pres',
+      label: '',
+      // inHg は常に "XX.XXinHg"=9 桁 (hPa は最大 "1084hPa"=7 桁)。両単位が収まるよう 9 にする。
+      value: pressureValue(r.pressureHpa, opts.presUnit),
+      defaultEnabled: false,
+      widthChars: 9,
+      isNumeric: true,
+    })
+  }
+  if (typeof r.pressureDelta3h === 'number') {
+    segments.push({
+      id: 'ptrend',
+      label: 'Baro',
+      value: pressureTrend(r.pressureDelta3h, opts.stormSensitivity),
+      defaultEnabled: false,
+      widthChars: 10,
+    })
+  }
+
+  // #38 静的 sun segment(既定 OFF)。daily が取れたときのみ。残り時間カウントダウンは別 issue(毎分 glass 更新)。
+  if (r.sunriseIso && r.sunsetIso) {
+    segments.push({
+      id: 'sunrise',
+      label: 'Rise',
+      value: formatSunTime(r.sunriseIso, hour12),
+      defaultEnabled: false,
+      widthChars: 5,
+    })
+    segments.push({
+      id: 'sunset',
+      label: 'Set',
+      value: formatSunTime(r.sunsetIso, hour12),
+      defaultEnabled: false,
+      widthChars: 5,
+    })
+    segments.push({
+      id: 'daylength',
+      label: 'Day',
+      value: formatDayLength(r.sunriseIso, r.sunsetIso),
+      defaultEnabled: false,
+      widthChars: 6,
+    })
+  }
+
   const group: Group = { id: WEATHER_GROUP_ID, label: 'Weather', segments }
   if (state) group.state = state
   if (message) group.message = message
@@ -101,6 +326,20 @@ function withState(doc: StatusDoc, state: SourceState, message: string): StatusD
   }
 }
 
+// cache は単位/フォーマット選択(optSig)込みで保持する。option を変えたら fresh でも再取得して即反映する。
+type Cache = { lat: number; lon: number; fetchedAt: number; optSig: string; doc: StatusDoc }
+
+function optSig(opts: WeatherOptions): string {
+  return [
+    opts.tempUnit,
+    opts.windUnit,
+    opts.windDir,
+    opts.presUnit,
+    opts.stormSensitivity,
+    opts.sunFormat,
+  ].join('|')
+}
+
 function readCache(): Cache | null {
   try {
     if (typeof window === 'undefined') return null
@@ -114,7 +353,13 @@ function readCache(): Cache | null {
     // (壊れた cache を store へ注入して描画前提を壊さない)。
     const doc = parseStatusDoc(c.doc)
     if (!doc) return null
-    return { lat: c.lat, lon: c.lon, fetchedAt: c.fetchedAt, doc }
+    return {
+      lat: c.lat,
+      lon: c.lon,
+      fetchedAt: c.fetchedAt,
+      optSig: typeof c.optSig === 'string' ? c.optSig : '',
+      doc,
+    }
   } catch {
     return null
   }
@@ -144,22 +389,50 @@ function getPosition(): Promise<{ lat: number; lon: number }> {
   })
 }
 
-type OpenMeteoCurrent = { tempC: number; code: number; windKmh: number }
-
 // open-meteo の現在天気 URL。外部 fetch 先を限定するため host は api.open-meteo.com 固定。
-export function openMeteoUrl(lat: number, lon: number): string {
+// 単位は opts のクエリパラメータで正確に取得する(temp/wind)。daily/hourly で sun と気圧トレンド素材も取る。
+export function openMeteoUrl(
+  lat: number,
+  lon: number,
+  opts: WeatherOptions = DEFAULT_WEATHER_OPTIONS,
+): string {
+  const tempUnit = opts.tempUnit === 'F' ? 'fahrenheit' : 'celsius'
+  const windSpeedUnit = opts.windUnit === 'ms' ? 'ms' : opts.windUnit === 'mph' ? 'mph' : 'kmh'
   return (
     `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    '&current=temperature_2m,weather_code,wind_speed_10m' +
-    '&temperature_unit=celsius&wind_speed_unit=kmh&timezone=auto'
+    '&current=temperature_2m,weather_code,wind_speed_10m,apparent_temperature,' +
+    'relative_humidity_2m,wind_direction_10m,uv_index,surface_pressure' +
+    '&daily=sunrise,sunset' +
+    '&hourly=surface_pressure&past_hours=3&forecast_hours=1' +
+    `&temperature_unit=${tempUnit}&wind_speed_unit=${windSpeedUnit}&timezone=auto`
   )
+}
+
+function num(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+function firstString(v: unknown): string | undefined {
+  return Array.isArray(v) && typeof v[0] === 'string' ? v[0] : undefined
+}
+
+// hourly.surface_pressure の最古点(=3時間前)と current の差を 3h 変化量とする。
+// 単点しか取れない環境では undefined(ptrend segment を出さない)。
+function pressureDelta(currentHpa: number | undefined, hourly: unknown): number | undefined {
+  if (currentHpa === undefined) return undefined
+  const arr = (hourly as { surface_pressure?: unknown })?.surface_pressure
+  if (!Array.isArray(arr) || arr.length < 2) return undefined
+  const past = num(arr[0])
+  if (past === undefined) return undefined
+  return currentHpa - past
 }
 
 async function fetchOpenMeteo(
   lat: number,
   lon: number,
+  opts: WeatherOptions,
   signal: AbortSignal,
-): Promise<OpenMeteoCurrent> {
+): Promise<WeatherReading> {
   // 外部 fetch がハングしたままだと weather が永遠に pending(灰色)になるため、timeout で abort する。
   // store からの signal(source 変更時)も合流させ、どちらでも fetch を止める。
   const ctl = new AbortController()
@@ -167,17 +440,30 @@ async function fetchOpenMeteo(
   signal.addEventListener('abort', onAbort, { once: true })
   const timer = setTimeout(() => ctl.abort(), OPEN_METEO_TIMEOUT_MS)
   try {
-    const res = await fetch(openMeteoUrl(lat, lon), { signal: ctl.signal })
+    const res = await fetch(openMeteoUrl(lat, lon, opts), { signal: ctl.signal })
     if (!res.ok) throw new Error(`open-meteo HTTP ${res.status}`)
-    const json = (await res.json()) as { current?: Record<string, unknown> }
+    const json = (await res.json()) as {
+      current?: Record<string, unknown>
+      daily?: Record<string, unknown>
+      hourly?: unknown
+    }
     const cur = json.current
     if (!cur || typeof cur.temperature_2m !== 'number') {
       throw new Error('open-meteo: no current data')
     }
+    const pressureHpa = num(cur.surface_pressure)
     return {
-      tempC: cur.temperature_2m,
+      temp: cur.temperature_2m,
       code: typeof cur.weather_code === 'number' ? cur.weather_code : -1,
-      windKmh: typeof cur.wind_speed_10m === 'number' ? cur.wind_speed_10m : 0,
+      wind: typeof cur.wind_speed_10m === 'number' ? cur.wind_speed_10m : 0,
+      feels: num(cur.apparent_temperature),
+      humidity: num(cur.relative_humidity_2m),
+      windDeg: num(cur.wind_direction_10m),
+      uv: num(cur.uv_index),
+      pressureHpa,
+      pressureDelta3h: pressureDelta(pressureHpa, json.hourly),
+      sunriseIso: firstString(json.daily?.sunrise),
+      sunsetIso: firstString(json.daily?.sunset),
     }
   } finally {
     clearTimeout(timer)
@@ -199,12 +485,26 @@ function degraded(cache: Cache | null, now: number, msg: string): StatusDoc {
   return errorDoc(msg, now)
 }
 
+// 'auto' を端末ロケールから 24h/12h へ解決する(producer の副作用境界。buildWeatherDoc は純粋に保つ)。
+function resolveSunFormat(opts: WeatherOptions): WeatherOptions {
+  if (opts.sunFormat !== 'auto') return opts
+  const locale = typeof navigator !== 'undefined' ? navigator.language : undefined
+  return { ...opts, sunFormat: formatProfile(locale).hour12 ? '12h' : '24h' }
+}
+
 // client source の producer。store.refreshSource(kind==='client') から poll ごとに呼ばれる。
-// fresh cache があれば即返し、無ければ geolocation→open-meteo を取得。失敗は stale/error に degrade。
-export async function weatherStatus(signal: AbortSignal): Promise<StatusDoc | null> {
+// fresh cache(同一 optSig)があれば即返し、無ければ geolocation→open-meteo を取得。失敗は stale/error に degrade。
+// options(単位/フォーマット)は SourceDef.options 由来。変更時は optSig が変わり fresh でも再取得して即反映する。
+export async function weatherStatus(
+  signal: AbortSignal,
+  options?: OptionValues,
+): Promise<StatusDoc | null> {
+  const opts = resolveSunFormat(readWeatherOptions(options))
+  const sig = optSig(opts)
   const now = Date.now()
   const cache = readCache()
-  if (cache && now - cache.fetchedAt < FRESH_MS) return cache.doc // 新鮮: 何もしない
+  // 新鮮 かつ 同一 option: 何もしない。option を変えたら fresh でも下へ進んで再取得する。
+  if (cache && cache.optSig === sig && now - cache.fetchedAt < FRESH_MS) return cache.doc
   // 直近失敗の backoff 中は再取得もログもしない (poll 毎の geolocation/network/ログ churn を防ぐ)。
   if (now - lastFailAt < FAIL_BACKOFF_MS) return degraded(cache, now, lastFailMsg)
   // 実機の devtools 無し環境で経路を追えるよう、デバッグコンソールへ進捗を出す(座標は出さない=PII)。
@@ -214,12 +514,12 @@ export async function weatherStatus(signal: AbortSignal): Promise<StatusDoc | nu
     if (signal.aborted) return null
     const lat = round2(pos.lat)
     const lon = round2(pos.lon)
-    const w = await fetchOpenMeteo(lat, lon, signal)
+    const r = await fetchOpenMeteo(lat, lon, opts, signal)
     if (signal.aborted) return null
     lastFailAt = 0 // 成功で backoff 解除
-    console.log(`[weather] ok ${Math.round(w.tempC)}C ${weatherCodeText(w.code)}`)
-    const doc = buildWeatherDoc(w.tempC, w.code, w.windKmh, Date.now())
-    writeCache({ lat, lon, fetchedAt: Date.now(), doc })
+    console.log(`[weather] ok ${Math.round(r.temp)}${opts.tempUnit} ${weatherCodeText(r.code)}`)
+    const doc = buildWeatherDoc(r, opts, Date.now())
+    writeCache({ lat, lon, fetchedAt: Date.now(), optSig: sig, doc })
     return doc
   } catch (err) {
     if (signal.aborted) return null

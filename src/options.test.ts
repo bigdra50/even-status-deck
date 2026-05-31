@@ -1,7 +1,7 @@
 // 表示オプション基盤 (#36) の純粋ロジック: schema / 解決 (default 込み) / 書込 (clock は format 合成)。
 // 実行: bun test src/options.test.ts
 import { expect, test } from 'bun:test'
-import { BUILTIN_SOURCE_ID, type Config, emptyConfig } from './config'
+import { BUILTIN_SOURCE_ID, type Config, emptyConfig, sourceById } from './config'
 import {
   applyDefaults,
   coerce,
@@ -31,7 +31,20 @@ test('segmentOptionSchema: clock datetime は Time/Date/Order の 3 select', () 
 test('segmentOptionSchema / sourceOptionSchema: 未知 source は空', () => {
   expect(segmentOptionSchema('client.unknown', 'g', 's')).toEqual([])
   expect(segmentOptionSchema(BUILTIN_SOURCE_ID, 'g2', 'level')).toEqual([])
-  expect(sourceOptionSchema('client.weather')).toEqual([])
+  expect(sourceOptionSchema('client.unknown')).toEqual([]) // weather 以外は空
+})
+
+test('sourceOptionSchema: client.weather は単位/フォーマット select 群 (#38/#40)', () => {
+  const fields = sourceOptionSchema('client.weather')
+  expect(fields.map((f) => f.id)).toEqual([
+    'tempUnit',
+    'windUnit',
+    'windDir',
+    'presUnit',
+    'stormSensitivity',
+    'sunFormat',
+  ])
+  expect(fields.every((f) => f.kind === 'select')).toBe(true)
 })
 
 test('clock: setSegmentOption が format に合成され resolveSegmentOptions で復元できる (round-trip)', () => {
@@ -57,15 +70,26 @@ test('setSegmentOption: segment 不在 / 未知 field は false', () => {
   expect(setSegmentOption(c, BUILTIN_SOURCE_ID, 'clock', 'datetime', 'bogus', 'x')).toBe(false)
 })
 
-test('setSourceOption: スキーマの無い source は false (書き込まない)', () => {
-  const c = emptyConfig()
-  expect(setSourceOption(c, 'client.weather', 'tempUnit', 'F')).toBe(false)
+test('setSourceOption: スキーマの無い source は false / weather は書き込める', () => {
+  const c = emptyConfig() // ensureClientWeather で client.weather は実在する
+  expect(setSourceOption(c, 'client.unknown', 'tempUnit', 'F')).toBe(false) // schema 無し
+  expect(setSourceOption(c, 'client.weather', 'tempUnit', 'F')).toBe(true)
+  expect(sourceById(c, 'client.weather')?.options?.tempUnit).toBe('F')
+  expect(setSourceOption(c, 'client.weather', 'bogusField', 'x')).toBe(false) // 未知 field
 })
 
-test('resolveSourceOptions / resolveSegmentOptions: スキーマ空なら {}', () => {
+test('resolveSourceOptions / resolveSegmentOptions: スキーマ空なら {} / weather は default 解決', () => {
   const c = emptyConfig()
-  expect(resolveSourceOptions(c, 'client.weather')).toEqual({})
+  expect(resolveSourceOptions(c, 'client.unknown')).toEqual({}) // schema 無し
   expect(resolveSegmentOptions(c, BUILTIN_SOURCE_ID, 'g2', 'level')).toEqual({})
+  expect(resolveSourceOptions(c, 'client.weather')).toEqual({
+    tempUnit: 'C',
+    windUnit: 'kmh',
+    windDir: 'text',
+    presUnit: 'hPa',
+    stormSensitivity: 'normal',
+    sunFormat: 'auto',
+  })
 })
 
 // ── coerce / applyDefaults (#36 の中核バリデーション。clock 以外の利用者が乗る前にここで回帰を止める) ──
