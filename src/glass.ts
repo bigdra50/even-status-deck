@@ -16,6 +16,7 @@ import {
   loadConfig,
   sourceUrls,
   syncSourceWithStatus,
+  WEATHER_SOURCE_ID,
 } from './config'
 import { postDialogResult } from './data'
 import { getGlassBattery, setGlassBattery } from './device-state'
@@ -39,6 +40,7 @@ import {
   subscribe,
 } from './store'
 import { computeVisible, resetVisibility, type VisibleMap } from './visibility'
+import { recomputeSunCountdown } from './weather'
 
 // glass (G2 576×288) の描画。複数ソースの status は共有 store が保持し、glass は購読して
 // 横断描画する。HUD (時刻/電池) は builtin local の group として groupOrder に含まれる。
@@ -106,6 +108,10 @@ function refresh(): void {
   }
   overlay.tick(Date.now()) // toast の expiry を進める (空になることもある)
   scheduleOverlayWake() // 次の自動消去をスケジュール
+  // #38 suncountdown: weather doc の残り時間 segment を描画時刻で再計算する(glass-local clone, store 非変更)。
+  // 毎分 glassTick の refresh で値が減る。anchors/suncountdown が無ければ no-op。
+  const w = data.statuses[WEATHER_SOURCE_ID]
+  if (w) data.statuses[WEATHER_SOURCE_ID] = recomputeSunCountdown(w, Date.now())
   const view = views[idx] ?? 'summary'
   // 絵文字 tofu 対策の sanitize は glass-render(値/ラベル段) と glass-overlay(本文段) が担う。
   const base = renderGlass(view, data, visible)
