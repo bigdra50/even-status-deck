@@ -11,6 +11,7 @@ import {
   GEOCODE_SOURCE_ID,
   GEOINFO_SOURCE_ID,
   type OptionValues,
+  PLACES_SOURCE_ID,
   type SourceDef,
   sourceUrls,
   WEATHER_SOURCE_ID,
@@ -18,6 +19,7 @@ import {
 import { fetchStatusFromUrls } from './data'
 import { geocodeStatus } from './geocode'
 import { geoinfoStatus } from './geoinfo'
+import { placesStatus, setSavedPlaces } from './places'
 import type { StatusDoc } from './status-types'
 import { weatherStatus } from './weather'
 
@@ -124,6 +126,7 @@ function scheduleRetry(def: SourceDef): void {
 // active profile の enabledSourceIds に含まれる source だけを fetch 対象にする (builtin 含む)。
 // 切替時 (Phase 2) や source 追加/削除のたびに companion/glass から呼ぶ。MVP は Default=全 source。
 export function setSourcesFromConfig(cfg: Config): void {
+  setSavedPlaces(cfg.places ?? []) // #42 地点ナビ producer へ保存地点を供給(config を直接参照させない)
   setSources(enabledSources(cfg))
 }
 
@@ -239,6 +242,7 @@ function clientProducer(
   if (id === GEOINFO_SOURCE_ID) return geoinfoStatus
   if (id === AIRQUALITY_SOURCE_ID) return airqualityStatus
   if (id === GEOCODE_SOURCE_ID) return geocodeStatus
+  if (id === PLACES_SOURCE_ID) return placesStatus
   return undefined
 }
 
