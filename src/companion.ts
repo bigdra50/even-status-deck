@@ -1263,7 +1263,13 @@ function applyOptionChange(ds: DOMStringMap, rawValue: unknown): void {
     ok = setSegmentOption(config, ref.sourceId, ref.groupId, segId, fieldId, rawValue)
   } else {
     ok = setSourceOption(config, ref.sourceId, fieldId, rawValue)
-    if (ok) refreshSourceById(ref.sourceId)
+    if (ok) {
+      // 新しい options を store の defs へ反映してから再取得する。defs は config のクローンのため、
+      // setSourcesFromConfig で同期しないと client producer が旧 options で fetch してしまう (#36 が
+      // #40 へ先送りした「単位変更の即時反映」ギャップ)。urlset 不変なので他 source は再 fetch されない。
+      setSourcesFromConfig(config)
+      refreshSourceById(ref.sourceId)
+    }
   }
   if (!ok) return
   void saveConfig(config)

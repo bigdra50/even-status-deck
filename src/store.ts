@@ -5,6 +5,7 @@ import { localStatus } from './builtins'
 import {
   type Config,
   enabledSources,
+  type OptionValues,
   type SourceDef,
   sourceUrls,
   WEATHER_SOURCE_ID,
@@ -226,7 +227,7 @@ function applyResult(def: SourceDef, next: StatusDoc | null): void {
 // producer=NO になる(weather が一度も動かなかった真因)。関数なら参照は呼び出し時=初期化後。
 function clientProducer(
   id: string,
-): ((signal: AbortSignal) => Promise<StatusDoc | null>) | undefined {
+): ((signal: AbortSignal, options?: OptionValues) => Promise<StatusDoc | null>) | undefined {
   if (id === WEATHER_SOURCE_ID) return weatherStatus
   return undefined
 }
@@ -250,7 +251,9 @@ async function refreshSource(def: SourceDef): Promise<void> {
     inflight.set(def.id, ctl)
     let next: StatusDoc | null = null
     try {
-      next = await produce(ctl.signal)
+      // client source の表示オプション(weather の単位/フォーマット等)を producer へ渡す。
+      // 単位変更時は producer 側の optSig が変わり TTL cache を跨いで即再取得する。
+      next = await produce(ctl.signal, def.options)
     } catch {
       next = null
     }
