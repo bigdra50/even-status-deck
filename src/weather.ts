@@ -37,6 +37,10 @@ export type WeatherOptions = {
   presUnit: 'hPa' | 'inHg'
   stormSensitivity: 'low' | 'normal' | 'high'
   sunFormat: 'auto' | '24h' | '12h' // 'auto' は producer 内でロケールから 24h/12h へ解決
+  // #39 降水ナウキャスト。rainin segment の表示モード + しきい値(降水とみなす mm)+ 取得粒度。
+  rainMode: 'nextrain' | '1hchance' | 'recent'
+  rainThreshold: number // wetMm: これ以上を降水とみなす(既定 0.1mm)
+  rainGranularity: 'auto' | 'hourly' // auto = minutely_15 優先(取れなければ hourly)
 }
 
 export const DEFAULT_WEATHER_OPTIONS: WeatherOptions = {
@@ -46,6 +50,9 @@ export const DEFAULT_WEATHER_OPTIONS: WeatherOptions = {
   presUnit: 'hPa',
   stormSensitivity: 'normal',
   sunFormat: 'auto',
+  rainMode: 'nextrain',
+  rainThreshold: 0.1,
+  rainGranularity: 'auto',
 }
 
 // 永続バッグ(string|number|boolean)を型付き WeatherOptions へ防御的に解決する。
@@ -55,6 +62,11 @@ export function readWeatherOptions(bag: OptionValues | undefined): WeatherOption
     const v = bag?.[key]
     return typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : dflt
   }
+  const pickNum = (key: string, min: number, max: number, dflt: number): number => {
+    const v = bag?.[key]
+    const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : Number.NaN
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : dflt
+  }
   return {
     tempUnit: pick('tempUnit', ['C', 'F'] as const, 'C'),
     windUnit: pick('windUnit', ['kmh', 'ms', 'mph'] as const, 'kmh'),
@@ -62,6 +74,9 @@ export function readWeatherOptions(bag: OptionValues | undefined): WeatherOption
     presUnit: pick('presUnit', ['hPa', 'inHg'] as const, 'hPa'),
     stormSensitivity: pick('stormSensitivity', ['low', 'normal', 'high'] as const, 'normal'),
     sunFormat: pick('sunFormat', ['auto', '24h', '12h'] as const, 'auto'),
+    rainMode: pick('rainMode', ['nextrain', '1hchance', 'recent'] as const, 'nextrain'),
+    rainThreshold: pickNum('rainThreshold', 0, 5, 0.1),
+    rainGranularity: pick('rainGranularity', ['auto', 'hourly'] as const, 'auto'),
   }
 }
 
@@ -163,6 +178,15 @@ function pressureValue(hpa: number, unit: 'hPa' | 'inHg'): string {
   return unit === 'inHg' ? `${hpaToInHg(hpa).toFixed(2)}inHg` : `${Math.round(hpa)}hPa`
 }
 
+// rainin segment の value を mode で切替。データが無いモードは undefined(segment を出さない)。
+function raininValue(r: WeatherReading, mode: WeatherOptions['rainMode']): string | undefined {
+  if (mode === '1hchance')
+    return typeof r.pop1h === 'number' ? `${Math.round(r.pop1h)}%` : undefined
+  if (mode === 'recent')
+    return typeof r.precip1h === 'number' ? `${r.precip1h.toFixed(1)}mm` : undefined
+  return r.rainLabel
+}
+
 // producer が組み立てた素の気象読み取り。単位は openMeteoUrl のクエリで既に要求単位(temp/wind)で返る。
 // 追加(#40/#38)は欠落し得るため optional。欠落フィールドの segment は push しない。
 export type WeatherReading = {
@@ -177,6 +201,55 @@ export type WeatherReading = {
   pressureDelta3h?: number
   sunriseIso?: string
   sunsetIso?: string
+  // #39 降水ナウキャスト(producer が minutely_15/hourly から算出)。降水データが無ければ undefined。
+  rainLabel?: string // 'Rain ~20m' / 'Stops ~10m' / 'Dry' / 'Rain'(降り続く)
+  pop1h?: number // 次 1 時間の降水確率 max (%)
+  precip1h?: number // 次 1 時間の降水量合計 (mm)
+}
+
+// 降水スロット 1 点。min = 現在からの相対分(負=過去)。precip=mm、prob=%。
+export type PrecipSlot = { min: number; precip: number; prob: number }
+
+function round5(n: number): number {
+  return Math.max(5, Math.round(n / 5) * 5)
+}
+
+// 降水スロット列 →「次の降雨/降り止み/Dry」ラベル(ASCII)。wetMm 以上を降水とみなす。
+// 「現在」= 直近の過去スロット(あれば)、無ければ最初の未来スロット。ETA は未来スロットのみ使う
+// (過去スロットを ETA に混入させない)。未来予報が無ければ undefined(segment を出さない)。
+// 時刻粒度: hourly か、minutely でも 60 分以上は ~Nh(widthChars=10 に収めるため。例 "Stops ~24h"=10)。
+export function rainNowcastLabel(
+  slots: PrecipSlot[],
+  wetMm: number,
+  granularity: 'minutely' | 'hourly',
+): string | undefined {
+  const sorted = [...slots].sort((a, b) => a.min - b.min)
+  const future = sorted.filter((s) => s.min >= 0)
+  if (!future.length) return undefined
+  const past = sorted.filter((s) => s.min < 0)
+  const current = past.length ? past[past.length - 1] : future[0]
+  const eta = (min: number): string =>
+    granularity === 'hourly' || min >= 60
+      ? `~${Math.max(1, Math.round(min / 60))}h`
+      : `~${round5(min)}m`
+  if (current.precip >= wetMm) {
+    const dry = future.find((s) => s.precip < wetMm)
+    return dry ? `Stops ${eta(dry.min)}` : 'Rain' // 窓内に止む予報なし=降り続く
+  }
+  const wet = future.find((s) => s.precip >= wetMm)
+  return wet ? `Rain ${eta(wet.min)}` : 'Dry'
+}
+
+// 次 1 時間(min∈[0,60))の降水確率 max(%)。窓内スロットが無ければ undefined。
+export function pop1hMax(slots: PrecipSlot[]): number | undefined {
+  const win = slots.filter((s) => s.min >= 0 && s.min < 60)
+  return win.length ? Math.max(...win.map((s) => s.prob)) : undefined
+}
+
+// 次 1 時間(min∈[0,60))の降水量合計(mm)。窓内スロットが無ければ undefined。
+export function precip1hSum(slots: PrecipSlot[]): number | undefined {
+  const win = slots.filter((s) => s.min >= 0 && s.min < 60)
+  return win.length ? win.reduce((sum, s) => sum + s.precip, 0) : undefined
 }
 
 // 気象読み取りから weather group の StatusDoc を組む。temp/cond は既定 ON、それ以外は既定 OFF。
@@ -207,6 +280,33 @@ export function buildWeatherDoc(
       widthChars: 8,
     },
   ]
+
+  // #39 降水ナウキャスト。rainin は既定 ON(視線を上げた一瞬で「もうすぐ降る/止む」が分かる)。
+  // mode で rainin の表示を切替。pop1h/precip1h は既定 OFF の専用 segment。降水データ欠落時は出さない。
+  const rv = raininValue(r, opts.rainMode)
+  if (rv !== undefined) {
+    segments.push({ id: 'rainin', label: '', value: rv, defaultEnabled: true, widthChars: 10 })
+  }
+  if (typeof r.pop1h === 'number') {
+    segments.push({
+      id: 'pop1h',
+      label: 'Rain',
+      value: `${Math.round(r.pop1h)}%`,
+      defaultEnabled: false,
+      widthChars: 4,
+      isNumeric: true,
+    })
+  }
+  if (typeof r.precip1h === 'number') {
+    segments.push({
+      id: 'precip1h',
+      label: 'Wet',
+      value: `${r.precip1h.toFixed(1)}mm`,
+      defaultEnabled: false,
+      widthChars: 6,
+      isNumeric: true,
+    })
+  }
 
   // #40 拡張 segment(すべて既定 OFF / opt-in)。欠落フィールドは push しない。
   if (typeof r.feels === 'number') {
@@ -337,6 +437,9 @@ function optSig(opts: WeatherOptions): string {
     opts.presUnit,
     opts.stormSensitivity,
     opts.sunFormat,
+    opts.rainMode,
+    String(opts.rainThreshold),
+    opts.rainGranularity,
   ].join('|')
 }
 
@@ -403,7 +506,10 @@ export function openMeteoUrl(
     '&current=temperature_2m,weather_code,wind_speed_10m,apparent_temperature,' +
     'relative_humidity_2m,wind_direction_10m,uv_index,surface_pressure' +
     '&daily=sunrise,sunset' +
-    '&hourly=surface_pressure&past_hours=3&forecast_hours=1' +
+    // hourly: 気圧トレンド(past 3h)+ 降水ナウキャストの hourly フォールバック(forecast 12h)。
+    '&hourly=surface_pressure,precipitation,precipitation_probability&past_hours=3&forecast_hours=12' +
+    // minutely_15: 降水ナウキャストの高粒度素材(次 24h=96 スロット)。地域により空のことがある。
+    '&minutely_15=precipitation,precipitation_probability&forecast_minutely_15=96' +
     `&temperature_unit=${tempUnit}&wind_speed_unit=${windSpeedUnit}&timezone=auto`
   )
 }
@@ -414,6 +520,60 @@ function num(v: unknown): number | undefined {
 
 function firstString(v: unknown): string | undefined {
   return Array.isArray(v) && typeof v[0] === 'string' ? v[0] : undefined
+}
+
+// open-meteo の時刻 ISO 配列 + precip/prob 配列を相対分スロット列へ。
+// Date.parse は現地時刻 ISO(timezone=auto)= 端末 TZ 前提(weather 既存の前提と同じ)。
+// precip が finite number でない点(配列長不一致・null 欠落含む)は除外する。0 扱いにすると
+// データ欠落が「乾燥予報」に化けて Stops/Dry/precip1h を過小評価するため。prob 欠落は副次なので 0。
+export function buildPrecipSlots(
+  times: unknown,
+  precip: unknown,
+  prob: unknown,
+  nowMs: number,
+): PrecipSlot[] {
+  if (!Array.isArray(times) || !Array.isArray(precip)) return []
+  const probArr = Array.isArray(prob) ? prob : []
+  const out: PrecipSlot[] = []
+  for (let i = 0; i < times.length; i++) {
+    const t = times[i]
+    if (typeof t !== 'string') continue
+    const ms = Date.parse(t)
+    if (Number.isNaN(ms)) continue
+    const p = num(precip[i])
+    if (p === undefined) continue // precip 欠落点は除外(乾燥扱いにしない)
+    out.push({
+      min: Math.round((ms - nowMs) / 60_000),
+      precip: p,
+      prob: num(probArr[i]) ?? 0,
+    })
+  }
+  return out
+}
+
+// 降水ナウキャストを算出する。auto は minutely_15 優先(取れなければ hourly)。
+function computePrecip(
+  json: { minutely_15?: Record<string, unknown>; hourly?: Record<string, unknown> },
+  opts: WeatherOptions,
+  nowMs: number,
+): { rainLabel?: string; pop1h?: number; precip1h?: number } {
+  const m = json.minutely_15
+  const h = json.hourly
+  const minutelySlots = buildPrecipSlots(
+    m?.time,
+    m?.precipitation,
+    m?.precipitation_probability,
+    nowMs,
+  )
+  const useHourly = opts.rainGranularity === 'hourly' || minutelySlots.length === 0
+  const slots = useHourly
+    ? buildPrecipSlots(h?.time, h?.precipitation, h?.precipitation_probability, nowMs)
+    : minutelySlots
+  return {
+    rainLabel: rainNowcastLabel(slots, opts.rainThreshold, useHourly ? 'hourly' : 'minutely'),
+    pop1h: pop1hMax(slots),
+    precip1h: precip1hSum(slots),
+  }
 }
 
 // hourly.surface_pressure の最古点(=3時間前)と current の差を 3h 変化量とする。
@@ -445,13 +605,15 @@ async function fetchOpenMeteo(
     const json = (await res.json()) as {
       current?: Record<string, unknown>
       daily?: Record<string, unknown>
-      hourly?: unknown
+      hourly?: Record<string, unknown>
+      minutely_15?: Record<string, unknown>
     }
     const cur = json.current
     if (!cur || typeof cur.temperature_2m !== 'number') {
       throw new Error('open-meteo: no current data')
     }
     const pressureHpa = num(cur.surface_pressure)
+    const rain = computePrecip(json, opts, Date.now())
     return {
       temp: cur.temperature_2m,
       code: typeof cur.weather_code === 'number' ? cur.weather_code : -1,
@@ -464,6 +626,9 @@ async function fetchOpenMeteo(
       pressureDelta3h: pressureDelta(pressureHpa, json.hourly),
       sunriseIso: firstString(json.daily?.sunrise),
       sunsetIso: firstString(json.daily?.sunset),
+      rainLabel: rain.rainLabel,
+      pop1h: rain.pop1h,
+      precip1h: rain.precip1h,
     }
   } finally {
     clearTimeout(timer)
