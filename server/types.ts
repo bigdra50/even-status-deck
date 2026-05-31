@@ -18,6 +18,7 @@ export type ProviderDef = {
 
 // JS plugin の default export 契約 (manifest)。group のみ必須、他は任意。
 // risk は install/list/update で提示し承認 (--accept-risk) を要求するためのタグ。
+/** @public provider 開発者向けの公開契約型。repo 内では型注釈に未使用 (examples は JSDoc で契約説明)。 */
 export type JsProviderManifest = {
   id: string
   group: (ctx: ProviderCtx) => Promise<Group | null> | Group | null

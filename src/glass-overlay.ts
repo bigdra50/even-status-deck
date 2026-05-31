@@ -288,5 +288,3 @@ export function createOverlayManager() {
     },
   }
 }
-
-export type OverlayManager = ReturnType<typeof createOverlayManager>

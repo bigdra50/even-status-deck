@@ -308,9 +308,3 @@ export function startPolling(intervalMs = 60_000): void {
 // 時刻 (毎分 tick) は glass が glass-local タイマーで所有する (store.notify を介した
 // 毎分の重い集約が iOS WKWebView の WebContent jettison を招くため。issue #4)。
 // refreshBuiltins は電池変化 (onDeviceStatusChanged, 低頻度) からのみ呼ばれる。
-
-export function stop(): void {
-  if (pollTimer) clearInterval(pollTimer)
-  pollTimer = null
-  for (const id of [...retryTimers.keys()]) clearRetry(id)
-}
