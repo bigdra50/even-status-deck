@@ -8,7 +8,11 @@ import {
   formatSunTime,
   hpaToInHg,
   openMeteoUrl,
+  type PrecipSlot,
+  pop1hMax,
+  precip1hSum,
   pressureTrend,
+  rainNowcastLabel,
   readWeatherOptions,
   WEATHER_GROUP_ID,
   type WeatherOptions,
@@ -173,13 +177,15 @@ test('readWeatherOptions: 未設定/不正値は既定へフォールバック',
   })
 })
 
-test('openMeteoUrl: host 固定 + 丸め座標 + daily/hourly + 単位パラメータを含む', () => {
+test('openMeteoUrl: host 固定 + 丸め座標 + daily/hourly/minutely + 単位パラメータを含む', () => {
   const u = new URL(openMeteoUrl(35.68, 139.61))
   expect(u.host).toBe('api.open-meteo.com')
   expect(u.searchParams.get('latitude')).toBe('35.68')
   expect(u.searchParams.get('longitude')).toBe('139.61')
   expect(u.searchParams.get('daily')).toBe('sunrise,sunset')
-  expect(u.searchParams.get('hourly')).toBe('surface_pressure')
+  expect(u.searchParams.get('hourly')).toContain('surface_pressure') // 気圧トレンド
+  expect(u.searchParams.get('hourly')).toContain('precipitation') // 降水 hourly フォールバック
+  expect(u.searchParams.get('minutely_15')).toBe('precipitation,precipitation_probability') // #39
   expect(u.searchParams.get('temperature_unit')).toBe('celsius') // 既定 C
   expect(u.searchParams.get('current')).toContain('apparent_temperature')
 })
@@ -190,4 +196,140 @@ test('openMeteoUrl: 単位オプションがクエリへ反映される (F/mph)'
   )
   expect(u.searchParams.get('temperature_unit')).toBe('fahrenheit')
   expect(u.searchParams.get('wind_speed_unit')).toBe('mph')
+})
+
+// ── #39 降水ナウキャスト ──
+test('rainNowcastLabel: 乾燥中は次の降雨を ~Nm(5分丸め)で出す', () => {
+  const slots: PrecipSlot[] = [
+    { min: 0, precip: 0, prob: 10 },
+    { min: 15, precip: 0, prob: 20 },
+    { min: 30, precip: 0.5, prob: 80 }, // ここで降り出す
+    { min: 45, precip: 1.2, prob: 90 },
+  ]
+  expect(rainNowcastLabel(slots, 0.1, 'minutely')).toBe('Rain ~30m')
+})
+
+test('rainNowcastLabel: 18分後の降雨は ~20m に 5 分丸め', () => {
+  const slots: PrecipSlot[] = [
+    { min: 3, precip: 0, prob: 0 },
+    { min: 18, precip: 0.4, prob: 70 },
+  ]
+  expect(rainNowcastLabel(slots, 0.1, 'minutely')).toBe('Rain ~20m')
+})
+
+test('rainNowcastLabel: 降水中は止む時刻を Stops ~Nm で出す', () => {
+  const slots: PrecipSlot[] = [
+    { min: 0, precip: 0.8, prob: 90 }, // 降水中
+    { min: 15, precip: 0.3, prob: 60 },
+    { min: 30, precip: 0, prob: 20 }, // ここで止む
+  ]
+  expect(rainNowcastLabel(slots, 0.1, 'minutely')).toBe('Stops ~30m')
+})
+
+test('rainNowcastLabel: 当面降水なしは Dry、降り続くなら Rain', () => {
+  const dry: PrecipSlot[] = [
+    { min: 0, precip: 0, prob: 5 },
+    { min: 60, precip: 0, prob: 10 },
+  ]
+  expect(rainNowcastLabel(dry, 0.1, 'minutely')).toBe('Dry')
+  const ongoing: PrecipSlot[] = [
+    { min: 0, precip: 1.0, prob: 95 },
+    { min: 60, precip: 0.9, prob: 90 }, // 窓内ずっと降水
+  ]
+  expect(rainNowcastLabel(ongoing, 0.1, 'minutely')).toBe('Rain')
+})
+
+test('rainNowcastLabel: hourly 粒度は ~Nh、空スロットは undefined', () => {
+  const slots: PrecipSlot[] = [
+    { min: 0, precip: 0, prob: 0 },
+    { min: 120, precip: 0.5, prob: 60 },
+  ]
+  expect(rainNowcastLabel(slots, 0.1, 'hourly')).toBe('Rain ~2h')
+  expect(rainNowcastLabel([], 0.1, 'minutely')).toBeUndefined()
+})
+
+test('rainNowcastLabel: しきい値を上げると小雨が降水扱いから外れる', () => {
+  const slots: PrecipSlot[] = [
+    { min: 0, precip: 0, prob: 10 },
+    { min: 30, precip: 0.3, prob: 50 }, // 小雨
+  ]
+  expect(rainNowcastLabel(slots, 0.1, 'minutely')).toBe('Rain ~30m') // 0.1mm では降水
+  expect(rainNowcastLabel(slots, 1.0, 'minutely')).toBe('Dry') // 1.0mm では非降水
+})
+
+test('pop1hMax / precip1hSum: 次 1 時間の窓 [0,60) で集計', () => {
+  const slots: PrecipSlot[] = [
+    { min: -15, precip: 5, prob: 99 }, // 過去は除外
+    { min: 0, precip: 0.2, prob: 40 },
+    { min: 15, precip: 0.3, prob: 70 },
+    { min: 45, precip: 0.5, prob: 60 },
+    { min: 60, precip: 9, prob: 100 }, // 60 は窓外(< 60)
+  ]
+  expect(pop1hMax(slots)).toBe(70)
+  expect(precip1hSum(slots)).toBeCloseTo(1.0, 5)
+  expect(pop1hMax([])).toBeUndefined()
+})
+
+test('buildWeatherDoc: rainin は既定 ON、pop1h/precip1h は既定 OFF', () => {
+  const reading: WeatherReading = {
+    ...baseReading,
+    rainLabel: 'Rain ~20m',
+    pop1h: 60,
+    precip1h: 1.2,
+  }
+  const byId = new Map(
+    buildWeatherDoc(reading, DEFAULT_WEATHER_OPTIONS, 1).groups[0].segments.map((s) => [s.id, s]),
+  )
+  expect(byId.get('rainin')?.value).toBe('Rain ~20m')
+  expect(byId.get('rainin')?.defaultEnabled).toBe(true)
+  expect(byId.get('pop1h')?.value).toBe('60%')
+  expect(byId.get('pop1h')?.defaultEnabled).toBe(false)
+  expect(byId.get('precip1h')?.value).toBe('1.2mm')
+})
+
+test('buildWeatherDoc: rainMode で rainin の表示が切替わる', () => {
+  const reading: WeatherReading = {
+    ...baseReading,
+    rainLabel: 'Dry',
+    pop1h: 60,
+    precip1h: 1.2,
+  }
+  const v = (mode: WeatherOptions['rainMode']): string | undefined =>
+    new Map(
+      buildWeatherDoc(
+        { ...reading },
+        { ...DEFAULT_WEATHER_OPTIONS, rainMode: mode },
+        1,
+      ).groups[0].segments.map((s) => [s.id, s.value]),
+    ).get('rainin')
+  expect(v('nextrain')).toBe('Dry')
+  expect(v('1hchance')).toBe('60%')
+  expect(v('recent')).toBe('1.2mm')
+})
+
+test('buildWeatherDoc: 降水データが無ければ rainin/pop1h/precip1h は出さない', () => {
+  const byId = new Map(
+    buildWeatherDoc(baseReading, DEFAULT_WEATHER_OPTIONS, 1).groups[0].segments.map((s) => [
+      s.id,
+      s,
+    ]),
+  )
+  expect(byId.has('rainin')).toBe(false)
+  expect(byId.has('pop1h')).toBe(false)
+})
+
+test('readWeatherOptions: 降水 option の既定とclamp', () => {
+  expect(readWeatherOptions(undefined)).toMatchObject({
+    rainMode: 'nextrain',
+    rainThreshold: 0.1,
+    rainGranularity: 'auto',
+  })
+  expect(readWeatherOptions({ rainMode: '1hchance', rainThreshold: 1.5 })).toMatchObject({
+    rainMode: '1hchance',
+    rainThreshold: 1.5,
+  })
+  expect(readWeatherOptions({ rainThreshold: 99 }).rainThreshold).toBe(5) // max clamp
+  expect(readWeatherOptions({ rainThreshold: -3 }).rainThreshold).toBe(0) // min clamp
+  expect(readWeatherOptions({ rainThreshold: 'x' }).rainThreshold).toBe(0.1) // 不正値は既定
+  expect(readWeatherOptions({ rainMode: 'bogus' }).rainMode).toBe('nextrain')
 })

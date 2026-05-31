@@ -34,7 +34,7 @@ test('segmentOptionSchema / sourceOptionSchema: 未知 source は空', () => {
   expect(sourceOptionSchema('client.unknown')).toEqual([]) // weather 以外は空
 })
 
-test('sourceOptionSchema: client.weather は単位/フォーマット select 群 (#38/#40)', () => {
+test('sourceOptionSchema: client.weather は単位/フォーマット/降水の option 群 (#38/#40/#39)', () => {
   const fields = sourceOptionSchema('client.weather')
   expect(fields.map((f) => f.id)).toEqual([
     'tempUnit',
@@ -43,8 +43,15 @@ test('sourceOptionSchema: client.weather は単位/フォーマット select 群
     'presUnit',
     'stormSensitivity',
     'sunFormat',
+    'rainMode',
+    'rainThreshold',
+    'rainGranularity',
   ])
-  expect(fields.every((f) => f.kind === 'select')).toBe(true)
+  // rainThreshold のみ number、それ以外は select。
+  expect(fields.find((f) => f.id === 'rainThreshold')?.kind).toBe('number')
+  expect(fields.filter((f) => f.id !== 'rainThreshold').every((f) => f.kind === 'select')).toBe(
+    true,
+  )
 })
 
 test('clock: setSegmentOption が format に合成され resolveSegmentOptions で復元できる (round-trip)', () => {
@@ -89,6 +96,9 @@ test('resolveSourceOptions / resolveSegmentOptions: スキーマ空なら {} / w
     presUnit: 'hPa',
     stormSensitivity: 'normal',
     sunFormat: 'auto',
+    rainMode: 'nextrain',
+    rainThreshold: 0.1,
+    rainGranularity: 'auto',
   })
 })
 
