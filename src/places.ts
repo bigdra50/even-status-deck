@@ -76,10 +76,22 @@ export function buildPlacesDoc(
 ): StatusDoc {
   const segments: Segment[] = []
   if (hereValue !== undefined) {
-    segments.push({ id: 'here', label: 'At', value: hereValue, defaultEnabled: false, widthChars: 12 })
+    segments.push({
+      id: 'here',
+      label: 'At',
+      value: hereValue,
+      defaultEnabled: false,
+      widthChars: 12,
+    })
   }
   for (const it of items) {
-    segments.push({ id: it.id, label: it.label, value: it.value, defaultEnabled: true, widthChars: 10 })
+    segments.push({
+      id: it.id,
+      label: it.label,
+      value: it.value,
+      defaultEnabled: true,
+      widthChars: 10,
+    })
   }
   const group: Group = { id: PLACES_GROUP_ID, label: 'Places', segments }
   if (state) group.state = state
@@ -121,10 +133,15 @@ function hereLabelFor(places: Place[], pos: { lat: number; lon: number }): strin
 
 // ジオフェンス: 現在地が圏内の保存地点 id 集合(#43)。位置不明/stale は null(visibility は fail-open=na)。
 // visibility/runtime が inPlace leaf 評価で読む(places の lastPos を介する=独立した geolocation を増やさない)。
-// 現在地代表 place の preset 自動切替は #43 follow-up(getCurrentPlaceId は実装時に再追加)。
 export function getInsidePlaceIds(): Set<string> | null {
   if (!lastPos || Date.now() - lastPos.at > STALE_MAX_MS) return null
   return new Set(placesInRange(lastPos, savedPlaces, DEFAULT_PLACE_RADIUS_M).map((x) => x.id))
+}
+
+// 現在地の代表ジオフェンス地点 id(最も近い圏内, #43 preset 提案/自動切替用)。圏外/位置不明/stale は null。
+export function getCurrentPlaceId(): string | null {
+  if (!lastPos || Date.now() - lastPos.at > STALE_MAX_MS) return null
+  return placesInRange(lastPos, savedPlaces, DEFAULT_PLACE_RADIUS_M)[0]?.id ?? null
 }
 
 // client source の producer。保存地点が無ければ空 group。あれば現在地を取り距離・方位を計算する。
@@ -139,7 +156,13 @@ export async function placesStatus(
   // 直近失敗の backoff 中は直近位置で計算 or error degrade。
   if (now - lastFailAt < FAIL_BACKOFF_MS && lastPos && now - lastPos.at < STALE_MAX_MS) {
     const p = lastPos
-    return buildPlacesDoc(computeNav(places, p, opts), hereLabelFor(places, p), now, 'stale', 'using last position')
+    return buildPlacesDoc(
+      computeNav(places, p, opts),
+      hereLabelFor(places, p),
+      now,
+      'stale',
+      'using last position',
+    )
   }
   try {
     const pos = await getPosition()
@@ -154,7 +177,13 @@ export async function placesStatus(
     console.warn(`[places] ${msg}`)
     if (lastPos && now - lastPos.at < STALE_MAX_MS) {
       const p = lastPos
-      return buildPlacesDoc(computeNav(places, p, opts), hereLabelFor(places, p), now, 'stale', 'using last position')
+      return buildPlacesDoc(
+        computeNav(places, p, opts),
+        hereLabelFor(places, p),
+        now,
+        'stale',
+        'using last position',
+      )
     }
     const group: Group = {
       id: PLACES_GROUP_ID,

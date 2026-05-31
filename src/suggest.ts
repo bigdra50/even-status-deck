@@ -4,12 +4,39 @@
 // 副作用なし: 入力 (config + online 集合) から提案を導くだけ。dismiss 管理は呼び出し側 (imperative shell)。
 import { activeProfile, BUILTIN_SOURCE_ID, type Config, type Profile } from './config'
 
-// 提案結果: 切替先 profile と、その根拠 (オンラインで一致した server source 数)。
-// 提案が無いときは null (現 active が既に最適 / 候補が無い / オンライン source 無し)。
+// 提案結果: 切替先 profile と、その根拠。connection=オンライン source 一致 / geofence=現在地。
+// 提案が無いときは null (現 active が既に最適 / 候補が無い / 材料無し)。
 export type ProfileSuggestion = {
   profileId: string
   profileName: string
-  matchCount: number // オンライン source のうち候補 profile が有効化している数 (根拠表示用)
+  matchCount: number // connection: オンライン source のうち候補 profile が有効化している数 (根拠表示用)
+  reason?: 'connection' | 'geofence' // 既定 connection
+  placeName?: string // geofence 時の現在地点名 (バナー文言用)
+}
+
+// 現在地が preset の geofence.placeId 圏内のとき、その preset を提案する(#43, suggest モードのみ)。
+// auto モードは companion が自動切替するので提案しない。現 active と同じ preset は提案しない。
+export function suggestProfileByGeofence(
+  cfg: Config,
+  currentPlaceId: string | null,
+): ProfileSuggestion | null {
+  if (!currentPlaceId) return null
+  const active = activeProfile(cfg)
+  const prof = cfg.profiles.find(
+    (p) =>
+      p.id !== active.id &&
+      p.geofence?.placeId === currentPlaceId &&
+      p.geofence?.mode === 'suggest',
+  )
+  if (!prof) return null
+  const place = cfg.places?.find((pl) => pl.id === currentPlaceId)
+  return {
+    profileId: prof.id,
+    profileName: prof.name,
+    matchCount: 0,
+    reason: 'geofence',
+    placeName: place?.label,
+  }
 }
 
 // profile の enabledSourceIds から builtin を除いた server source 集合。

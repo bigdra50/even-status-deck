@@ -29,6 +29,7 @@ import {
   type OptionValues,
   PLACES_SOURCE_ID,
   type Place,
+  type Profile,
   RIGHT_DIVIDER,
   reconcileSourceMachine,
   removePlace,
@@ -41,6 +42,7 @@ import {
   saveConfig,
   setActiveProfile,
   setPlaceRadius,
+  setProfileGeofence,
   setSourceEnabled,
   sourceById,
   sourceUrl,
@@ -66,6 +68,7 @@ import {
   setSourceOption,
   sourceOptionSchema,
 } from './options'
+import { getCurrentPlaceId } from './places'
 import type { Group, Segment, SourceState } from './status-types'
 import {
   getAllStatuses,
@@ -79,7 +82,7 @@ import {
   startPolling,
   subscribe,
 } from './store'
-import { type ProfileSuggestion, suggestProfile } from './suggest'
+import { type ProfileSuggestion, suggestProfile, suggestProfileByGeofence } from './suggest'
 import { computeVisible, segKey, type VisibilityLeaf } from './visibility'
 
 // 1 segment が持てる条件 leaf の上限 (UI が破綻しない緩い上限)。
@@ -622,11 +625,31 @@ function renderGlassSection(): string {
 // このセッションで却下済み (dismissedSuggestions) の提案は除外する。currentSuggestion を更新し、
 // 提示すべき内容が変わったか (profileId の差分) を返す (変化時のみ Home を再描画するため)。
 function recomputeSuggestion(): boolean {
-  const next = suggestProfile(config, getOnlineServerIds())
+  // ジオフェンス(#43)を優先(現在地は強いシグナル)。圏内に suggest モードの bound preset があればそれ、
+  // 無ければ従来の接続ベース提案にフォールバックする。
+  const next =
+    suggestProfileByGeofence(config, getCurrentPlaceId()) ??
+    suggestProfile(config, getOnlineServerIds())
   const shown = next && !dismissedSuggestions.has(next.profileId) ? next : null
   const changed = (currentSuggestion?.profileId ?? null) !== (shown?.profileId ?? null)
   currentSuggestion = shown
   return changed
+}
+
+// #43 ジオフェンス自動切替: 新しい place に入ったら mode=auto の bound preset へ 1 回切替える。
+// 同じ place に留まっている間は何もしない(flapping/手動操作の上書き防止)。圏外/位置不明なら何もしない。
+let lastGeofencePlace: string | null = null
+function maybeGeofenceAutoSwitch(): void {
+  const placeId = getCurrentPlaceId()
+  if (placeId === lastGeofencePlace) return // place 不変 = 何もしない
+  lastGeofencePlace = placeId
+  if (!placeId) return
+  const prof = config.profiles.find(
+    (p) => p.geofence?.placeId === placeId && p.geofence?.mode === 'auto',
+  )
+  if (!prof || prof.id === config.activeProfileId) return
+  setActiveProfile(config, prof.id)
+  applyProfileChange() // saveConfig + syncAll + setSourcesFromConfig + render
 }
 
 // 提案バナー: 非モーダルで dismiss 可能 (Switch / × の 2 アクション)。glass は勝手に変えない。
@@ -635,9 +658,13 @@ function renderSuggestionBanner(): string {
   const s = currentSuggestion
   if (!s) return ''
   const detail =
-    s.matchCount === 1
-      ? 'A connected source matches this preset.'
-      : `${s.matchCount} connected sources match this preset.`
+    s.reason === 'geofence'
+      ? s.placeName
+        ? `You're at ${esc(s.placeName)}.`
+        : "You're at a saved place."
+      : s.matchCount === 1
+        ? 'A connected source matches this preset.'
+        : `${s.matchCount} connected sources match this preset.`
   return `
     <div class="suggest-banner" role="status">
       <span class="suggest-icon">${icon('sparkles', { size: 16 })}</span>
@@ -672,7 +699,32 @@ function renderProfileBar(): string {
       <button class="gear-btn" data-action="profile-duplicate" title="Duplicate preset" aria-label="Duplicate preset">${icon('copy', { size: 16 })}</button>
       <button class="gear-btn" data-action="profile-add" title="Add preset" aria-label="Add preset">${icon('plus', { size: 16 })}</button>
       <button class="gear-btn danger" data-action="profile-delete" title="Delete preset" aria-label="Delete preset" ${delAttr}>${icon('trash', { size: 16 })}</button>
-    </div>`
+    </div>
+    ${renderProfileGeofence(active)}`
+}
+
+// #43 この preset をジオフェンス(保存地点)に連動させる UI。保存地点があるときだけ出す。
+// place=Off で解除、suggest=バナー提案 / auto=圏内で自動切替。Places source の位置を使う。
+function renderProfileGeofence(active: Profile): string {
+  const places = config.places ?? []
+  if (places.length === 0) return ''
+  const gf = active.geofence
+  const placeOpts =
+    `<option value="" ${gf ? '' : 'selected'}>Off</option>` +
+    places
+      .map(
+        (p) =>
+          `<option value="${esc(p.id)}" ${gf?.placeId === p.id ? 'selected' : ''}>${esc(p.label)}</option>`,
+      )
+      .join('')
+  return `<div class="profile-geofence">
+    <span class="cmp-sub">When at</span>
+    <select class="vis-select" data-action="profile-geofence-place" aria-label="Geofence place">${placeOpts}</select>
+    <select class="vis-select" data-action="profile-geofence-mode" aria-label="Geofence mode" ${gf ? '' : 'disabled'}>
+      <option value="suggest" ${gf?.mode === 'auto' ? '' : 'selected'}>Suggest</option>
+      <option value="auto" ${gf?.mode === 'auto' ? 'selected' : ''}>Auto-switch</option>
+    </select>
+  </div>`
 }
 
 function renderHome(): string {
@@ -1343,7 +1395,23 @@ function onChange(e: Event): void {
   const action = (e.target as HTMLElement).dataset.action ?? ''
   if (action === 'profile-switch') onProfileSwitch(e)
   else if (action === 'opt-set') onOptionChange(e)
+  else if (action === 'profile-geofence-place' || action === 'profile-geofence-mode')
+    onGeofenceBindChange()
   else onSegVisChange(e)
+}
+
+// #43 active preset のジオフェンス連動(place + mode)を保存する。place/mode の両 select を読む。
+function onGeofenceBindChange(): void {
+  const active = activeProfile(config)
+  const placeSel = root?.querySelector<HTMLSelectElement>('[data-action="profile-geofence-place"]')
+  const modeSel = root?.querySelector<HTMLSelectElement>('[data-action="profile-geofence-mode"]')
+  const placeId = placeSel?.value || null
+  const mode = modeSel?.value === 'auto' ? 'auto' : 'suggest'
+  if (setProfileGeofence(config, active.id, placeId, mode)) {
+    lastGeofencePlace = null // バインド変更後は次の onStoreUpdate で auto 切替を再評価させる
+    void saveConfig(config)
+    render()
+  }
 }
 
 // Preset select の変更で active profile を切替える。enabledSourceIds が変わるため
@@ -1490,6 +1558,7 @@ async function runConnectionTest(): Promise<void> {
 
 function onStoreUpdate(): void {
   syncAll() // 新 group を config に取り込み (永続)
+  maybeGeofenceAutoSwitch() // #43 現在地 place 変化で auto モードの preset へ自動切替(view 非依存=glass にも効く)
   if (view !== 'home') return
   // 接続状態 (online/stale/offline) の変化で提案を再計算する。提案の出現/消滅/差し替えが
   // あれば Home を再描画する (バナーの表示更新)。dismiss 済みは recomputeSuggestion 内で除外。

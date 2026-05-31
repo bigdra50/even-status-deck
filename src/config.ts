@@ -131,11 +131,15 @@ export type ProfileView = {
 }
 
 // profile = 状況セット。enabledSourceIds は fetch/表示する source の範囲。
+// ジオフェンス連動(#43): 現在地が placeId の圏内のとき、suggest=バナー提案 / auto=自動切替。
+export type ProfileGeofence = { placeId: string; mode: 'suggest' | 'auto' }
+
 export type Profile = {
   id: string
   name: string
   enabledSourceIds: string[]
   view: ProfileView
+  geofence?: ProfileGeofence // #43 ジオフェンスで現在地に応じてこの preset を提案/自動切替
 }
 
 // 削除した source の表示レシピ snapshot (machineId 別)。Phase 3: 同一マシン再追加で
@@ -483,6 +487,8 @@ export function removePlace(cfg: Config, id: string): boolean {
     if (vg) delete vg.segments[id]
     const lay = prof.view.glassLayout
     if (lay) lay.rows = lay.rows.map((row) => row.filter((k) => k !== key))
+    // 削除 place に bind された preset の geofence 連動も外す(#43。dangling 参照を残さない)。
+    if (prof.geofence?.placeId === id) prof.geofence = undefined
   }
   // 全 segment の visibility から、削除 place を参照する inPlace leaf を除去する(#43)。残すと「At place:
   // <deleted>」条件が常に圏外扱い(insidePlaceIds.has(deletedId)=false)になり segment が予期せず消え、
@@ -922,6 +928,13 @@ function normalizeMetaVisibilityAll(c: Config): void {
 function normalizeProfileView(p: Profile): void {
   p.view ??= emptyProfileView()
   p.view.groups ??= {}
+  // geofence(#43): placeId が string で mode が suggest/auto のときだけ残す。不正は外す。
+  const gf = p.geofence
+  if (gf && typeof gf.placeId === 'string' && gf.placeId !== '') {
+    p.geofence = { placeId: gf.placeId, mode: gf.mode === 'auto' ? 'auto' : 'suggest' }
+  } else {
+    p.geofence = undefined
+  }
   if (!Array.isArray(p.view.groupOrder)) p.view.groupOrder = []
   // groupOrder は (sourceId,groupId) で一意。machineId remap や旧バージョン移行で混入した
   // 重複を除去する (重複すると同じ group が Items / glass に二重表示される)。最初の出現を残す。
@@ -1004,6 +1017,23 @@ export function renameProfile(cfg: Config, id: string, name: string): void {
   if (!trimmed) return
   const prof = cfg.profiles.find((p) => p.id === id)
   if (prof) prof.name = trimmed
+}
+
+// preset のジオフェンス連動を設定する(#43)。placeId=null で解除。mode は suggest/auto。
+export function setProfileGeofence(
+  cfg: Config,
+  profileId: string,
+  placeId: string | null,
+  mode: 'suggest' | 'auto',
+): boolean {
+  const prof = cfg.profiles.find((p) => p.id === profileId)
+  if (!prof) return false
+  if (!placeId || !cfg.places?.some((pl) => pl.id === placeId)) {
+    prof.geofence = undefined
+  } else {
+    prof.geofence = { placeId, mode: mode === 'auto' ? 'auto' : 'suggest' }
+  }
+  return true
 }
 
 // ProfileView を deep copy する (複製時の参照共有を断つ)。ViewGroup / GroupRef / GlassLayout

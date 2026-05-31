@@ -5,6 +5,7 @@ import { expect, test } from 'bun:test'
 import {
   activeProfile,
   addPlace,
+  addProfile,
   DEFAULT_PLACE_RADIUS_M,
   emptyConfig,
   GEOINFO_SOURCE_ID,
@@ -14,9 +15,43 @@ import {
   removePlace,
   renamePlace,
   setPlaceRadius,
+  setProfileGeofence,
   updatePlaceLocation,
   WEATHER_SOURCE_ID,
 } from './config'
+
+test('setProfileGeofence: bind/解除 + 不正 place は外す (#43)', () => {
+  const cfg = emptyConfig()
+  const home = addPlace(cfg, 'Home', 35, 139)
+  const prof = addProfile(cfg, 'P')
+  expect(setProfileGeofence(cfg, prof.id, home.id, 'auto')).toBe(true)
+  expect(prof.geofence).toEqual({ placeId: home.id, mode: 'auto' })
+  // 存在しない place は bind しない(=解除)
+  expect(setProfileGeofence(cfg, prof.id, 'nope', 'suggest')).toBe(true)
+  expect(prof.geofence).toBeUndefined()
+  // placeId=null で解除
+  setProfileGeofence(cfg, prof.id, home.id, 'suggest')
+  expect(setProfileGeofence(cfg, prof.id, null, 'suggest')).toBe(true)
+  expect(prof.geofence).toBeUndefined()
+  expect(setProfileGeofence(cfg, 'badprofile', home.id, 'auto')).toBe(false)
+})
+
+test('removePlace: bind 済み preset の geofence も外す (#43)', () => {
+  const cfg = emptyConfig()
+  const home = addPlace(cfg, 'Home', 35, 139)
+  const prof = addProfile(cfg, 'P')
+  setProfileGeofence(cfg, prof.id, home.id, 'auto')
+  removePlace(cfg, home.id)
+  expect(prof.geofence).toBeUndefined()
+})
+
+test('migrate: 不正な profile.geofence を sanitize する (#43)', () => {
+  const v4 = emptyConfig()
+  const p = addProfile(v4, 'P')
+  ;(p as unknown as { geofence: unknown }).geofence = { placeId: '', mode: 'auto' } // 空 placeId
+  const cfg = migrate(v4 as unknown as Record<string, unknown>)
+  expect(cfg.profiles.find((x) => x.id === p.id)?.geofence).toBeUndefined()
+})
 
 test('migrate(v3): client source は enabledSourceIds に入れない(opt-in 維持)', () => {
   const v3 = {
