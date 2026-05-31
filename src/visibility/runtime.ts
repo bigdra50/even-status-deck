@@ -3,6 +3,7 @@
 // glass / companion がストア更新ごとに computeVisible を呼ぶ。多重呼び出しは冪等
 // (2 回目以降は prevValue 更新済みで再検出されず、絶対時刻 activeUntil なので同じ map を返す)。
 import type { Config } from '../config'
+import { getInsidePlaceIds } from '../places'
 import type { StatusDoc } from '../status-types'
 import { pokeListeners } from '../store'
 import { computeVisibleMap } from './conditions'
@@ -16,7 +17,8 @@ export function computeVisible(
   statuses: Record<string, StatusDoc | null>,
   now: number = Date.now(),
 ): VisibleMap {
-  const r = computeVisibleMap(config, statuses, states, now)
+  // 現在ジオフェンス圏内の地点集合(#43)を places(geolocation 保持)から取り inPlace leaf 評価へ渡す。
+  const r = computeVisibleMap(config, statuses, states, now, getInsidePlaceIds())
   states = r.states
   if (wakeTimer) {
     clearTimeout(wakeTimer)

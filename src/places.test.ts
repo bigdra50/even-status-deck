@@ -47,16 +47,26 @@ test('computeNav: arrow/mi オプション反映', () => {
 
 test('buildPlacesDoc: 各地点 = 既定 ON segment、空配列は空 group', () => {
   const nav = computeNav(places, tokyo, DEFAULT_PLACES_OPTIONS)
-  const g = buildPlacesDoc(nav, 1).groups[0]
+  const g = buildPlacesDoc(nav, undefined, 1).groups[0]
   expect(g.id).toBe(PLACES_GROUP_ID)
   expect(g.label).toBe('Places')
   expect(g.segments).toHaveLength(2)
   expect(g.segments[0].defaultEnabled).toBe(true)
   expect(g.segments[0].id).toBe('pl_near')
-  expect(buildPlacesDoc([], 1).groups[0].segments).toHaveLength(0)
+  expect(buildPlacesDoc([], undefined, 1).groups[0].segments).toHaveLength(0)
+})
+
+test('buildPlacesDoc: here(現在地)segment は既定 OFF で先頭に出る (#43)', () => {
+  const g = buildPlacesDoc([], 'Home', 1).groups[0]
+  expect(g.segments).toHaveLength(1)
+  expect(g.segments[0].id).toBe('here')
+  expect(g.segments[0].value).toBe('Home')
+  expect(g.segments[0].defaultEnabled).toBe(false)
+  // 圏外なら 'Away'
+  expect(buildPlacesDoc([], 'Away', 1).groups[0].segments[0].value).toBe('Away')
 })
 
 test('buildPlacesDoc: state/message を載せられる (stale)', () => {
-  const doc = buildPlacesDoc([], 1, 'stale', 'using last position')
+  const doc = buildPlacesDoc([], undefined, 1, 'stale', 'using last position')
   expect(doc.groups[0].state).toBe('stale')
 })

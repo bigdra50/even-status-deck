@@ -13,6 +13,7 @@ import {
   type Config,
   customLabelId,
   customLabelKey,
+  DEFAULT_PLACE_RADIUS_M,
   DEFAULT_PROFILE_ID,
   duplicateActiveProfile,
   emptyConfig,
@@ -39,6 +40,7 @@ import {
   type SourceDef,
   saveConfig,
   setActiveProfile,
+  setPlaceRadius,
   setSourceEnabled,
   sourceById,
   sourceUrl,
@@ -194,14 +196,31 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, Number.isFinite(n) ? n : lo))
 }
 
+// inPlace leaf の place select + inside/outside(#43)。
+function leafInPlaceParams(a: string, leaf: Extract<VisibilityLeaf, { kind: 'inPlace' }>): string {
+  const placeOpts = (config.places ?? [])
+    .map(
+      (p) =>
+        `<option value="${esc(p.id)}" ${leaf.placeId === p.id ? 'selected' : ''}>${esc(p.label)}</option>`,
+    )
+    .join('')
+  return `<select class="vis-select" data-action="seg-vis-leaf-place" ${a}>${placeOpts}</select>
+    <select class="vis-select" data-action="seg-vis-leaf-side" ${a}>
+      <option value="inside" ${leaf.outside ? '' : 'selected'}>inside</option>
+      <option value="outside" ${leaf.outside ? 'selected' : ''}>outside</option>
+    </select>`
+}
+
 // 1 leaf 行 (kind select + params + 削除ボタン)。threshold は percent を持つ segment のみ候補。
-// 既存 threshold leaf は percent が無くても候補に残す (data 移行後の編集を壊さない)。
+// 既存 threshold leaf は percent が無くても候補に残す (data 移行後の編集を壊さない)。inPlace(#43) は保存地点がある時。
 function leafRow(seg2: string, leaf: VisibilityLeaf, i: number, hasPct: boolean): string {
   const a = `${seg2} data-idx="${i}"`
   const allowThreshold = hasPct || leaf.kind === 'threshold'
+  const allowInPlace = (config.places?.length ?? 0) > 0 || leaf.kind === 'inPlace'
   const kindSel = `<select class="vis-select" data-action="seg-vis-leaf-kind" ${a}>
     ${allowThreshold ? `<option value="threshold" ${leaf.kind === 'threshold' ? 'selected' : ''}>When…</option>` : ''}
     <option value="onChange" ${leaf.kind === 'onChange' ? 'selected' : ''}>On update</option>
+    ${allowInPlace ? `<option value="inPlace" ${leaf.kind === 'inPlace' ? 'selected' : ''}>At place</option>` : ''}
   </select>`
   const params =
     leaf.kind === 'threshold'
@@ -210,7 +229,9 @@ function leafRow(seg2: string, leaf: VisibilityLeaf, i: number, hasPct: boolean)
           <option value="lte" ${leaf.op === 'lte' ? 'selected' : ''}>≤</option>
         </select>
         <input class="vis-num" type="number" min="0" max="100" data-action="seg-vis-leaf-value" ${a} value="${leaf.value}" />%`
-      : `<input class="vis-num" type="number" min="1" max="60" data-action="seg-vis-leaf-hold" ${a} value="${Math.round(leaf.holdMs / 1000)}" />s`
+      : leaf.kind === 'inPlace'
+        ? leafInPlaceParams(a, leaf)
+        : `<input class="vis-num" type="number" min="1" max="60" data-action="seg-vis-leaf-hold" ${a} value="${Math.round(leaf.holdMs / 1000)}" />s`
   const del = `<button class="vis-del" data-action="seg-vis-remove" ${a} title="Remove" aria-label="Remove">${icon('x', { size: 14 })}</button>`
   return `<div class="vis-cond-row">${kindSel}${params}${del}</div>`
 }
@@ -720,10 +741,12 @@ function renderAddSource(): string {
 // 各保存地点を name + 座標 + 削除で並べ、現在地を新規保存できる。地点ナビ(Places source)が
 // ここの保存地点までの距離・方位を出す。
 function placeManageRow(p: Place): string {
+  const radius = p.radiusM ?? DEFAULT_PLACE_RADIUS_M
   return `<div class="src"><div class="src-head">
     <span class="src-name">${esc(p.label)}</span>
-    <span class="src-note mono">${p.lat.toFixed(3)}, ${p.lon.toFixed(3)}</span>
+    <span class="src-note mono">${p.lat.toFixed(3)}, ${p.lon.toFixed(3)} · ${radius}m</span>
     <button class="link-btn" data-action="rename-place" data-place="${esc(p.id)}" title="Rename">Rename</button>
+    <button class="link-btn" data-action="radius-place" data-place="${esc(p.id)}" title="Geofence radius">Radius</button>
     <button class="link-btn" data-action="delete-place" data-place="${esc(p.id)}" title="Delete">Delete</button></div></div>`
 }
 
@@ -1034,6 +1057,17 @@ async function onClick(e: MouseEvent): Promise<void> {
       if (!id || !p) break
       const name = window.prompt('Place name', p.label)
       if (name?.trim() && renamePlace(config, id, name.trim())) afterPlacesChange()
+      break
+    }
+    case 'radius-place': {
+      // ジオフェンス半径(m)。inPlace 表示条件と here(現在地)判定の圏を決める(#43)。
+      const id = t.dataset.place
+      const p = config.places?.find((x) => x.id === id)
+      if (!id || !p) break
+      const cur = String(p.radiusM ?? DEFAULT_PLACE_RADIUS_M)
+      const input = window.prompt('Geofence radius (meters)', cur)
+      const m = input == null ? Number.NaN : Number(input)
+      if (Number.isFinite(m) && setPlaceRadius(config, id, m)) afterPlacesChange()
       break
     }
     case 'delete-place': {
@@ -1389,7 +1423,9 @@ function onSegVisChange(e: Event): void {
         vis.conditions[idx] =
           val === 'threshold'
             ? { kind: 'threshold', op: 'gte', value: 80 }
-            : { kind: 'onChange', holdMs: 5000 }
+            : val === 'inPlace'
+              ? { kind: 'inPlace', placeId: config.places?.[0]?.id ?? '' }
+              : { kind: 'onChange', holdMs: 5000 }
         break
       case 'seg-vis-leaf-op':
         if (leaf.kind === 'threshold') leaf.op = val === 'lte' ? 'lte' : 'gte'
@@ -1399,6 +1435,12 @@ function onSegVisChange(e: Event): void {
         break
       case 'seg-vis-leaf-hold':
         if (leaf.kind === 'onChange') leaf.holdMs = clamp(Number(val), 1, 60) * 1000
+        break
+      case 'seg-vis-leaf-place':
+        if (leaf.kind === 'inPlace') leaf.placeId = val
+        break
+      case 'seg-vis-leaf-side':
+        if (leaf.kind === 'inPlace') leaf.outside = val === 'outside'
         break
       default:
         return

@@ -48,6 +48,7 @@ export function computeVisibleMap(
   statuses: Record<string, StatusDoc | null>,
   prev: VisStates,
   now: number,
+  insidePlaceIds: Set<string> | null = null, // #43 現在ジオフェンス圏内の地点 id 集合。null=位置不明(na)
 ): { map: VisibleMap; states: VisStates; wakeAt: number | null } {
   const map: VisibleMap = new Map()
   const states: VisStates = new Map() // onChange leaf のみ。毎回再構築 → stale キーは自然消滅
@@ -66,6 +67,11 @@ export function computeVisibleMap(
       const key = segKey(ref.sourceId, ref.groupId, sm.id)
       const results: LeafResult[] = cond.conditions.map((leaf, i) => {
         if (leaf.kind === 'threshold') return evalThreshold(leaf, seg)
+        if (leaf.kind === 'inPlace') {
+          if (insidePlaceIds === null) return 'na' // 位置不明 → 中立(fail-open)
+          const inside = insidePlaceIds.has(leaf.placeId)
+          return leaf.outside ? !inside : inside
+        }
         // onChange: leaf 単位で transient 状態を保持
         const lkey = `${key}#${i}`
         const cur = seg.value

@@ -4,7 +4,7 @@
 //
 // 保存地点リストは store が setSavedPlaces で供給する(producer は config を直接参照しない=循環 import 回避)。
 import type { OptionValues, Place } from './config'
-import { PLACES_GROUP_ID } from './config'
+import { DEFAULT_PLACE_RADIUS_M, PLACES_GROUP_ID } from './config'
 import {
   type BearingStyle,
   bearingDeg,
@@ -12,6 +12,7 @@ import {
   formatBearing,
   formatDistance,
   haversineKm,
+  placesInRange,
 } from './geo'
 import type { Group, Segment, SourceState, StatusDoc } from './status-types'
 
@@ -65,19 +66,21 @@ export function computeNav(
 }
 
 // nav item 群から places group の StatusDoc を組む。各保存地点 = 1 segment(既定 ON=ユーザーが明示追加したもの)。
+// hereValue(現在ジオフェンス圏内の地点名 or 'Away', #43)が与えられたら先頭に here segment(既定 OFF)を足す。
 export function buildPlacesDoc(
   items: NavItem[],
+  hereValue: string | undefined,
   ts: number,
   state?: SourceState,
   message?: string,
 ): StatusDoc {
-  const segments: Segment[] = items.map((it) => ({
-    id: it.id,
-    label: it.label,
-    value: it.value,
-    defaultEnabled: true,
-    widthChars: 10,
-  }))
+  const segments: Segment[] = []
+  if (hereValue !== undefined) {
+    segments.push({ id: 'here', label: 'At', value: hereValue, defaultEnabled: false, widthChars: 12 })
+  }
+  for (const it of items) {
+    segments.push({ id: it.id, label: it.label, value: it.value, defaultEnabled: true, widthChars: 10 })
+  }
   const group: Group = { id: PLACES_GROUP_ID, label: 'Places', segments }
   if (state) group.state = state
   if (message) group.message = message
@@ -109,6 +112,21 @@ let lastPos: { lat: number; lon: number; at: number } | null = null
 const FAIL_BACKOFF_MS = 2 * 60_000
 let lastFailAt = 0
 
+// 現在ジオフェンス圏内の地点名(最も近い圏内, #43)。圏外なら 'Away'。here segment value 用。
+function hereLabelFor(places: Place[], pos: { lat: number; lon: number }): string {
+  const id = placesInRange(pos, places, DEFAULT_PLACE_RADIUS_M)[0]?.id
+  const p = id ? places.find((x) => x.id === id) : undefined
+  return p ? asciiFold(p.label) || 'Place' : 'Away'
+}
+
+// ジオフェンス: 現在地が圏内の保存地点 id 集合(#43)。位置不明/stale は null(visibility は fail-open=na)。
+// visibility/runtime が inPlace leaf 評価で読む(places の lastPos を介する=独立した geolocation を増やさない)。
+// 現在地代表 place の preset 自動切替は #43 follow-up(getCurrentPlaceId は実装時に再追加)。
+export function getInsidePlaceIds(): Set<string> | null {
+  if (!lastPos || Date.now() - lastPos.at > STALE_MAX_MS) return null
+  return new Set(placesInRange(lastPos, savedPlaces, DEFAULT_PLACE_RADIUS_M).map((x) => x.id))
+}
+
 // client source の producer。保存地点が無ければ空 group。あれば現在地を取り距離・方位を計算する。
 export async function placesStatus(
   signal: AbortSignal,
@@ -117,24 +135,26 @@ export async function placesStatus(
   const opts = readPlacesOptions(options)
   const now = Date.now()
   const places = savedPlaces
-  if (places.length === 0) return buildPlacesDoc([], now) // 地点未登録: 空 group(companion で追加を促す)
+  if (places.length === 0) return buildPlacesDoc([], undefined, now) // 地点未登録: 空 group
   // 直近失敗の backoff 中は直近位置で計算 or error degrade。
   if (now - lastFailAt < FAIL_BACKOFF_MS && lastPos && now - lastPos.at < STALE_MAX_MS) {
-    return buildPlacesDoc(computeNav(places, lastPos, opts), now, 'stale', 'using last position')
+    const p = lastPos
+    return buildPlacesDoc(computeNav(places, p, opts), hereLabelFor(places, p), now, 'stale', 'using last position')
   }
   try {
     const pos = await getPosition()
     if (signal.aborted) return null
     lastPos = { lat: pos.lat, lon: pos.lon, at: now }
     lastFailAt = 0
-    return buildPlacesDoc(computeNav(places, pos, opts), now)
+    return buildPlacesDoc(computeNav(places, pos, opts), hereLabelFor(places, pos), now)
   } catch (err) {
     if (signal.aborted) return null
     lastFailAt = now
     const msg = err instanceof Error ? err.message : 'location unavailable'
     console.warn(`[places] ${msg}`)
     if (lastPos && now - lastPos.at < STALE_MAX_MS) {
-      return buildPlacesDoc(computeNav(places, lastPos, opts), now, 'stale', 'using last position')
+      const p = lastPos
+      return buildPlacesDoc(computeNav(places, p, opts), hereLabelFor(places, p), now, 'stale', 'using last position')
     }
     const group: Group = {
       id: PLACES_GROUP_ID,
