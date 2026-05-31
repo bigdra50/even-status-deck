@@ -16,6 +16,7 @@ import {
   parseClockFormat,
 } from './builtins'
 import {
+  AIRQUALITY_SOURCE_ID,
   BUILTIN_SOURCE_ID,
   type Config,
   GEOINFO_SOURCE_ID,
@@ -217,9 +218,24 @@ const GEOINFO_OPTION_FIELDS: OptionField[] = [
   },
 ]
 
+// airquality (client.airquality) source 単位の表示オプション (#41)。AQI 規格のみ(両値は同一レスポンス)。
+const AIRQUALITY_OPTION_FIELDS: OptionField[] = [
+  {
+    kind: 'select',
+    id: 'aqiStandard',
+    label: 'AQI standard',
+    choices: [
+      { value: 'us', label: 'US AQI' },
+      { value: 'eu', label: 'EU AQI' },
+    ],
+    default: 'us',
+  },
+]
+
 export function sourceOptionSchema(sourceId: string): OptionField[] {
   if (sourceId === WEATHER_SOURCE_ID) return WEATHER_OPTION_FIELDS
   if (sourceId === GEOINFO_SOURCE_ID) return GEOINFO_OPTION_FIELDS
+  if (sourceId === AIRQUALITY_SOURCE_ID) return AIRQUALITY_OPTION_FIELDS
   return []
 }
 
