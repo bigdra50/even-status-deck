@@ -30,5 +30,11 @@
     }
   },
   "javascript": { "formatter": { "quoteStyle": "single", "semicolons": "asNeeded" } },
-  "assist": { "enabled": true, "actions": { "source": { "organizeImports": "on" } } }
+  "assist": { "enabled": true, "actions": { "source": { "organizeImports": "on" } } },
+  "overrides": [
+    {
+      "includes": ["server/cli/install.ts"],
+      "linter": { "rules": { "style": { "noParameterAssign": "off" } } }
+    }
+  ]
 }
