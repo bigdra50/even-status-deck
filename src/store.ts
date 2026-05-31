@@ -277,6 +277,13 @@ export async function refreshAll(): Promise<void> {
   await Promise.allSettled(defs.map(refreshSource))
 }
 
+// 単一 source を id で再取得する (#36)。表示オプション変更で urls 不変でも再 fetch したいとき companion が呼ぶ。
+// 未知 id は無視。client producer 側の TTL キャッシュは別途無効化が要る (単位変更の即時反映は後続 issue)。
+export function refreshSourceById(id: string): void {
+  const def = defs.find((d) => d.id === id)
+  if (def) void refreshSource(def)
+}
+
 // builtin (時刻/電池) のみ再計算する (clock tick / 電池更新時)。
 export function refreshBuiltins(): void {
   let changed = false

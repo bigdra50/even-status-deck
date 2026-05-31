@@ -63,8 +63,13 @@ export const BUILTIN_SEG_LABELS: Record<string, string> = {
 }
 
 export type SourceKind = 'builtin' | 'server' | 'client'
+// 表示オプション値のバッグ (#36)。キー = OptionField.id、値はプリミティブのみ。
+// 宣言 (OptionField) と解決/書込ロジックは src/options.ts が所有する。config はここに永続型だけ置き、
+// options.ts を import しない (config ↔ options の循環依存を作らない)。
+export type OptionValues = Record<string, string | number | boolean>
 // urls: 複数経路 (LAN / VPN 等。到達順に試行、先頭優先)。MVP では urls を正とし、旧 url? は
 //   後方互換で読み migrate で urls[0] へ正規化する。machineId: 同一マシン判定キー (Phase 3 で採用)。
+// options: source 単位の表示オプション (単位/粒度 等。素材 = 全 profile 共有)。
 export type SourceDef = {
   id: string
   kind: SourceKind
@@ -72,12 +77,19 @@ export type SourceDef = {
   url?: string // 後方互換 (読込専用)。新規書込は urls を使う
   urls: string[]
   machineId?: string
+  options?: OptionValues
 }
 
 // ── 素材 (共有資産) ──
 // metric の素性のみを持つ。format: clock segment の表示フォーマット (例 'HH:mm')、未設定はロケール既定。
 // visibility: 閾値/onChange 表示条件。表示系 (enabled/align 等) は profile.view へ分離する。
-export type SegMeta = { id: string; format?: string; visibility?: VisibilityCond }
+// options: segment 単位の表示オプション (#36。clock は後方互換で format に合成するため options を使わない)。
+export type SegMeta = {
+  id: string
+  format?: string
+  options?: OptionValues
+  visibility?: VisibilityCond
+}
 export type GroupMeta = { segments: SegMeta[] }
 
 export type GAlign = 'top' | 'bottom'
@@ -421,6 +433,7 @@ function migrateV4Same(c: Config): Config {
   delete (c as Record<string, unknown>).batteryRate
   delete (c as Record<string, unknown>).glassHints
   normalizeMetaVisibilityAll(c) // 素材 segment の visibility を複合形式へ正規化
+  normalizeOptionsAll(c) // 素材 segment / source の表示オプションを sanitize (#36)
   for (const p of c.profiles) normalizeProfileView(p)
   migrateMacGroupToSystem(c) // OD-1: server source の system provider group id 'mac' → 'system'
   consolidateClock(c)
@@ -641,6 +654,36 @@ function normalizeVisibility(v: unknown): VisibilityCond | undefined {
   if (o.kind === 'always') return undefined
   const leaf = sanitizeLeaf(o)
   return leaf ? { combinator: 'and', conditions: [leaf] } : undefined
+}
+
+// options バッグを構造的に sanitize する (#36)。プリミティブ (string/number/boolean) 以外の値を落とし、
+// 空なら undefined を返す。未知キー除去・default 適用・clamp は読み取り時 (options.ts の resolveX) が行う
+// ため、ここでは型不正値の除去だけに留める (config は options.ts を import しない)。
+function normalizeOptionsBag(bag: unknown): OptionValues | undefined {
+  if (!bag || typeof bag !== 'object') return undefined
+  const out: OptionValues = {}
+  for (const [k, v] of Object.entries(bag as Record<string, unknown>)) {
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') out[k] = v
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+// 全 source / 素材 segment の options バッグを sanitize する (壊れた options でクラッシュさせない)。
+function normalizeOptionsAll(c: Config): void {
+  for (const s of c.sources) {
+    const next = normalizeOptionsBag(s.options)
+    if (next) s.options = next
+    else delete s.options
+  }
+  for (const groups of Object.values(c.groups ?? {})) {
+    for (const meta of Object.values(groups)) {
+      for (const sm of meta.segments) {
+        const next = normalizeOptionsBag(sm.options)
+        if (next) sm.options = next
+        else delete sm.options
+      }
+    }
+  }
 }
 
 // 素材側 segment の visibility を正規化する (素材は profile 非依存)。
