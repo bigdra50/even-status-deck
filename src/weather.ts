@@ -215,22 +215,28 @@ function round5(n: number): number {
 }
 
 // 降水スロット列 →「次の降雨/降り止み/Dry」ラベル(ASCII)。wetMm 以上を降水とみなす。
-// granularity で時刻粒度(~Nm / ~Nh)を切替。スロットが無ければ undefined(segment を出さない)。
+// 「現在」= 直近の過去スロット(あれば)、無ければ最初の未来スロット。ETA は未来スロットのみ使う
+// (過去スロットを ETA に混入させない)。未来予報が無ければ undefined(segment を出さない)。
+// 時刻粒度: hourly か、minutely でも 60 分以上は ~Nh(widthChars=10 に収めるため。例 "Stops ~24h"=10)。
 export function rainNowcastLabel(
   slots: PrecipSlot[],
   wetMm: number,
   granularity: 'minutely' | 'hourly',
 ): string | undefined {
-  if (!slots.length) return undefined
+  const sorted = [...slots].sort((a, b) => a.min - b.min)
+  const future = sorted.filter((s) => s.min >= 0)
+  if (!future.length) return undefined
+  const past = sorted.filter((s) => s.min < 0)
+  const current = past.length ? past[past.length - 1] : future[0]
   const eta = (min: number): string =>
-    granularity === 'hourly' ? `~${Math.max(1, Math.round(min / 60))}h` : `~${round5(min)}m`
-  // 現在を覆うスロット = min が 0 に最も近いもの。
-  const cur = slots.reduce((a, b) => (Math.abs(b.min) < Math.abs(a.min) ? b : a))
-  if (cur.precip >= wetMm) {
-    const dry = slots.find((s) => s.min > cur.min && s.precip < wetMm)
+    granularity === 'hourly' || min >= 60
+      ? `~${Math.max(1, Math.round(min / 60))}h`
+      : `~${round5(min)}m`
+  if (current.precip >= wetMm) {
+    const dry = future.find((s) => s.precip < wetMm)
     return dry ? `Stops ${eta(dry.min)}` : 'Rain' // 窓内に止む予報なし=降り続く
   }
-  const wet = slots.find((s) => s.min >= 0 && s.precip >= wetMm)
+  const wet = future.find((s) => s.precip >= wetMm)
   return wet ? `Rain ${eta(wet.min)}` : 'Dry'
 }
 
@@ -517,8 +523,10 @@ function firstString(v: unknown): string | undefined {
 }
 
 // open-meteo の時刻 ISO 配列 + precip/prob 配列を相対分スロット列へ。
-// Date.parse は現地時刻 ISO(timezone=auto)= 端末 TZ 前提(weather 既存の前提と同じ)。欠落点は除外。
-function buildPrecipSlots(
+// Date.parse は現地時刻 ISO(timezone=auto)= 端末 TZ 前提(weather 既存の前提と同じ)。
+// precip が finite number でない点(配列長不一致・null 欠落含む)は除外する。0 扱いにすると
+// データ欠落が「乾燥予報」に化けて Stops/Dry/precip1h を過小評価するため。prob 欠落は副次なので 0。
+export function buildPrecipSlots(
   times: unknown,
   precip: unknown,
   prob: unknown,
@@ -532,9 +540,11 @@ function buildPrecipSlots(
     if (typeof t !== 'string') continue
     const ms = Date.parse(t)
     if (Number.isNaN(ms)) continue
+    const p = num(precip[i])
+    if (p === undefined) continue // precip 欠落点は除外(乾燥扱いにしない)
     out.push({
       min: Math.round((ms - nowMs) / 60_000),
-      precip: num(precip[i]) ?? 0,
+      precip: p,
       prob: num(probArr[i]) ?? 0,
     })
   }

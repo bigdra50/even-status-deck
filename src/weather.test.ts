@@ -2,6 +2,7 @@
 // 実行: bun test src/weather.test.ts
 import { expect, test } from 'bun:test'
 import {
+  buildPrecipSlots,
   buildWeatherDoc,
   DEFAULT_WEATHER_OPTIONS,
   formatDayLength,
@@ -224,6 +225,44 @@ test('rainNowcastLabel: 降水中は止む時刻を Stops ~Nm で出す', () => 
     { min: 30, precip: 0, prob: 20 }, // ここで止む
   ]
   expect(rainNowcastLabel(slots, 0.1, 'minutely')).toBe('Stops ~30m')
+})
+
+test('rainNowcastLabel: 過去スロットは現在判定に使うが ETA には混入しない', () => {
+  // 直近の過去スロットが降水中 → 未来の dry スロットで Stops。過去スロットは ETA に出ない。
+  const stops: PrecipSlot[] = [
+    { min: -5, precip: 0.8, prob: 90 }, // 直近過去=降水中
+    { min: 25, precip: 0, prob: 20 }, // 未来=止む
+  ]
+  expect(rainNowcastLabel(stops, 0.1, 'minutely')).toBe('Stops ~25m')
+  // 未来スロットが無ければ(全過去)nowcast を出さない。
+  expect(rainNowcastLabel([{ min: -15, precip: 1, prob: 90 }], 0.1, 'minutely')).toBeUndefined()
+})
+
+test('rainNowcastLabel: minutely でも 60 分以上は ~Nh(widthChars=10 に収める)', () => {
+  const slots: PrecipSlot[] = [
+    { min: 0, precip: 0, prob: 0 },
+    { min: 120, precip: 0.5, prob: 60 },
+  ]
+  expect(rainNowcastLabel(slots, 0.1, 'minutely')).toBe('Rain ~2h')
+  // "Stops ~24h" = 10 桁(widthChars=10 上限)に収まることを確認。
+  const stops: PrecipSlot[] = [
+    { min: -5, precip: 1, prob: 99 },
+    { min: 1440, precip: 0, prob: 0 },
+  ]
+  expect((rainNowcastLabel(stops, 0.1, 'minutely') ?? '').length).toBeLessThanOrEqual(10)
+})
+
+test('buildPrecipSlots: precip 欠落点を除外する(配列長不一致でも乾燥化しない)', () => {
+  const now = 1_700_000_000_000
+  const iso = (mins: number): string => new Date(now + mins * 60_000).toISOString().slice(0, 16) // "YYYY-MM-DDTHH:mm"
+  // time 3 点・precip 2 点(3 点目欠落)・prob 1 点。precip 欠落点は出力されない。
+  const slots = buildPrecipSlots([iso(0), iso(15), iso(30)], [0.2, 0.4], [50], now)
+  expect(slots).toHaveLength(2)
+  expect(slots[0].precip).toBe(0.2)
+  expect(slots[1].precip).toBe(0.4)
+  expect(slots[1].prob).toBe(0) // prob 欠落は 0
+  // precip が配列でない/null は空配列。
+  expect(buildPrecipSlots([iso(0)], null, null, now)).toEqual([])
 })
 
 test('rainNowcastLabel: 当面降水なしは Dry、降り続くなら Rain', () => {
