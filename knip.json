@@ -1,18 +1,16 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
-    "src/main.ts",
     "index.html",
-    "server/index.ts",
-    "server/vite-plugin.ts",
     "server/providers/*.ts",
-    "scripts/build-server.mjs",
-    "scripts/upload.mjs",
-    "vite.config.ts",
-    "playwright.config.ts",
+    "src/visibility/index.ts",
+    "src/imu/index.ts",
+    "src/battery/index.ts",
     "e2e/**/*.spec.ts",
     "**/*.test.ts"
   ],
   "project": ["src/**/*.ts", "server/**/*.ts", "e2e/**/*.ts", "scripts/**/*.mjs"],
-  "ignoreBinaries": ["evenhub", "evenhub-simulator", "ipconfig"]
+  "ignoreBinaries": ["evenhub", "evenhub-simulator", "ipconfig"],
+  "ignoreExportsUsedInFile": true,
+  "tags": ["-public"]
 }
