@@ -1,8 +1,8 @@
 import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
-import { MAX_ROWS } from './glass-render'
+import { MAX_ROWS } from './glass-types'
 import { defaultImuConfig, type ImuConfig } from './imu'
 import type { StatusDoc } from './status-types'
-import { segKey, type VisibilityCond, type VisibilityLeaf } from './visibility'
+import { segKey, type VisibilityCond, type VisibilityLeaf } from './visibility/keys'
 
 // 設定 (v4): 素材 (sources / groups) とレシピ (profiles) の 2 層構成。
 // 素材 = 接続先と metric の素性 (存在・format・閾値条件) を状況に依らず 1 つだけ持つ。

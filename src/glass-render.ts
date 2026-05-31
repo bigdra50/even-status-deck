@@ -13,6 +13,7 @@ import {
   LABEL_SEG,
   type ViewGroup,
 } from './config'
+import { MAX_ROWS } from './glass-types'
 import { sanitizeGlyphs } from './glyphs'
 import type { Group, StatusDoc } from './status-types'
 import { isVisible, segKey, type VisibleMap } from './visibility'
@@ -28,8 +29,8 @@ export type GlassData = {
   statuses: Record<string, StatusDoc | null>
 }
 
-// 288px / line-height 27px ≒ 10 行。glass の表示可能行数 (companion の行数上限にも使う)。
-export const MAX_ROWS = 10
+// MAX_ROWS は glass-types.ts へ分離 (config との循環回避)。既存 import 互換のため再エクスポートする。
+export { MAX_ROWS } from './glass-types'
 
 // G2 ディスプレイ寸法と TextContainer padding (glass.ts の TextContainerProperty と一致させる)。
 // 右クラスタの justify (右寄せ) は INNER_W の中で行う。

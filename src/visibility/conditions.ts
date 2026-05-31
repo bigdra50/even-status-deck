@@ -4,28 +4,19 @@
 // 呼び出し側 (runtime shell) が保持し、ここは pure に受け渡す。config / status-types は型のみ参照。
 import { activeView, type Config } from '../config'
 import type { Segment, StatusDoc } from '../status-types'
-
-// leaf = 条件の最小単位。threshold は seg.percent を比較、onChange は seg.value 変化で holdMs 表示。
-export type VisibilityLeaf =
-  | { kind: 'threshold'; op: 'lte' | 'gte'; value: number }
-  | { kind: 'onChange'; holdMs: number }
-
-// 複合条件: leaf 列を単一 combinator(and/or) で結合。conditions 空 = 常時表示。
-export type VisibilityCond = { combinator: 'and' | 'or'; conditions: VisibilityLeaf[] }
-
-export type VisibleMap = Map<string, boolean> // key = "sourceId|groupId|segId"
-export type OnChangeState = { prevValue: string; activeUntil: number }
-export type VisStates = Map<string, OnChangeState> // key = `${segKey}#${leafIndex}`。onChange leaf のみ保持
+import {
+  segKey,
+  type VisibilityCond,
+  type VisibilityLeaf,
+  type VisibleMap,
+  type VisStates,
+} from './keys'
 
 // tri-state: 評価不能 ('na') は combine で中立扱いし fail-open を成立させる。
 type LeafResult = boolean | 'na'
 
 export function defaultVisibilityCond(): VisibilityCond {
   return { combinator: 'and', conditions: [] }
-}
-
-export function segKey(sourceId: string, groupId: string, segId: string): string {
-  return `${sourceId}|${groupId}|${segId}`
 }
 
 // threshold leaf を pure 評価する。percent 無しは 'na' (評価不能 → combine で中立)。
