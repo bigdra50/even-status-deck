@@ -1,0 +1,32 @@
+name: Pack
+
+# .ehpk を CI でビルドして artifact 化する（再現性のある成果物の取得が目的）。
+# Even Hub への Add build（upload）は CI では行わない。認証情報を CI に置かないため、
+# artifact をダウンロードしてローカルで `npm run upload` する運用とする。
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Pack .ehpk
+        run: bun run pack
+      - name: Read app.json version
+        id: meta
+        run: echo "version=$(jq -r .version app.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: status-deck-${{ steps.meta.outputs.version }}-ehpk
+          path: status-deck.ehpk
+          if-no-files-found: error
+          retention-days: 14
