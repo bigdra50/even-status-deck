@@ -429,7 +429,8 @@ type OldMachine = {
   sources?: Record<string, { enabled?: boolean; expanded?: boolean; metrics?: OldSegCfg[] }>
 }
 
-function migrate(parsed: Record<string, unknown>): Config {
+// 任意 version の生 config を v4 へ移行する。export は単体テスト用(loadConfig は bridge 依存で叩けない)。
+export function migrate(parsed: Record<string, unknown>): Config {
   if (parsed.version === CONFIG_VERSION) return migrateV4Same(parsed as unknown as Config)
   if (parsed.version === 3) return migrateV3ToV4(parsed as unknown as V3Config)
   return migrateLegacyToV4(parsed)
@@ -563,8 +564,9 @@ function migrateV3ToV4(old: V3Config): Config {
   view.groupOrder = [...(old.groupOrder ?? [])]
   const lay = normalizeGlassLayout(old.glassLayout)
   if (lay) view.glassLayout = lay
-  // 全 source を Default の enabledSourceIds に含める (見た目不変 = v3 は全集約)。
-  def.enabledSourceIds = cfg.sources.map((s) => s.id)
+  // 旧 source を Default の enabledSourceIds に集約する(v3 の見た目を維持)。ただし client source
+  // (weather/geoinfo 等)は opt-in なので既定 ON にしない(さもないと旧 config の升級で位置許可/外部 fetch が走る)。
+  def.enabledSourceIds = cfg.sources.filter((s) => s.kind !== 'client').map((s) => s.id)
   // builtin が先頭に来るよう ensureBuiltin を再適用 (順序 + enabledSourceIds)。
   ensureBuiltin(cfg)
   ensureClientWeather(cfg)
@@ -631,7 +633,9 @@ function migrateLegacyToV4(parsed: Record<string, unknown>): Config {
     splitGroupsInto(cfg, view, id, groups)
     for (const gid of mc.sourceOrder ?? []) view.groupOrder.push({ sourceId: id, groupId: gid })
   }
-  def.enabledSourceIds = cfg.sources.map((s) => s.id)
+  // client source(weather/geoinfo 等)は opt-in なので既定 ON にしない。移行で見た目を変えない対象は
+  // builtin + 旧ユーザー source(server)のみ。さもないと旧 config の升級で位置許可/外部 fetch が走る。
+  def.enabledSourceIds = cfg.sources.filter((s) => s.kind !== 'client').map((s) => s.id)
   ensureBuiltin(cfg)
   ensureClientWeather(cfg)
   ensureClientGeoinfo(cfg)
