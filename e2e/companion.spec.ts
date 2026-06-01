@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { attachConsoleErrors, key, MACHINE, STATUS } from './fixtures'
+import { attachConsoleErrors, key, MACHINE, openSourceDetail, SERVER_ID, STATUS } from './fixtures'
 
 // caret と name の両方に data-action="expand" が付くため caret に限定する。
 const expandBtn = (p: Page, groupId: string) =>
@@ -9,8 +9,11 @@ const metrics = (p: Page, groupId: string) => p.locator(`.src-metrics[data-key="
 // 並べ替え (SortableJS) をマウスで実行する。delayOnTouchOnly:true なのでマウスは遅延なしで
 // drag 開始する。SortableJS が反応するよう途中に複数の mousemove を挟む。
 async function dragGroupBelow(p: Page, fromGroupId: string, toGroupId: string): Promise<void> {
-  const grip = p.locator(`.src[data-key="${key(fromGroupId)}"] .src-grip`)
-  const target = p.locator(`.src[data-key="${key(toGroupId)}"]`)
+  const grip = p.locator(`#source-list .src[data-key="${key(fromGroupId)}"] .src-grip`)
+  const target = p.locator(`#source-list .src[data-key="${key(toGroupId)}"]`)
+  // 新 IA: #source-list (auto 順序エディタ) は Glass セクション内で fold より下に来るため、
+  // mouse 座標が viewport 外だと当たらない。drag 前に view へ送る (旧 IA は上部にあり不要だった)。
+  await target.scrollIntoViewIfNeeded()
   const fb = await grip.boundingBox()
   const tb = await target.boundingBox()
   if (!fb || !tb) throw new Error('bounding box not found')
@@ -45,7 +48,10 @@ test('mounts and renders server groups + glass preview', async ({ page }) => {
   await expect(page.locator('.gpv-screen')).toBeVisible()
 })
 
+// 新 IA: group の expand/segment トグルは Home の flat リストではなく Source Detail に集約された。
+// 各テストはまず該当 source の Detail へ遷移する。
 test('expand shows metrics, collapse hides them', async ({ page }) => {
+  await openSourceDetail(page, SERVER_ID)
   await expect(metrics(page, 'cpu')).toHaveCount(0)
   await expandBtn(page, 'cpu').click()
   await expect(metrics(page, 'cpu')).toBeVisible()
@@ -55,6 +61,7 @@ test('expand shows metrics, collapse hides them', async ({ page }) => {
 })
 
 test('segment toggle flips immediately (non-blocking render)', async ({ page }) => {
+  await openSourceDetail(page, SERVER_ID)
   await expandBtn(page, 'cpu').click()
   const seg = page.locator(`[data-action="toggle-seg"][data-key="${key('cpu')}"][data-seg="usage"]`)
   const wasOn = await seg.evaluate((el) => el.classList.contains('on'))
@@ -64,6 +71,7 @@ test('segment toggle flips immediately (non-blocking render)', async ({ page }) 
 })
 
 test('rapid toggles stay consistent and error-free', async ({ page }) => {
+  await openSourceDetail(page, SERVER_ID)
   await expandBtn(page, 'cpu').click()
   const seg = page.locator(`[data-action="toggle-seg"][data-key="${key('cpu')}"][data-seg="usage"]`)
   const start = await seg.evaluate((el) => el.classList.contains('on'))
@@ -73,6 +81,7 @@ test('rapid toggles stay consistent and error-free', async ({ page }) => {
 })
 
 test('toggling dispatches config-changed (save path intact)', async ({ page }) => {
+  await openSourceDetail(page, SERVER_ID)
   await page.evaluate(() => {
     ;(window as unknown as { __cfg: number }).__cfg = 0
     window.addEventListener('toolbar:config-changed', () => {
@@ -86,6 +95,7 @@ test('toggling dispatches config-changed (save path intact)', async ({ page }) =
 })
 
 test('grips keep touch-action pan-y (scroll-fix regression guard)', async ({ page }) => {
+  await openSourceDetail(page, SERVER_ID)
   await expandBtn(page, 'cpu').click()
   const srcGripTA = await page
     .locator('.src-grip')
@@ -119,28 +129,20 @@ test('group reorder via grip drag still works (touch-action does not break drag)
     .toBe(true)
 })
 
-// スクロール不能不具合の layout 回帰ガード。タッチ固有の SortableJS 干渉は desktop では
-// 再現できないため、ここでは「全項目展開時に最下部の glass preview まで到達できる」
-// レイアウト健全性のみを保証する (タッチ挙動の最終確認は実機 A/B)。
+// スクロール不能不具合の layout 回帰ガード。新 IA では Home の flat 展開リストは廃止され、
+// Source カード + Places + Glass プレビュー + auto 順序リスト + dbg console で縦に伸びる。
+// 「Home がスクロール可能で最下部付近の glass preview に到達できる」健全性のみ保証する
+// (タッチ挙動の最終確認は実機 A/B)。
 test.describe('scrollability', () => {
   test.use({ viewport: { width: 390, height: 600 } })
 
-  test('glass preview is reachable at the bottom with all items expanded', async ({ page }) => {
-    const keys = await page
-      .locator('#source-list > .src')
-      .evaluateAll((els) => els.map((e) => e.getAttribute('data-key')).filter(Boolean) as string[])
-    for (const k of keys) {
-      await page.locator(`.src-caret[data-action="expand"][data-key="${k}"]`).click()
-    }
+  test('glass preview is reachable by scrolling on Home', async ({ page }) => {
     const overflows = await page.evaluate(
       () => document.documentElement.scrollHeight > window.innerHeight,
     )
-    expect(overflows, 'content should overflow the viewport when all expanded').toBe(true)
-    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
-    const box = await page.locator('.gpv-screen').boundingBox()
-    const vh = page.viewportSize()?.height ?? 0
-    expect(box).not.toBeNull()
-    // 最下部までスクロールしたとき glass preview の上端が viewport 内に入る = 到達可能。
-    expect(box?.y ?? Number.POSITIVE_INFINITY).toBeLessThan(vh)
+    expect(overflows, 'Home should overflow the viewport (scrollable)').toBe(true)
+    // glass preview までスクロールして到達できる = レイアウトが見切れない。
+    await page.locator('.gpv-screen').scrollIntoViewIfNeeded()
+    await expect(page.locator('.gpv-screen')).toBeVisible()
   })
 })

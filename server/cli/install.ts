@@ -1,11 +1,12 @@
 // JS provider の install / update / remove (管理 Phase 3)。
-// セキュリティの要: DL したリモートコードを**実行せず**静的に manifest を読む (id / risk)。
-// HTTPS 強制、出力サイズ上限、sha256、同一 dir staging → atomic rename、risk 承認、ledger 記録。
+// セキュリティの要: DL したリモートコードを**実行せず**静的に manifest を読む (id / name 等のメタ)。
+// HTTPS 強制、出力サイズ上限、sha256、同一 dir staging → atomic rename、ledger 記録。
+// リスク開示は provider の README に委ねる (risk タグ + 承認ゲートは廃止)。
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { loadLedger, PROVIDER_DIR } from '../config.ts'
-import type { LedgerEntryJs, LedgerEntrySubprocess, RiskTag } from '../types.ts'
+import type { LedgerEntryJs, LedgerEntrySubprocess } from '../types.ts'
 import {
   appendSection,
   hasSection,
@@ -15,13 +16,21 @@ import {
 } from './config-writer.ts'
 import { updateLedger } from './ledger.ts'
 
-const RISK_TAGS: readonly RiskTag[] = ['unofficial-api', 'terms-risk', 'account-limitation-risk']
 const ID_RE = /^[A-Za-z0-9_-]+$/
 const BUILTIN_IDS = new Set(['claude-code', 'codex', 'system'])
 const MAX_PROVIDER_BYTES = 512 * 1024
 const DEFAULT_SUBPROCESS_TIMEOUT_MS = 1000
 const DEFAULT_SUBPROCESS_TTL_MS = 30_000
 type Ext = 'ts' | 'mjs' | 'js'
+
+// 静的に読む manifest メタ (group 関数は実行しないので含まない)。
+type ParsedManifest = {
+  id: string
+  name: string | null
+  description: string | null
+  author: string | null
+  version: string | null
+}
 
 // ファイルを読んで sha256 を返す。読めなければ null (bare command 等)。drift / check-updates 用。
 export async function fileSha(path: string): Promise<string | null> {
@@ -30,10 +39,6 @@ export async function fileSha(path: string): Promise<string | null> {
   } catch {
     return null
   }
-}
-
-function isRiskTag(s: string): s is RiskTag {
-  return (RISK_TAGS as readonly string[]).includes(s)
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -47,9 +52,10 @@ function deriveExt(source: string): Ext {
 }
 
 // --- 静的 manifest 解析 (コードを実行しない) ----------------------------------------
-// `export default { ... }` の object literal を探し、トップレベル (depth 1) の id/risk/version
-// だけを抽出する。文字列・コメントはスキップし、group 関数の return 内の id などは拾わない。
-// object 以外 (function / 動的 call) は null = reject (OD-C)。完全な JS パーサではなく heuristic。
+// `export default { ... }` の object literal を探し、トップレベル (depth 1) の文字列キー
+// (id/name/description/author/version) だけを抽出する。文字列・コメントはスキップし、
+// group 関数の return 内の id 等は拾わない。object 以外 (function / 動的 call) は null = reject (OD-C)。
+// 完全な JS パーサではなく heuristic。
 function skipString(src: string, i: number): number {
   const q = src[i]
   i++
@@ -65,29 +71,10 @@ function skipString(src: string, i: number): number {
   return src.length
 }
 
-// src[i] === '[' から matching ] までの中身を返す (文字列内の括弧はスキップ)。無ければ null。
-function readArrayLiteral(src: string, i: number): string | null {
-  const start = i
-  let depth = 0
-  while (i < src.length) {
-    const c = src[i]
-    if (c === '"' || c === "'" || c === '`') {
-      i = skipString(src, i)
-      continue
-    }
-    if (c === '[') depth++
-    else if (c === ']') {
-      depth--
-      if (depth === 0) return src.slice(start + 1, i)
-    }
-    i++
-  }
-  return null
-}
+// 静的抽出する文字列キー (値が quoted string のもの)。group 等の関数値は対象外。
+const MANIFEST_STRING_KEYS = new Set(['id', 'name', 'description', 'author', 'version'])
 
-export function parseManifestStatic(
-  src: string,
-): { id: string; risk: RiskTag[]; version: string | null } | null {
+export function parseManifestStatic(src: string): ParsedManifest | null {
   const n = src.length
   // 1. 文字列/コメントを飛ばしつつ `export` `default` `{` の並びを探す。
   let i = 0
@@ -155,13 +142,9 @@ export function parseManifestStatic(
         const key = km[1] as string
         let vi = i + km[0].length
         while (vi < n && /\s/.test(src[vi] ?? '')) vi++
-        if (key === 'id' || key === 'version') {
+        if (MANIFEST_STRING_KEYS.has(key)) {
           const sm = /^(['"])((?:\\.|(?!\1).)*)\1/.exec(src.slice(vi))
           if (sm?.[2] !== undefined) fields.set(key, sm[2])
-        } else if (key === 'risk' && src[vi] === '[') {
-          // 文字列対応の配列スキャン (文字列内の ] で途切れさせない → risk タグ隠蔽を防ぐ)。
-          const arr = readArrayLiteral(src, vi)
-          if (arr !== null) fields.set('risk', arr)
         }
         i = vi // 値は次の反復で文字列/括弧として自然にスキップされる
         continue
@@ -172,10 +155,13 @@ export function parseManifestStatic(
 
   const id = fields.get('id')
   if (!id) return null // id を静的に読めない → reject
-  const risk = [...(fields.get('risk') ?? '').matchAll(/['"]([^'"]+)['"]/g)]
-    .map((m) => m[1] as string)
-    .filter(isRiskTag)
-  return { id, risk, version: fields.get('version') ?? null }
+  return {
+    id,
+    name: fields.get('name') ?? null,
+    description: fields.get('description') ?? null,
+    author: fields.get('author') ?? null,
+    version: fields.get('version') ?? null,
+  }
 }
 
 // --- DL / 検査 ------------------------------------------------------------------------
@@ -212,20 +198,8 @@ async function commit(id: string, ext: Ext, bytes: Uint8Array): Promise<void> {
   }
 }
 
-function checkRisk(risk: RiskTag[], accepted: RiskTag[]): void {
-  const unaccepted = risk.filter((r) => !accepted.includes(r))
-  if (unaccepted.length) {
-    throw new Error(
-      `このプロバイダは risk: ${risk.join(', ')} を宣言しています。承認するには --accept-risk ${unaccepted.join(',')} を付けてください`,
-    )
-  }
-}
-
 // --- add-js ---------------------------------------------------------------------------
-export async function addJs(
-  source: string,
-  opts: { acceptRisk: RiskTag[]; force: boolean },
-): Promise<void> {
+export async function addJs(source: string, opts: { force: boolean }): Promise<void> {
   const { bytes, ext, etag } = await fetchSource(source)
   if (ext === 'ts') {
     console.warn(
@@ -239,7 +213,7 @@ export async function addJs(
       'manifest を静的に読めません。`export default { id: "..." , group }` 形式が必要です (動的 manifest は非対応)',
     )
   }
-  const { id, risk, version } = manifest
+  const { id, name, description, author, version } = manifest
   if (!ID_RE.test(id)) throw new Error(`manifest id '${id}' が不正です ([A-Za-z0-9_-] のみ)`)
 
   const ledger = await loadLedger()
@@ -254,8 +228,6 @@ export async function addJs(
     console.log(`${id}: already installed (同一 sha256)`)
     return // 冪等
   }
-  // risk を先に確認 (--force より前) し、両方必要なら 1 回で分かるようにする。
-  checkRisk(risk, opts.acceptRisk)
   if (existing && !opts.force) {
     throw new Error(`${id} は既にインストール済みです。置き換えるには --force`)
   }
@@ -270,8 +242,9 @@ export async function addJs(
     etag,
     installedVersion: version,
     installedAt: new Date().toISOString(),
-    risk,
-    acceptedRisks: opts.acceptRisk.filter((r) => risk.includes(r)),
+    ...(name ? { name } : {}),
+    ...(description ? { description } : {}),
+    ...(author ? { author } : {}),
     enabled: true,
     ext,
   }
@@ -284,11 +257,8 @@ export async function addJs(
 }
 
 // --- update ---------------------------------------------------------------------------
-// 戻り値: 'updated' | 'uptodate' | 'risk' (新 risk 未承認で skip)。
-export async function updateJs(
-  id: string,
-  opts: { acceptRisk: RiskTag[] },
-): Promise<'updated' | 'uptodate' | 'risk'> {
+// 戻り値: 'updated' | 'uptodate'。
+export async function updateJs(id: string): Promise<'updated' | 'uptodate'> {
   const ledger = await loadLedger()
   const entry = ledger.providers[id]
   if (entry?.kind !== 'js') throw new Error(`${id} は managed な JS provider ではありません`)
@@ -303,12 +273,6 @@ export async function updateJs(
   if (manifest.id !== id)
     throw new Error(`${id}: 更新先の manifest id (${manifest.id}) が一致しません`)
 
-  // 新しく増えた risk タグだけ再承認を要求する。
-  const newRisks = manifest.risk.filter(
-    (r) => !entry.acceptedRisks.includes(r) && !opts.acceptRisk.includes(r),
-  )
-  if (newRisks.length) return 'risk'
-
   await commit(id, ext, bytes)
   await updateLedger((l) => {
     const e = l.providers[id]
@@ -317,10 +281,13 @@ export async function updateJs(
       e.etag = etag
       e.installedVersion = manifest.version
       e.installedAt = new Date().toISOString()
-      e.risk = manifest.risk
-      e.acceptedRisks = [...new Set([...e.acceptedRisks, ...opts.acceptRisk])].filter((r) =>
-        manifest.risk.includes(r),
-      )
+      // manifest 由来メタを更新 (空なら消す)。
+      if (manifest.name) e.name = manifest.name
+      else delete e.name
+      if (manifest.description) e.description = manifest.description
+      else delete e.description
+      if (manifest.author) e.author = manifest.author
+      else delete e.author
       e.ext = ext
     }
   })
@@ -362,12 +329,11 @@ export async function removeProvider(id: string, keepFile: boolean): Promise<voi
 
 // --- add-subprocess -------------------------------------------------------------------
 // subprocess provider を ledger に登録する (config 注入は loadServerConfig の merge が担う)。
-// risk は manifest が無いので --accept-risk でユーザーが自己申告 (宣言 = 承認)。
 export async function addSubprocess(
   id: string,
   command: string,
   args: string[],
-  opts: { timeoutMs?: number; ttlMs?: number; acceptRisk: RiskTag[]; force: boolean },
+  opts: { timeoutMs?: number; ttlMs?: number; force: boolean },
 ): Promise<void> {
   if (!ID_RE.test(id)) throw new Error(`id '${id}' が不正です ([A-Za-z0-9_-] のみ)`)
   // bare (PATH 解決) か絶対パスのみ許可。cwd 相対は拒否 (subprocess.ts と同方針)。
@@ -396,8 +362,6 @@ export async function addSubprocess(
     ttlMs: opts.ttlMs ?? DEFAULT_SUBPROCESS_TTL_MS,
     installedSha256: isAbsolute(command) ? await fileSha(command) : null,
     installedAt: new Date().toISOString(),
-    risk: opts.acceptRisk,
-    acceptedRisks: opts.acceptRisk,
     enabled: true,
   }
   await updateLedger((l) => {

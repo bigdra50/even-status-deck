@@ -6,19 +6,32 @@ import {
   activeProfile,
   addPlace,
   addProfile,
+  addServer,
+  BUILTIN_SOURCE_ID,
   DEFAULT_PLACE_RADIUS_M,
   emptyConfig,
-  GEOINFO_SOURCE_ID,
+  LOCATION_PLACE_GROUP_ID,
+  LOCATION_SOURCE_ID,
   migrate,
-  PLACES_GROUP_ID,
-  PLACES_SOURCE_ID,
   removePlace,
   renamePlace,
   setPlaceRadius,
   setProfileGeofence,
+  syncSourceWithStatus,
   updatePlaceLocation,
-  WEATHER_SOURCE_ID,
 } from './config'
+import type { StatusDoc } from './status-types'
+
+// 表示モデル Phase1 用の最小 StatusDoc ビルダ (g2 group の segment を渡す)。
+function g2Doc(segIds: string[]): StatusDoc {
+  return {
+    version: 1,
+    ts: 0,
+    groups: [
+      { id: 'g2', label: '', segments: segIds.map((id) => ({ id, label: '', value: 'x' })) },
+    ],
+  }
+}
 
 test('setProfileGeofence: bind/解除 + 不正 place は外す (#43)', () => {
   const cfg = emptyConfig()
@@ -61,14 +74,12 @@ test('migrate(v3): client source は enabledSourceIds に入れない(opt-in 維
     groupOrder: [],
   }
   const cfg = migrate(v3 as unknown as Record<string, unknown>)
-  // weather/geoinfo source は素材としては存在する(Add source で出せる)
-  expect(cfg.sources.some((s) => s.id === WEATHER_SOURCE_ID)).toBe(true)
-  expect(cfg.sources.some((s) => s.id === GEOINFO_SOURCE_ID)).toBe(true)
-  // が、Default profile では有効化されない(server.a は有効、client は無効)
+  // 統合 client.location source は素材としては存在する(Add source で出せる)
+  expect(cfg.sources.some((s) => s.id === LOCATION_SOURCE_ID)).toBe(true)
+  // が、Default profile では有効化されない(server.a は有効、client は無効=opt-in)
   const enabled = activeProfile(cfg).enabledSourceIds
   expect(enabled).toContain('server.a')
-  expect(enabled).not.toContain(WEATHER_SOURCE_ID)
-  expect(enabled).not.toContain(GEOINFO_SOURCE_ID)
+  expect(enabled).not.toContain(LOCATION_SOURCE_ID)
 })
 
 test('migrate(legacy v1/v2): client source は enabledSourceIds に入れない', () => {
@@ -80,8 +91,157 @@ test('migrate(legacy v1/v2): client source は enabledSourceIds に入れない'
   const cfg = migrate(legacy as unknown as Record<string, unknown>)
   const enabled = activeProfile(cfg).enabledSourceIds
   expect(enabled).toContain('server.box1')
-  expect(enabled).not.toContain(WEATHER_SOURCE_ID)
-  expect(enabled).not.toContain(GEOINFO_SOURCE_ID)
+  expect(enabled).not.toContain(LOCATION_SOURCE_ID)
+})
+
+// ── 位置 source 統合 migration (旧 5 source → client.location 2 group) ──
+// 旧 v4 構成(weather/airquality/geocode/geoinfo/places が別 source)を 1 source 2 group へ畳む。
+function legacyLocationV4(): Record<string, unknown> {
+  return {
+    version: 4,
+    sources: [
+      { id: 'builtin.local', kind: 'builtin', label: 'Device', urls: [] },
+      { id: 'server.a', kind: 'server', label: 'A', urls: ['http://a.local/api/status'] },
+      {
+        id: 'client.weather',
+        kind: 'client',
+        label: 'Weather',
+        urls: [],
+        options: { tempUnit: 'F' },
+      },
+      { id: 'client.airquality', kind: 'client', label: 'Air', urls: [] },
+      { id: 'client.geocode', kind: 'client', label: 'Place', urls: [] },
+      {
+        id: 'client.geoinfo',
+        kind: 'client',
+        label: 'Location',
+        urls: [],
+        options: { elevUnit: 'ft' },
+      },
+      { id: 'client.places', kind: 'client', label: 'Places', urls: [] },
+    ],
+    groups: {
+      'client.weather': { weather: { segments: [{ id: 'temp' }, { id: 'cond' }] } },
+      'client.airquality': { airquality: { segments: [{ id: 'aqi' }, { id: 'pm25' }] } },
+      'client.geocode': { geocode: { segments: [{ id: 'city' }] } },
+      'client.geoinfo': { geoinfo: { segments: [{ id: 'elev' }] } },
+      'client.places': { nav: { segments: [{ id: 'here' }, { id: 'pl_x' }] } },
+    },
+    profiles: [
+      {
+        id: 'default',
+        name: 'Default',
+        // weather/geocode 有効、airquality/geoinfo/places 無効。
+        enabledSourceIds: ['builtin.local', 'server.a', 'client.weather', 'client.geocode'],
+        view: {
+          groups: {
+            'client.weather': { weather: { enabled: true, segments: { temp: true, cond: true } } },
+            'client.airquality': {
+              airquality: { enabled: true, segments: { aqi: true, pm25: true } },
+            },
+            'client.geocode': { geocode: { enabled: true, segments: { city: true } } },
+            'client.geoinfo': { geoinfo: { enabled: true, segments: { elev: true } } },
+            'client.places': { nav: { enabled: true, segments: { here: true, pl_x: true } } },
+          },
+          groupOrder: [
+            { sourceId: 'client.weather', groupId: 'weather' },
+            { sourceId: 'client.airquality', groupId: 'airquality' },
+            { sourceId: 'client.geocode', groupId: 'geocode' },
+            { sourceId: 'client.geoinfo', groupId: 'geoinfo' },
+            { sourceId: 'client.places', groupId: 'nav' },
+          ],
+          glassLayout: {
+            rows: [
+              [
+                'client.weather|weather|temp',
+                'client.airquality|airquality|aqi',
+                '@right',
+                'client.geocode|geocode|city',
+              ],
+            ],
+          },
+        },
+      },
+    ],
+    activeProfileId: 'default',
+  }
+}
+
+test('migrate: 旧 5 location source を client.location(2 group) へ畳む', () => {
+  const cfg = migrate(legacyLocationV4())
+  // 旧 5 source は消え client.location 1 つに。
+  for (const oldId of [
+    'client.weather',
+    'client.airquality',
+    'client.geocode',
+    'client.geoinfo',
+    'client.places',
+  ]) {
+    expect(cfg.sources.some((s) => s.id === oldId)).toBe(false)
+  }
+  expect(cfg.sources.filter((s) => s.kind === 'client').map((s) => s.id)).toEqual([
+    LOCATION_SOURCE_ID,
+  ])
+  // 素材: weather group = 旧 weather + 旧 air、place group = 旧 geocode + geoinfo + nav。
+  const g = cfg.groups[LOCATION_SOURCE_ID]
+  expect(g.weather.segments.map((s) => s.id).sort()).toEqual(['aqi', 'cond', 'pm25', 'temp'])
+  expect(g.place.segments.map((s) => s.id).sort()).toEqual(['city', 'elev', 'here', 'pl_x'])
+  // options は union でマージ。
+  const loc = cfg.sources.find((s) => s.id === LOCATION_SOURCE_ID)
+  expect(loc?.options?.tempUnit).toBe('F')
+  expect(loc?.options?.elevUnit).toBe('ft')
+})
+
+test('migrate: enabled は旧→client.location へ集約、disabled 由来 segment は復活させない', () => {
+  const cfg = migrate(legacyLocationV4())
+  const prof = activeProfile(cfg)
+  // 旧のどれか有効 → client.location が enabled、旧 client.* は消える。
+  expect(prof.enabledSourceIds).toContain(LOCATION_SOURCE_ID)
+  expect(prof.enabledSourceIds.filter((id) => id.startsWith('client.'))).toEqual([
+    LOCATION_SOURCE_ID,
+  ])
+  const vw = prof.view.groups[LOCATION_SOURCE_ID]
+  // weather group: temp/cond は表示(weather 有効)、aqi/pm25 は false(airquality 無効だった=復活防止)。
+  expect(vw.weather.segments.temp).toBe(true)
+  expect(vw.weather.segments.cond).toBe(true)
+  expect(vw.weather.segments.aqi).toBe(false)
+  expect(vw.weather.segments.pm25).toBe(false)
+  // place group: city は表示(geocode 有効)、elev/here/pl_x は false(geoinfo/places 無効だった)。
+  expect(vw.place.segments.city).toBe(true)
+  expect(vw.place.segments.elev).toBe(false)
+  expect(vw.place.segments.here).toBe(false)
+  expect(vw.place.segments.pl_x).toBe(false)
+})
+
+test('migrate: groupOrder/glassLayout を sourceId+groupId remap & dedupe (＠right 保持)', () => {
+  const cfg = migrate(legacyLocationV4())
+  const prof = activeProfile(cfg)
+  // groupOrder: 旧 5 ref が client.location|weather, client.location|place に dedupe。
+  expect(
+    prof.view.groupOrder.filter((r) => r.sourceId === LOCATION_SOURCE_ID).map((r) => r.groupId),
+  ).toEqual(['weather', 'place'])
+  // glassLayout: segKey の sourceId+groupId remap、@right は素通し。
+  expect(prof.view.glassLayout?.rows[0]).toEqual([
+    'client.location|weather|temp',
+    'client.location|weather|aqi',
+    '@right',
+    'client.location|place|city',
+  ])
+})
+
+test('migrate: 統合は冪等 (2 回流しても client.location 1 つ・group 2 つ)', () => {
+  const once = migrate(legacyLocationV4())
+  const twice = migrate(JSON.parse(JSON.stringify(once)) as Record<string, unknown>)
+  expect(twice.sources.filter((s) => s.kind === 'client').map((s) => s.id)).toEqual([
+    LOCATION_SOURCE_ID,
+  ])
+  expect(Object.keys(twice.groups[LOCATION_SOURCE_ID]).sort()).toEqual(['place', 'weather'])
+  expect(twice.groups[LOCATION_SOURCE_ID].weather.segments.map((s) => s.id).sort()).toEqual([
+    'aqi',
+    'cond',
+    'pm25',
+    'temp',
+  ])
 })
 
 test('places CRUD: 追加/改名/座標更新/削除', () => {
@@ -138,17 +298,20 @@ test('removePlace: 素材/view/glassLayout の孤立 chip を掃除する', () =
   const home = addPlace(cfg, 'Home', 35, 139)
   const prof = activeProfile(cfg)
   // sync が補充した想定で素材/view/glassLayout に place segment を手で配置する。
-  cfg.groups[PLACES_SOURCE_ID] ??= {}
-  cfg.groups[PLACES_SOURCE_ID][PLACES_GROUP_ID] = { segments: [{ id: home.id }] }
-  prof.view.groups[PLACES_SOURCE_ID] = {
-    [PLACES_GROUP_ID]: { enabled: true, segments: { [home.id]: true } },
+  // 統合後: 保存地点 segment は client.location の 'place' group 配下。
+  cfg.groups[LOCATION_SOURCE_ID] ??= {}
+  cfg.groups[LOCATION_SOURCE_ID][LOCATION_PLACE_GROUP_ID] = { segments: [{ id: home.id }] }
+  prof.view.groups[LOCATION_SOURCE_ID] = {
+    [LOCATION_PLACE_GROUP_ID]: { enabled: true, segments: { [home.id]: true } },
   }
-  const placeKey = `${PLACES_SOURCE_ID}|${PLACES_GROUP_ID}|${home.id}`
+  const placeKey = `${LOCATION_SOURCE_ID}|${LOCATION_PLACE_GROUP_ID}|${home.id}`
   prof.view.glassLayout = { rows: [[placeKey, 'builtin.local|clock|datetime']] }
 
   expect(removePlace(cfg, home.id)).toBe(true)
-  expect(cfg.groups[PLACES_SOURCE_ID][PLACES_GROUP_ID].segments).toEqual([]) // 素材掃除
-  expect(prof.view.groups[PLACES_SOURCE_ID][PLACES_GROUP_ID].segments[home.id]).toBeUndefined() // view 掃除
+  expect(cfg.groups[LOCATION_SOURCE_ID][LOCATION_PLACE_GROUP_ID].segments).toEqual([]) // 素材掃除
+  expect(
+    prof.view.groups[LOCATION_SOURCE_ID][LOCATION_PLACE_GROUP_ID].segments[home.id],
+  ).toBeUndefined() // view 掃除
   expect(prof.view.glassLayout?.rows[0]).toEqual(['builtin.local|clock|datetime']) // place chip だけ除去
 })
 
@@ -180,4 +343,116 @@ test('migrate(v4 same): 不正な places を sanitize する', () => {
   ]
   const cfg = migrate(v4 as unknown as Record<string, unknown>)
   expect(cfg.places?.map((p) => p.id)).toEqual(['ok'])
+})
+
+// ── 表示モデル Phase1: category seed / displayOwner / tags sanitize (tasks/display-model-spec.md) ──
+
+test('syncSourceWithStatus: 新規 segment に category を seed する', () => {
+  const cfg = emptyConfig()
+  syncSourceWithStatus(cfg, BUILTIN_SOURCE_ID, g2Doc(['level', 'rate', 'eta']))
+  const segs = cfg.groups[BUILTIN_SOURCE_ID].g2.segments
+  expect(segs.find((s) => s.id === 'level')?.category).toBe('battery')
+  expect(segs.find((s) => s.id === 'rate')?.category).toBe('power_rate')
+  expect(segs.find((s) => s.id === 'eta')?.category).toBe('duration')
+})
+
+test('migrate: builtin source に displayOwner=Glass を seed する', () => {
+  const cfg = migrate(emptyConfig() as unknown as Record<string, unknown>)
+  expect(cfg.sources.find((s) => s.id === BUILTIN_SOURCE_ID)?.displayOwner).toBe('Glass')
+})
+
+test('migrate: 旧 config(category なし)を backfill する', () => {
+  // sync で g2 を正規登録 → category を消して旧 config を再現 → migrate で再付与。
+  const cfg = emptyConfig()
+  syncSourceWithStatus(cfg, BUILTIN_SOURCE_ID, g2Doc(['level']))
+  for (const sm of cfg.groups[BUILTIN_SOURCE_ID].g2.segments) {
+    delete (sm as { category?: string }).category
+  }
+  const migrated = migrate(JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>)
+  expect(
+    migrated.groups[BUILTIN_SOURCE_ID].g2.segments.find((s) => s.id === 'level')?.category,
+  ).toBe('battery')
+})
+
+test('migrate: 不正な category / tags を sanitize する', () => {
+  const cfg = emptyConfig()
+  syncSourceWithStatus(cfg, BUILTIN_SOURCE_ID, g2Doc(['level']))
+  const sm = cfg.groups[BUILTIN_SOURCE_ID].g2.segments[0] as { category?: unknown; tags?: unknown }
+  sm.category = 123 // 非文字列 → defaultCategory で battery に矯正
+  sm.tags = ['a', 'a', '', 1, 'b'] // 重複/空/非文字列を除去
+  const migrated = migrate(JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>)
+  const out = migrated.groups[BUILTIN_SOURCE_ID].g2.segments[0]
+  expect(out.category).toBe('battery')
+  expect(out.tags).toEqual(['a', 'b'])
+})
+
+test('migrate 冪等: category backfill を二度かけても安定', () => {
+  const cfg = emptyConfig()
+  syncSourceWithStatus(cfg, BUILTIN_SOURCE_ID, g2Doc(['level']))
+  const once = migrate(JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>)
+  const twice = migrate(JSON.parse(JSON.stringify(once)) as Record<string, unknown>)
+  expect(twice.groups[BUILTIN_SOURCE_ID].g2.segments.find((s) => s.id === 'level')?.category).toBe(
+    'battery',
+  )
+})
+
+test('syncSourceWithStatus: place group の segment に正しい category を seed する', () => {
+  // 統合後: 保存地点ナビは client.location の 'place' group(LOCATION_PLACE_GROUP_ID)。
+  // taxonomy キーが 'nav' のままだと here/地点が custom に落ちる(group 統合の取りこぼし回帰を pin)。
+  const cfg = emptyConfig()
+  const doc = {
+    version: 1,
+    ts: 0,
+    groups: [
+      {
+        id: LOCATION_PLACE_GROUP_ID,
+        label: 'Place',
+        segments: [
+          { id: 'here', label: 'At', value: 'Home' },
+          { id: 'pl_abc12345', label: 'Home', value: '2km' },
+        ],
+      },
+    ],
+  }
+  syncSourceWithStatus(cfg, LOCATION_SOURCE_ID, doc as unknown as StatusDoc)
+  const segs = cfg.groups[LOCATION_SOURCE_ID][LOCATION_PLACE_GROUP_ID].segments
+  expect(segs.find((s) => s.id === 'here')?.category).toBe('place_geofence')
+  expect(segs.find((s) => s.id === 'pl_abc12345')?.category).toBe('place_distance')
+})
+
+test('migrate(v3 単発): server segment に category が seed される', () => {
+  // v3/legacy 経路も migrateV4Same と同じ normalizeDisplayMeta を通す (単発 migrate で穴を作らない)。
+  const v3 = {
+    version: 3,
+    sources: [{ id: 'server.a', kind: 'server', label: 'A', url: 'http://a.local/api/status' }],
+    groups: { 'server.a': { system: { segments: [{ id: 'cpu' }, { id: 'battery' }] } } },
+    groupOrder: [{ sourceId: 'server.a', groupId: 'system' }],
+  }
+  const cfg = migrate(v3 as unknown as Record<string, unknown>)
+  const segs = cfg.groups['server.a'].system.segments
+  expect(segs.find((s) => s.id === 'cpu')?.category).toBe('cpu_percent')
+  expect(segs.find((s) => s.id === 'battery')?.category).toBe('battery')
+})
+
+test('migrate: 旧 mac group は system へ rename 後に category が付く (seed 順序)', () => {
+  // 旧 config(OD-1 前)の system provider は group id 'mac' で category 未設定。
+  // category seed が group rename の「前」に走ると 'mac|cpu' が引けず custom に誤確定する。
+  // 順序(rename 後に seed)が正しいことを検証する。
+  const cfg = emptyConfig()
+  const s = addServer(cfg, 'Local', 'http://x.local/api/status')
+  const prof = activeProfile(cfg)
+  cfg.groups[s.id] = {
+    mac: { segments: [{ id: 'cpu' }, { id: 'battery' }, { id: 'disk' }] },
+  }
+  prof.view.groups[s.id] = {
+    mac: { enabled: true, segments: { cpu: true, battery: true, disk: true } },
+  }
+  prof.view.groupOrder.push({ sourceId: s.id, groupId: 'mac' })
+  const migrated = migrate(JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>)
+  const sys = migrated.groups[s.id].system
+  expect(sys).toBeDefined()
+  expect(sys.segments.find((x) => x.id === 'cpu')?.category).toBe('cpu_percent')
+  expect(sys.segments.find((x) => x.id === 'battery')?.category).toBe('battery')
+  expect(sys.segments.find((x) => x.id === 'disk')?.category).toBe('disk_free')
+  expect(migrated.groups[s.id].mac).toBeUndefined() // 旧 group は消える
 })

@@ -2,26 +2,19 @@
 // glass / companion は購読して描画する。取得は 1 系統 (二重ポーリングなし)。
 // 失敗ソースは直近成功値を stale 保持。revision + abort で遅延応答を破棄。
 
-import { airqualityStatus } from './airquality'
 import { localStatus } from './builtins'
 import {
-  AIRQUALITY_SOURCE_ID,
   type Config,
   enabledSources,
-  GEOCODE_SOURCE_ID,
-  GEOINFO_SOURCE_ID,
+  LOCATION_SOURCE_ID,
   type OptionValues,
-  PLACES_SOURCE_ID,
   type SourceDef,
   sourceUrls,
-  WEATHER_SOURCE_ID,
 } from './config'
 import { fetchStatusFromUrls } from './data'
-import { geocodeStatus } from './geocode'
-import { geoinfoStatus } from './geoinfo'
-import { placesStatus, setSavedPlaces } from './places'
+import { locationStatus } from './location'
+import { setSavedPlaces } from './places'
 import type { StatusDoc } from './status-types'
-import { weatherStatus } from './weather'
 
 type Listener = () => void
 
@@ -229,20 +222,15 @@ function applyResult(def: SourceDef, next: StatusDoc | null): void {
   if (n === 1 || n === RETRY_MAX + 1) notify()
 }
 
-// client source の producer (現状 weather のみ)。位置は WebView の geolocation でしか取れないため
-// server ではなく client 側で計算する。store は kind==='client' でこれを呼ぶ。
-// client source id → producer。**call 時に解決する**のが要点。
-// module-init 時に WEATHER_SOURCE_ID を Map/Record のキーに使うと、循環 import の評価順で
-// WEATHER_SOURCE_ID が未初期化(undefined)になりキーがズレ、'client.weather' を引けず
-// producer=NO になる(weather が一度も動かなかった真因)。関数なら参照は呼び出し時=初期化後。
+// client source の producer。位置は WebView の geolocation でしか取れないため server ではなく client
+// 側で計算する。store は kind==='client' でこれを呼ぶ。統合 source "Location" の 1 本のみ
+// (locationStatus が内部で weather/air/geocode/geoinfo/places を呼び 2 group に再編する)。
+// **call 時に解決する**のが要点(module-init で LOCATION_SOURCE_ID をキーにすると循環 import の
+// 評価順で undefined になりキーがズレる。関数なら参照は呼び出し時=初期化後)。
 function clientProducer(
   id: string,
 ): ((signal: AbortSignal, options?: OptionValues) => Promise<StatusDoc | null>) | undefined {
-  if (id === WEATHER_SOURCE_ID) return weatherStatus
-  if (id === GEOINFO_SOURCE_ID) return geoinfoStatus
-  if (id === AIRQUALITY_SOURCE_ID) return airqualityStatus
-  if (id === GEOCODE_SOURCE_ID) return geocodeStatus
-  if (id === PLACES_SOURCE_ID) return placesStatus
+  if (id === LOCATION_SOURCE_ID) return locationStatus
   return undefined
 }
 

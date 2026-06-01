@@ -17,12 +17,15 @@ export type ProviderDef = {
 }
 
 // JS plugin の default export 契約 (manifest)。group のみ必須、他は任意。
-// risk は install/list/update で提示し承認 (--accept-risk) を要求するためのタグ。
+// name/description/author は人間向けメタ (provider list/UI 表示・ledger キャッシュ用)。
+// リスク開示は provider の README に委ねる (承認ゲートは持たない)。
 /** @public provider 開発者向けの公開契約型。repo 内では型注釈に未使用 (examples は JSDoc で契約説明)。 */
 export type JsProviderManifest = {
   id: string
   group: (ctx: ProviderCtx) => Promise<Group | null> | Group | null
-  risk?: RiskTag[]
+  name?: string
+  description?: string
+  author?: string
   version?: string
   dispose?: () => void | Promise<void>
 }
@@ -66,11 +69,9 @@ export type ServerConfig = {
 }
 
 // --- provider 管理 (install/update/uninstall) の ledger 型 (tasks/provider-management-design.md) ---
-// provider が宣言できるリスクタグ。install/list/update で表示し、自動更新は既定 OFF。
-export type RiskTag = 'unofficial-api' | 'terms-risk' | 'account-limitation-risk'
-
 // ledger は CLI(managed) でインストールした provider の記録。手動配置 (unmanaged) は載らない。
 // $XDG_STATE_HOME/status-deck/provider-ledger.json に保存する。
+// name/description/author は manifest 由来の install 時スナップショット (provider list 表示用)。
 export type LedgerEntryJs = {
   id: string
   kind: 'js'
@@ -80,8 +81,9 @@ export type LedgerEntryJs = {
   etag: string | null
   installedVersion: string | null
   installedAt: string // ISO8601
-  risk: RiskTag[]
-  acceptedRisks: RiskTag[]
+  name?: string
+  description?: string
+  author?: string
   enabled: boolean
   ext: 'ts' | 'mjs' | 'js'
 }
@@ -97,8 +99,6 @@ export type LedgerEntrySubprocess = {
   ttlMs: number
   installedSha256: string | null
   installedAt: string
-  risk: RiskTag[]
-  acceptedRisks: RiskTag[]
   enabled: boolean
 }
 

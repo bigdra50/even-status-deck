@@ -22,12 +22,13 @@ import {
   type GroupRef,
   generateGlassLayout,
   genLabelId,
+  groupDisplayName,
   isCustomLabelKey,
   isRightDivider,
   isSourceEnabled,
+  LOCATION_SOURCE_ID,
   loadConfig,
   type OptionValues,
-  PLACES_SOURCE_ID,
   type Place,
   type Profile,
   RIGHT_DIVIDER,
@@ -49,6 +50,12 @@ import {
   syncSourceWithStatus,
 } from './config'
 import { fetchMachineFrom, type MachineInfo } from './data'
+import {
+  collisionCategories,
+  effectiveOwner,
+  resolveDisplayLabels,
+  resolveGroupDisplayNames,
+} from './display-identity'
 import { esc } from './escape'
 import {
   type GlassData,
@@ -89,9 +96,12 @@ import { computeVisible, segKey, type VisibilityLeaf } from './visibility'
 const MAX_CONDS = 4
 
 // companion (スマホ WebView) の Home / Source 編集。複数ソースを横断して設定する。
-let view: 'home' | 'source-edit' | 'sources' | 'add-source' | 'places' = 'home'
+// source-detail: 新 IA のドリルダウン先 (その source の group/segment 設定。flat Items を置換)。
+let view: 'home' | 'source-detail' | 'source-edit' | 'sources' | 'add-source' | 'places' = 'home'
+// source-detail で表示中の source id。
+let detailSourceId: string | null = null
 // source-edit から戻る先 (Sources 一覧経由か / Home への新規追加経由か)
-let sourceEditBack: 'home' | 'sources' = 'home'
+let sourceEditBack: 'home' | 'sources' | 'source-detail' = 'home'
 let editingSourceId: string | null = null
 let editMachine: MachineInfo | null = null // 接続テストの検出結果
 let config: Config = emptyConfig()
@@ -150,6 +160,64 @@ function syncAll(): boolean {
     if (status && syncSourceWithStatus(config, sid, status)) changed = true
   }
   if (changed) void saveConfig(config)
+  return changed
+}
+
+// 表示モデル Phase2: 同系統データ衝突を解決し SegMeta.displayLabel を素材へ確定する(永続)。
+// 衝突 category の segment に "owner label" を焼き込み、非衝突はクリアする(resolve は純関数)。
+// online/offline で揺れないよう offline source は触らない。getRenderableStatuses は offline を null 化
+// するので(getAllStatuses の保持値とは違い)、offline segment は desired に出ず既存値が維持される。
+function applyDisplayLabels(): boolean {
+  const statuses = { ...getRenderableStatuses(), [BUILTIN_SOURCE_ID]: localStatus(config) }
+  const desired = resolveDisplayLabels(config, statuses)
+  let changed = false
+  for (const src of config.sources) {
+    const groups = config.groups[src.id]
+    if (!groups) continue
+    for (const [gid, meta] of Object.entries(groups)) {
+      for (const sm of meta.segments) {
+        const key = segKey(src.id, gid, sm.id)
+        if (!desired.has(key)) continue // offline/未取得は維持
+        const want = desired.get(key)
+        if (want) {
+          if (sm.displayLabel !== want) {
+            sm.displayLabel = want
+            changed = true
+          }
+        } else if (sm.displayLabel !== undefined) {
+          delete sm.displayLabel
+          changed = true
+        }
+      }
+    }
+  }
+  return changed
+}
+
+// 表示モデル: 同 source 内の group label 衝突を解決し GroupMeta.displayName を確定する(永続)。
+// displayNameSource==='user'(ユーザーがリネーム)は自動上書きしない。offline group は触らない。変化時 true。
+function applyGroupDisplayNames(): boolean {
+  const statuses = { ...getRenderableStatuses(), [BUILTIN_SOURCE_ID]: localStatus(config) }
+  const desired = resolveGroupDisplayNames(config, statuses)
+  let changed = false
+  for (const [sourceId, groups] of Object.entries(config.groups)) {
+    for (const [gid, meta] of Object.entries(groups)) {
+      if (meta.displayNameSource === 'user') continue // 手動命名は保持
+      const want = desired.get(`${sourceId}|${gid}`)
+      if (want === undefined) continue // offline/未取得は維持 (map に無い)
+      if (want) {
+        if (meta.displayName !== want || meta.displayNameSource !== 'auto') {
+          meta.displayName = want
+          meta.displayNameSource = 'auto'
+          changed = true
+        }
+      } else if (meta.displayName !== undefined) {
+        delete meta.displayName
+        delete meta.displayNameSource
+        changed = true
+      }
+    }
+  }
   return changed
 }
 
@@ -307,10 +375,11 @@ function groupRow(ref: GroupRef): string {
   const src = sourceById(config, ref.sourceId)
   const isBuiltin = ref.sourceId === BUILTIN_SOURCE_ID
   const key = `${esc(ref.sourceId)}|${esc(ref.groupId)}`
-  // builtin の行名はコード所有ラベル (BUILTIN_GROUP_LABELS) を使い、永続 source label に依存しない。
-  const title = isBuiltin
+  // 行名: 衝突解決/手動の displayName を最優先。無ければ builtin はコード所有ラベル、他は live label。
+  const baseTitle = isBuiltin
     ? (BUILTIN_GROUP_LABELS[ref.groupId] ?? ref.groupId)
     : g.label || src?.label || ref.groupId
+  const title = meta.displayName ?? baseTitle
   const caret = icon(vg.expanded ? 'chevron-down' : 'chevron-right', { size: 16 })
   const segById = new Map(g.segments.map((s) => [s.id, s]))
   // segment の並びは素材 (meta.segments)、ON/OFF・条件は view/素材から引く。
@@ -358,18 +427,24 @@ function groupRow(ref: GroupRef): string {
   // default-label トグル (glass で group 名を前置するか)。位置/上詰めは Glass layout で決める。
   const showsLabel = vg.showDefaultLabel ?? ref.groupId !== 'clock'
   const labelBtn = `<button class="label-btn ${showsLabel ? 'on' : ''}" data-action="toggle-grouplabel" data-key="${key}" title="${showsLabel ? 'Group label shown on glass' : 'Group label hidden'}">${icon('tag', { size: 15 })}</button>`
+  // group 名のリネーム (Source Detail)。衝突自動命名 ('Claude (limits)') を上書きできる。user 命名は自動再付与しない。
+  const renameBtn = `<button class="label-btn" data-action="edit-groupname" data-key="${key}" title="Rename group" aria-label="Rename group">${icon('pencil', { size: 14 })}</button>`
+  // owner は Source Detail ヘッダで編集 / glass picker でバッジ表示する (表示モデル新 IA)。group 行には出さない。
   return `<div class="src" data-key="${key}"><div class="src-head"><span class="src-grip">${icon('grip', { size: 16 })}</span>
     <span class="src-caret" data-action="expand" data-key="${key}">${caret}</span>
     <span class="src-name" data-action="expand" data-key="${key}">${esc(title)}</span>
     ${srcTag}
+    ${renameBtn}
     ${labelBtn}
     <button class="tg ${vg.enabled ? 'on' : ''}" data-action="toggle-group" data-key="${key}"></button></div>${metrics}</div>`
 }
 
-function renderItems(): string {
-  return visibleRefs()
-    .map((r) => groupRow(r))
-    .join('')
+// 1 source の group 行群 (Source Detail 用)。group の横断並べ替えは Glass Layout が持つので
+// ここでは #source-list を使わず (group sortable を張らない)、segment 並べ替え (.src-metrics) のみ効く。
+function renderSourceGroups(sourceId: string): string {
+  const refs = visibleRefs().filter((r) => r.sourceId === sourceId)
+  if (!refs.length) return '<div class="cmp-sub">No data from this source yet.</div>'
+  return refs.map((r) => groupRow(r)).join('')
 }
 
 // ── source 行 (3 文脈: Home=preset 内 / Sources 一覧 / preset へ追加) ──
@@ -423,13 +498,38 @@ function sourceDotNote(s: SourceDef): { dotCls: string; note: string } {
   return { dotCls, note: sourceUrl(s) ?? 'Not set' }
 }
 
-// Home: この preset に追加済みの source。preset から外す操作のみ (非破壊)。編集は Sources 一覧へ。
-function sourcePresetRow(s: SourceDef): string {
-  const { dotCls, note } = sourceDotNote(s)
-  return `<div class="src"><div class="src-head"><span class="conn-dot ${dotCls}"></span>
+// Home の provenance セクション (view 限定の grouping。データモデルに tier 実体は足さない)。
+// 見出し = 出自、行 = 既存の dot+note が capability を表す (codex: 見出しに permission を混ぜない)。
+// 判定は kind + origin: builtin / app_bundled client は Included、server は Connected、
+// user_added client (将来の外部 provider) は Extensions。
+type SourceSection = 'included' | 'connected' | 'extensions'
+function sourceSection(s: SourceDef): SourceSection {
+  if (s.kind === 'server') return 'connected'
+  if (s.kind === 'client' && s.origin !== 'app_bundled') return 'extensions'
+  return 'included' // builtin + app_bundled client (Device / Location)
+}
+const SOURCE_SECTIONS: { key: SourceSection; label: string; hint: string }[] = [
+  { key: 'included', label: 'Included', hint: 'Bundled with the app' },
+  { key: 'connected', label: 'Connected', hint: 'Servers you run' },
+  { key: 'extensions', label: 'Extensions', hint: 'Added providers' },
+]
+
+// Home: この preset で使う source の nav カード (新 IA)。tap で Source Detail へドリルダウン。
+// builtin(Device) も含めて出す。preset から外すのは横スワイプ→🗑 (iOS 風 swipe-to-delete)。
+function sourceNavRow(s: SourceDef): string {
+  const isBuiltin = s.kind === 'builtin'
+  const { dotCls, note } = isBuiltin ? { dotCls: '', note: 'On-device' } : sourceDotNote(s)
+  // 前面 (タップで Source Detail へ)。横スワイプでこれを左へずらし背面の🗑を露出する。
+  const fg = `<div class="swipe-fg" data-action="open-source-detail" data-src="${esc(s.id)}" role="button" tabindex="0">
+    <span class="conn-dot ${dotCls}"></span>
     <span class="src-name">${esc(s.label)}</span>
     <span class="src-note">${esc(note)}</span>
-    <button class="link-btn" data-action="remove-from-preset" data-src="${esc(s.id)}" title="Remove from this preset">Remove</button></div></div>`
+    <span class="src-chev">${icon('chevron-right', { size: 16 })}</span></div>`
+  // builtin(Device) は preset から外せない(常時有効) ので swipe 無し・🗑無し。
+  if (isBuiltin) return `<div class="src swipe-row">${fg}</div>`
+  // 背面: 右端の削除(remove-from-preset)。前面が左へずれると露出する。
+  const bg = `<div class="swipe-bg"><button class="swipe-del" data-action="remove-from-preset" data-src="${esc(s.id)}" aria-label="Remove from preset" title="Remove from preset">${icon('trash', { size: 18 })}</button></div>`
+  return `<div class="src swipe-row" data-src="${esc(s.id)}" data-swipeable="1">${bg}${fg}</div>`
 }
 
 // Sources 一覧: 全 source 実体の管理。編集 (URL/machineId/削除) へ。
@@ -464,16 +564,18 @@ function lastSeenText(id: string): string {
 // segKey → companion chip 用の {group, seg} ラベル (builtin は code-owned)。
 function segLabelParts(key: string): { group: string; seg: string } {
   const [sourceId, groupId, segId] = key.split('|')
+  // group 名は displayName(衝突解決/手動) を最優先。無ければ builtin=コード所有 / 他=live label。
+  const override = groupDisplayName(config, sourceId, groupId)
   if (sourceId === BUILTIN_SOURCE_ID) {
     return {
-      group: BUILTIN_GROUP_LABELS[groupId] ?? groupId,
+      group: override ?? BUILTIN_GROUP_LABELS[groupId] ?? groupId,
       seg: BUILTIN_SEG_LABELS[segId] ?? segId,
     }
   }
   const g = statusGroup(sourceId, groupId)
   const seg = g?.segments.find((s) => s.id === segId)
   return {
-    group: g?.label || sourceById(config, sourceId)?.label || groupId,
+    group: override ?? (g?.label || sourceById(config, sourceId)?.label || groupId),
     seg: seg?.label || segId,
   }
 }
@@ -557,7 +659,14 @@ function wysChip(key: string): string {
   const vg = activeView(config).groups[sourceId]?.[groupId]
   const showsLabel = vg?.showDefaultLabel ?? groupId !== 'clock'
   const grp = group && showsLabel ? `<span class="wys-grp">${esc(group)}</span>` : ''
-  return `<span class="wys-chip" data-segkey="${esc(key)}" title="${esc(group ? `${group} ${seg}` : seg)}">${grip}${grp}<span class="wys-txt">${esc(text)}</span>${x}</span>`
+  // owner バッジ (表示モデル新 IA): 同系統衝突 category の segment だけ、混ぜて並べる picker で出自を区別する。
+  const cat = config.groups[sourceId]?.[groupId]?.segments.find((s) => s.id === segId)?.category
+  const src = sourceById(config, sourceId)
+  const ownerBadge =
+    cat != null && src && collisionCategories(config).has(cat)
+      ? `<span class="owner-badge owner-fixed" title="Owner">${esc(effectiveOwner(src))}</span>`
+      : ''
+  return `<span class="wys-chip" data-segkey="${esc(key)}" title="${esc(group ? `${group} ${seg}` : seg)}">${grip}${grp}${ownerBadge}<span class="wys-txt">${esc(text)}</span>${x}</span>`
 }
 
 // 編集モードのキャンバス: 固定 MAX_ROWS 行 (行番号ガター + 左/右ゾーン) + 未配置棚 + Reset。
@@ -598,6 +707,34 @@ function renderGlassEdit(lay: GlassLayout): string {
     <button class="danger-btn" data-action="layout-reset">Reset to auto</button>`
 }
 
+// auto モード (glassLayout 未設定) の group 並べ替え行。grip + group 名 + owner のみ (設定は出さない)。
+// group の横断順序 (groupOrder) は glass の arrange 概念なので Glass セクションに置く (Source Detail ではない)。
+function groupOrderRow(ref: GroupRef): string {
+  const g = statusGroup(ref.sourceId, ref.groupId)
+  if (!g) return ''
+  const isBuiltin = ref.sourceId === BUILTIN_SOURCE_ID
+  const src = sourceById(config, ref.sourceId)
+  const baseTitle = isBuiltin
+    ? (BUILTIN_GROUP_LABELS[ref.groupId] ?? ref.groupId)
+    : g.label || src?.label || ref.groupId
+  const title = groupDisplayName(config, ref.sourceId, ref.groupId) ?? baseTitle
+  const owner = src ? effectiveOwner(src) : ''
+  const key = `${esc(ref.sourceId)}|${esc(ref.groupId)}`
+  return `<div class="src ord-row" data-key="${key}"><div class="src-head">
+    <span class="src-grip">${icon('grip', { size: 16 })}</span>
+    <span class="src-name">${esc(title)}</span>
+    <span class="src-note">${esc(owner)}</span></div></div>`
+}
+
+// auto モードの順序エディタ。#source-list を使い既存 onGroupReorder を再接続する (group sortable)。
+// 並べ替え対象が 2 つ未満なら出さない。custom layout 時は renderGlassEdit が配置を持つので出さない。
+function renderGlassAutoOrder(): string {
+  const refs = visibleRefs()
+  if (refs.length < 2) return ''
+  return `<div class="cmp-label">Order (auto layout — drag ${icon('grip', { size: 12 })} to reorder)</div>
+    <div id="source-list">${refs.map(groupOrderRow).join('')}</div>`
+}
+
 // Glass セクション: プレビュー一本。view は実機同等の連結テキスト、edit は WYSIWYG。
 function renderGlassSection(): string {
   const lay = activeView(config).glassLayout
@@ -608,7 +745,8 @@ function renderGlassSection(): string {
       </span></div>
       <div class="gpv"><div class="gpv-cap">G2 576×288</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
       <div class="cmp-sub">Glass gestures: tap = summary / swipe = switch view / double-tap = exit</div>
-      <div class="cmp-sub">One row per group. Customize layout to place items freely on the preview.</div>`
+      <div class="cmp-sub">One row per group. Customize layout to place items freely on the preview.</div>
+      ${renderGlassAutoOrder()}`
   }
   if (layoutEditing) {
     return `<div class="cmp-label cmp-label-row">Glass layout<button class="gear-btn" data-action="layout-edit-toggle" title="Done" aria-label="Done">${icon('check', { size: 16 })}</button></div>
@@ -728,30 +866,65 @@ function renderProfileGeofence(active: Profile): string {
 }
 
 function renderHome(): string {
-  // この preset に追加済みの server source だけ表示 (builtin は Items の Clock/G2 に出る)。
-  const sources = config.sources.filter(
-    (s) => s.kind !== 'builtin' && isSourceEnabled(config, s.id),
-  )
+  // 新 IA: この preset で有効な全 source (builtin 含む) を nav カードで出す。tap で Source Detail へ。
+  // 旧 flat Items リスト (全 source 横断の group リスト) は廃止。中身の設定は Source Detail に移設。
+  const sources = config.sources.filter((s) => isSourceEnabled(config, s.id))
+  // provenance でセクション化 (Included / Connected / Extensions)。空セクションは描かない。
   const sourcesHtml = sources.length
-    ? sources.map(sourcePresetRow).join('')
+    ? SOURCE_SECTIONS.map(({ key, label, hint }) => {
+        const inSec = sources.filter((s) => sourceSection(s) === key)
+        if (!inSec.length) return ''
+        return `<div class="src-section" title="${esc(hint)}">${label}</div>${inSec.map(sourceNavRow).join('')}`
+      }).join('')
     : '<div class="cmp-sub">No sources in this preset.</div>'
   return `
     ${renderSuggestionBanner()}
     ${renderProfileBar()}
 
-    <div class="cmp-label cmp-label-row">Sources<span class="cmp-actions"><button class="link-btn" data-action="manage-sources">Manage all</button></span></div>
+    <div class="cmp-label cmp-label-row">Sources (this preset)<span class="cmp-actions"><button class="link-btn" data-action="manage-sources">Manage all</button></span></div>
+    <div class="cmp-sub">Tap a source to toggle its items &amp; settings.</div>
     ${sourcesHtml}
     <button class="save-btn sm" data-action="open-add-source">${icon('plus', { size: 14 })} Add source</button>
 
     <div class="cmp-label cmp-label-row">Places<span class="cmp-actions"><button class="link-btn" data-action="manage-places">Manage</button></span></div>
-    <div class="cmp-sub">Saved spots for the Places source (distance &amp; bearing from here).</div>
-
-    <div class="cmp-label">Items (drag ${icon('grip', { size: 12 })} to reorder)</div>
-    <div id="source-list">${renderItems()}</div>
+    <div class="cmp-sub">Saved spots for the Location source (distance &amp; bearing from here).</div>
 
     ${renderGlassSection()}
 
     ${renderDbgConsole()}
+  `
+}
+
+// 画面2 (新 IA): Source Detail。1 source の group/segment トグル・表示オプション・条件を集約。
+// groupRow をそのまま再利用するので機能の取りこぼし無し。owner はヘッダで編集 (source 単位・全 preset 共有)。
+function renderSourceDetail(): string {
+  // 存在 かつ 現 preset で有効 な source のみ detail を出す。profile 自動切替(geofence)や
+  // remove-from-preset/delete で無効/消滅したら Home へフォールバック (stale detail に居座らない)。
+  const s =
+    detailSourceId && isSourceEnabled(config, detailSourceId)
+      ? sourceById(config, detailSourceId)
+      : undefined
+  if (!s) {
+    view = 'home'
+    return renderHome()
+  }
+  const isBuiltin = s.kind === 'builtin'
+  const owner = effectiveOwner(s)
+  const ownerEl = isBuiltin
+    ? `<span class="owner-badge owner-fixed" title="Owner (code-owned)">${esc(owner)}</span>`
+    : `<button class="owner-badge" data-action="edit-owner" data-src="${esc(s.id)}" title="Rename owner — distinguishes same-type data">${esc(owner)} ${icon('pencil', { size: 12 })}</button>`
+  const { dotCls, note } = isBuiltin ? { dotCls: '', note: 'On-device' } : sourceDotNote(s)
+  // 接続編集/削除(実体管理)は Sources(Manage all)、preset から外すのは Home の swipe→🗑 に集約。
+  // Source Detail は「この preset での設定」に専念し、実体操作のボタンは置かない。
+  return `
+    <div class="topbar"><button class="nav-btn" data-action="home">${icon('arrow-left', { size: 16 })} Sources</button>
+      <span class="h-title">${esc(s.label)}</span><span></span></div>
+    <div class="src-detail-head">
+      <span class="conn-dot ${dotCls}"></span>${ownerEl}
+      <span class="src-note" style="margin-left:auto">${esc(note)}</span>
+    </div>
+    <div class="cmp-sub">Toggles apply to <b>this preset</b>. Display options, show-when conditions and owner are <b>shared across all presets</b>.</div>
+    <div id="detail-groups">${renderSourceGroups(s.id)}</div>
   `
 }
 
@@ -834,8 +1007,8 @@ function getCompanionPosition(): Promise<{ lat: number; lon: number }> {
 // 保存地点変更後の共通処理: 永続化 → store へ反映(setSavedPlaces 経由) → 地点ナビ再計算 → 再描画。
 function afterPlacesChange(): void {
   void saveConfig(config)
-  setSourcesFromConfig(config) // store の savedPlaces を最新化(Places source が有効なら再 fetch 範囲も同期)
-  refreshSourceById(PLACES_SOURCE_ID) // 現在地から距離・方位を再計算
+  setSourcesFromConfig(config) // store の savedPlaces を最新化(Location source が有効なら再 fetch 範囲も同期)
+  refreshSourceById(LOCATION_SOURCE_ID) // 現在地から距離・方位を再計算(統合 Location source)
   render()
 }
 
@@ -862,7 +1035,8 @@ function renderSourceEdit(): string {
   const s = editingSourceId ? sourceById(config, editingSourceId) : undefined
   const url = testUrl || (s ? sourceUrl(s) : undefined) || 'http://127.0.0.1:8723'
   const testing = testState === 'testing'
-  const backLabel = sourceEditBack === 'sources' ? 'Sources' : 'Home'
+  const backLabel =
+    sourceEditBack === 'sources' ? 'Sources' : sourceEditBack === 'source-detail' ? 'Back' : 'Home'
   return `
     <div class="topbar"><button class="nav-btn" data-action="back">${icon('arrow-left', { size: 16 })} ${backLabel}</button>
       <span class="h-title">Server</span><span></span></div>
@@ -887,17 +1061,23 @@ function render(): void {
   root.innerHTML =
     view === 'source-edit'
       ? renderSourceEdit()
-      : view === 'sources'
-        ? renderSources()
-        : view === 'add-source'
-          ? renderAddSource()
-          : view === 'places'
-            ? renderPlaces()
-            : renderHome()
-  if (view === 'home') {
+      : view === 'source-detail'
+        ? renderSourceDetail()
+        : view === 'sources'
+          ? renderSources()
+          : view === 'add-source'
+            ? renderAddSource()
+            : view === 'places'
+              ? renderPlaces()
+              : renderHome()
+  // home と source-detail は群/段の構成シグネチャを記録し、SortableJS を張る。
+  // source-detail は #source-list を持たない (group 横断並べ替え=Glass Layout の責務) ので
+  // group sortable は張られず、.src-metrics の segment 並べ替えのみ有効になる。
+  if (view === 'home' || view === 'source-detail') {
     lastVisibleSig = visibleSig()
     attachSortables()
-    if (dbgOpen) scrollDbgBottom() // 開いていれば最新行へ
+    if (view === 'home') applySwipeOpen() // 再描画後に開いていた swipe カードの transform を復元
+    if (view === 'home' && dbgOpen) scrollDbgBottom() // 開いていれば最新行へ
   }
 }
 
@@ -905,6 +1085,97 @@ function updatePreview(): void {
   // 編集モードの WYSIWYG キャンバス (.wys-screen) は上書きしない (view の連結テキストのみ更新)。
   const el = root?.querySelector('.gpv-screen')
   if (el && !el.classList.contains('wys-screen')) el.innerHTML = glassPreviewHtml()
+}
+
+// ── Home source カードの swipe-to-delete (iOS 風) ──
+// 前面(.swipe-fg)を左へドラッグして背面の🗑(remove-from-preset)を露出する。1枚だけ開く。
+// 縦スクロール/タップと衝突しないよう、ドミナント軸が横と確定したときだけ preventDefault する。
+const SWIPE_ACTION_W = 72 // 露出する🗑の幅(px)
+const SWIPE_SLOP = 8 // この px 動くまで軸を確定しない(タップ誤爆防止)
+let swipeOpenSrc: string | null = null // 現在開いているカードの source id
+// swipe 終了時刻。直後(<350ms)の click を遷移にしない。永続フラグだと iOS で touchmove preventDefault 時に
+// synthetic click が出ず次の正当タップを食うため、時間窓で判定する(自動失効=trash タップを邪魔しない)。
+let swipeEndedAt = 0
+type SwipeDrag = {
+  src: string
+  fg: HTMLElement
+  startX: number
+  startY: number
+  baseX: number
+  axis: '' | 'x' | 'y'
+  lastX: number
+}
+let swipeDrag: SwipeDrag | null = null
+
+// 開いているカードだけ transform を当てる(再描画後の復元にも使う)。
+function applySwipeOpen(): void {
+  if (!root) return
+  for (const fg of root.querySelectorAll<HTMLElement>('.swipe-row > .swipe-fg')) {
+    const src = (fg.parentElement as HTMLElement | null)?.dataset.src ?? ''
+    fg.style.transform = src && src === swipeOpenSrc ? `translateX(-${SWIPE_ACTION_W}px)` : ''
+  }
+}
+function closeSwipe(): void {
+  if (swipeOpenSrc == null) return
+  swipeOpenSrc = null
+  applySwipeOpen()
+}
+
+function onSwipeStart(e: TouchEvent): void {
+  const fg = (e.target as HTMLElement).closest<HTMLElement>(
+    '.swipe-row[data-swipeable] > .swipe-fg',
+  )
+  if (!fg) {
+    closeSwipe() // カード外(やヘッダ)を触ったら閉じる
+    return
+  }
+  const src = (fg.parentElement as HTMLElement).dataset.src ?? ''
+  const tch = e.touches[0]
+  if (!tch) return
+  fg.style.transition = 'none'
+  swipeDrag = {
+    src,
+    fg,
+    startX: tch.clientX,
+    startY: tch.clientY,
+    baseX: swipeOpenSrc === src ? -SWIPE_ACTION_W : 0,
+    axis: '',
+    lastX: swipeOpenSrc === src ? -SWIPE_ACTION_W : 0,
+  }
+}
+function onSwipeMove(e: TouchEvent): void {
+  const d = swipeDrag
+  const tch = e.touches[0]
+  if (!d || !tch) return
+  const dx = tch.clientX - d.startX
+  const dy = tch.clientY - d.startY
+  if (d.axis === '') {
+    if (Math.abs(dx) > SWIPE_SLOP && Math.abs(dx) > Math.abs(dy)) d.axis = 'x'
+    else if (Math.abs(dy) > SWIPE_SLOP)
+      d.axis = 'y' // 縦 = スクロールに譲る(以降無視)
+    else return
+  }
+  if (d.axis !== 'x') return
+  e.preventDefault() // 横スワイプ確定 → 縦スクロール抑止
+  if (swipeOpenSrc && swipeOpenSrc !== d.src) {
+    // 別のカードが開いていたら閉じてからこのカードを操作する
+    swipeOpenSrc = null
+    applySwipeOpen()
+    d.baseX = 0
+  }
+  const x = Math.max(-SWIPE_ACTION_W, Math.min(0, d.baseX + dx)) // 左方向のみ・0..-W にクランプ
+  d.lastX = x
+  d.fg.style.transform = `translateX(${x}px)`
+}
+function onSwipeEnd(): void {
+  const d = swipeDrag
+  swipeDrag = null
+  if (!d) return
+  d.fg.style.transition = '' // CSS の snap transition を戻す
+  if (d.axis !== 'x') return // タップ or 縦スクロールだった → click 処理に委ねる
+  swipeEndedAt = Date.now() // 直後の click を遷移にしない (時間窓判定)
+  swipeOpenSrc = d.lastX < -SWIPE_ACTION_W / 2 ? d.src : null // 半分超で開く、未満で閉じる
+  applySwipeOpen()
 }
 
 // ── ドラッグ並べ替え ──
@@ -1042,10 +1313,23 @@ function applyProfileChange(): void {
 // ── イベント ──
 async function onClick(e: MouseEvent): Promise<void> {
   const t = (e.target as HTMLElement).closest('[data-action]') as HTMLElement | null
-  if (!t) return
+  if (!t) {
+    closeSwipe() // 何もないところをタップ = 開いている swipe を閉じる
+    return
+  }
   switch (t.dataset.action) {
     case 'home':
       view = 'home'
+      render()
+      break
+    case 'open-source-detail':
+      // swipe 直後(時間窓)や、どれか開いている時のカードタップは「閉じるだけ」で遷移しない。
+      if (Date.now() - swipeEndedAt < 350 || swipeOpenSrc != null) {
+        closeSwipe()
+        break
+      }
+      detailSourceId = t.dataset.src ?? null
+      view = 'source-detail'
       render()
       break
     case 'suggest-accept':
@@ -1147,12 +1431,15 @@ async function onClick(e: MouseEvent): Promise<void> {
       break
     }
     case 'remove-from-preset': {
-      // この preset から外す (非破壊)。実体は残り、Items/glass からは消える。
+      // この preset から外す (非破壊)。実体は残り、glass/Source カードからは消える。
+      // Home の swipe→🗑 から呼ばれる (source-detail の Remove ボタンは廃止)。
       const id = t.dataset.src
       if (id) {
+        if (swipeOpenSrc === id) swipeOpenSrc = null // 消えるカードの swipe 状態を破棄
         setSourceEnabled(config, id, false)
         void saveConfig(config)
         setSourcesFromConfig(config) // fetch 範囲を狭める (停止/status 破棄)
+        if (view === 'source-detail') view = 'home' // 外した source の detail に留まらない
         render()
       }
       break
@@ -1188,7 +1475,8 @@ async function onClick(e: MouseEvent): Promise<void> {
       testState = 'idle'
       testUrl = ''
       editMachine = null
-      sourceEditBack = 'sources'
+      // Source Detail から開いたら detail へ戻す (動線維持)。それ以外は Sources 一覧へ。
+      sourceEditBack = view === 'source-detail' ? 'source-detail' : 'sources'
       view = 'source-edit'
       render()
       break
@@ -1227,6 +1515,21 @@ async function onClick(e: MouseEvent): Promise<void> {
       }
       break
     }
+    case 'edit-owner': {
+      // 表示モデル Phase2: 同系統データの出自(owner)をリネームする。source.displayOwner を更新し、
+      // displayLabel(衝突焼込)を再計算して保存。owner は source 単位なので同 source の全 group に効く。
+      const src = sourceById(config, t.dataset.src ?? '')
+      if (src) {
+        const next = window.prompt('Owner name (to tell same-type data apart)', effectiveOwner(src))
+        if (next?.trim()) {
+          src.displayOwner = next.trim()
+          applyDisplayLabels()
+          void saveConfig(config)
+          render()
+        }
+      }
+      break
+    }
     case 'toggle-grouplabel': {
       // glass で group 名を前置するか (default-label)。
       const ref = parseKey(t.dataset.key ?? '')
@@ -1235,6 +1538,34 @@ async function onClick(e: MouseEvent): Promise<void> {
         vg.showDefaultLabel = !(vg.showDefaultLabel ?? ref.groupId !== 'clock')
         void saveConfig(config)
         render()
+      }
+      break
+    }
+    case 'edit-groupname': {
+      // group 名のリネーム (素材・全 preset 共有)。衝突自動命名 ('Claude (limits)') を上書きできる。
+      const ref = parseKey(t.dataset.key ?? '')
+      const meta = config.groups[ref.sourceId]?.[ref.groupId]
+      if (meta) {
+        const g = statusGroup(ref.sourceId, ref.groupId)
+        const isBuiltin = ref.sourceId === BUILTIN_SOURCE_ID
+        const base = isBuiltin
+          ? (BUILTIN_GROUP_LABELS[ref.groupId] ?? ref.groupId)
+          : g?.label || sourceById(config, ref.sourceId)?.label || ref.groupId
+        const next = window.prompt('Group name', meta.displayName ?? base)
+        if (next !== null) {
+          const v = next.trim()
+          if (v && v !== base) {
+            meta.displayName = v // 手動命名 (自動衝突解決に上書きされない)
+            meta.displayNameSource = 'user'
+          } else {
+            // 空 or base と同じ → 自動衝突解決に戻す
+            delete meta.displayName
+            delete meta.displayNameSource
+            applyGroupDisplayNames()
+          }
+          void saveConfig(config)
+          render()
+        }
       }
       break
     }
@@ -1558,15 +1889,21 @@ async function runConnectionTest(): Promise<void> {
 
 function onStoreUpdate(): void {
   syncAll() // 新 group を config に取り込み (永続)
+  // 衝突解決 (segment owner prefix の displayLabel + group の displayName) を確定 (変化時のみ保存)。
+  const dlChanged = applyDisplayLabels()
+  const gnChanged = applyGroupDisplayNames()
+  if (dlChanged || gnChanged) void saveConfig(config)
   maybeGeofenceAutoSwitch() // #43 現在地 place 変化で auto モードの preset へ自動切替(view 非依存=glass にも効く)
-  if (view !== 'home') return
-  // 接続状態 (online/stale/offline) の変化で提案を再計算する。提案の出現/消滅/差し替えが
-  // あれば Home を再描画する (バナーの表示更新)。dismiss 済みは recomputeSuggestion 内で除外。
-  const suggestionChanged = recomputeSuggestion()
-  // 表示項目の構成 (status の有無で変わる) が変化したときだけ項目リストを再描画。
-  // 値だけの更新では再描画しない (毎 poll の innerHTML churn が iOS WebContent jettison を招くため。
-  // プレビューはモックなので値追従はユーザー編集/構成変化/並べ替えで十分。issue #4)。
-  if (suggestionChanged || visibleSig() !== lastVisibleSig) render()
+  // 構成 (status の有無で変わる) が変化したときだけ再描画。値だけの更新では再描画しない
+  // (毎 poll の innerHTML churn が iOS WebContent jettison を招くため。issue #4)。
+  if (view === 'home') {
+    // 接続状態の変化で提案を再計算しバナーを更新する (dismiss 済みは recomputeSuggestion 内で除外)。
+    const suggestionChanged = recomputeSuggestion()
+    if (suggestionChanged || visibleSig() !== lastVisibleSig) render()
+  } else if (view === 'source-detail') {
+    // 新 segment 出現等の構成変化で Source Detail を描き直す (新 IA)。
+    if (visibleSig() !== lastVisibleSig) render()
+  }
 }
 
 // ── Fullscreen WYSIWYG レイアウトエディタ (実験的) ──
@@ -2090,6 +2427,11 @@ export async function mountCompanion(el: HTMLElement): Promise<void> {
   el.addEventListener('click', (e) => void onClick(e))
   el.addEventListener('change', (e) => void onChange(e)) // segment 条件 / 表示オプションの select/number
   el.addEventListener('input', onInput) // デバッグコンソールのフィルタ
+  // swipe-to-delete (Home source カード)。touchmove は passive:false で横スワイプ時のみ preventDefault する。
+  el.addEventListener('touchstart', onSwipeStart, { passive: true })
+  el.addEventListener('touchmove', onSwipeMove, { passive: false })
+  el.addEventListener('touchend', onSwipeEnd, { passive: true })
+  el.addEventListener('touchcancel', onSwipeEnd, { passive: true })
   subscribe(onStoreUpdate)
 
   config = await loadConfig()
