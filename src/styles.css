@@ -547,12 +547,19 @@ button.owner-badge:hover {
   font-size: var(--fs-sm);
   padding: var(--space-1) var(--space-2);
 }
-/* clock の合成フォーマット UI (Time/Date/順序) */
+/* clock の合成フォーマット UI (Time/Date/順序) + source/segment 表示オプション */
 .clock-ctl {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
   padding: var(--space-2) 0;
+}
+/* source スコープのオプションは .src 直下 (segment 並べ替えコンテナ .src-metrics の外) に
+   置かれるため、左右 padding が無いとカード内縁に貼り付く。card inset (space-4) を補う。
+   segment スコープの .clock-ctl は .metric > .src-metrics 内なので一致しない。 */
+.src > .clock-ctl {
+  padding-left: var(--space-4);
+  padding-right: var(--space-4);
 }
 .clock-fld {
   display: flex;
