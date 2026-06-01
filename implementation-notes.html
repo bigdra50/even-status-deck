@@ -49,7 +49,7 @@
   <body>
     <div class="wrap">
       <h1>Location source 統合 — 実装ノート</h1>
-      <div class="meta">最終更新 2026-06-01 ・ ブランチ <code>feat/display-model-ia</code> ・ 計画 <code>~/.claude/plans/melodic-soaring-pillow.md</code></div>
+      <div class="meta">最終更新 2026-06-01 ・ Location 統合は main マージ済(PR #65) ・ 追記: 距離/方位ナビ(#42)撤廃(下記・実装済/未コミット)</div>
       <div class="legend">
         <span class="badge b-decided">decided</span>
         <span class="badge b-deviation">deviation</span>
@@ -57,6 +57,27 @@
         <span class="badge b-open">open question</span>
       </div>
       <p class="dim">位置情報由来の client source が 5 つ(weather/geoinfo/airquality/geocode/places)に分裂していた違和感を解消するため、1 つの opt-in <code>client.location</code> source に畳み、内部 group も 2 つ(Weather/Place)に集約する。設計は codex(GPT-5.5) と 3 往復で確定、いずれもユーザー指摘(よりフラットに)を支持。</p>
+
+      <h2>追記: 距離/方位ナビ(#42)撤廃 — place 表示を全廃・geofence は温存</h2>
+      <p class="dim">ユーザー判断「保存地点までの距離は使わない」。撤廃範囲は <b>place 表示(距離ナビ pl_xxxx + presence "At")を全廃、geofence(#43: preset 自動切替/提案・inPlace 表示条件)は温存</b>(3 択中 Option B)。設計は codex(GPT-5.5)1 往復でレビュー・3 点とも提示案を支持。実装済・全ゲート green(unit 172 / e2e 29)・未コミット。</p>
+      <div class="card">
+        <h3><span class="badge b-decided">decided</span> <code>places.ts</code> の役割転換: nav producer → geofence 位置/圏内モジュール</h3>
+        <p><code>placesStatus</code>(表示 doc を返す)を <code>refreshGeofencePosition(signal): Promise&lt;void&gt;</code> に痩せさせた。<code>lastPos</code> 更新 + backoff のみ行い、表示 segment は一切返さない。<code>location.ts</code> が Promise.all 内で副作用として await(place group は geocode+geoinfo のみ)。</p>
+        <p class="why">Why: 圏内判定(<code>getInsidePlaceIds</code>/<code>getCurrentPlaceId</code>)は <code>lastPos</code> に依存し、それは producer 実行時のみ更新される。表示を消しても位置追跡は要る。codex 助言で「保存地点ゼロなら getPosition しない」「reject は内部で握り locationStatus を巻き込まない」を反映。</p>
+      </div>
+      <div class="card">
+        <h3><span class="badge b-decided">decided</span> orphan 掃除 migration <code>migrateDropPlaceNav</code></h3>
+        <p>既存 config の place group に焼かれた nav 動的 segment(<code>id.startsWith('pl_')</code> / 保存地点 id)と presence(<code>id==='here'</code>)を、素材・全 profile の view・glassLayout から除去。<b>温存</b>: <code>config.places</code> / <code>profile.geofence</code> / 他 segment の inPlace 条件。冪等・全 migrate 経路・CONFIG_VERSION 据え置き。</p>
+        <p class="why">Why: <code>pruneOrphans</code> は source 単位のみ、<code>syncSourceWithStatus</code> は segment 追加のみ(消えた segment を削らない)→ 放置すると layout editor に stale chip が残る。<code>removePlace</code> の掃除を「全 nav + here、ただし geofence は温存」へ一般化。</p>
+      </div>
+      <div class="card">
+        <h3><span class="badge b-tradeoff">tradeoff</span> geofence 位置追跡は Location source の poll に連動(parity 維持)</h3>
+        <p class="why">Location を無効化すると <code>lastPos</code> が更新されず geofence が黙って止まる。統合前(places も opt-in client)から同じ挙動なので parity 維持を選択。source-enabled から独立させる案は scope 拡大として見送り(codex も privacy 一貫性から parity 支持)。将来 <code>PositionProvider</code> 共通化は follow-up。</p>
+      </div>
+      <div class="card">
+        <h3><span class="badge b-open">open</span> 「geofence は Location 有効時のみ動く」混乱</h3>
+        <p class="why">place 表示を消したつもりで geofence 自動切替も止まる点が混乱しやすい(codex 指摘)。暫定対応: 保存地点管理 + Add-source の文言で「Requires the Location source enabled」を明示。profile ごとに Location が無効だと geofence 更新が止まるケースは要実機確認。</p>
+      </div>
 
       <h2>フェーズ進捗</h2>
       <div class="phases">

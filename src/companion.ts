@@ -842,7 +842,7 @@ function renderProfileBar(): string {
 }
 
 // #43 この preset をジオフェンス(保存地点)に連動させる UI。保存地点があるときだけ出す。
-// place=Off で解除、suggest=バナー提案 / auto=圏内で自動切替。Places source の位置を使う。
+// place=Off で解除、suggest=バナー提案 / auto=圏内で自動切替。Location source(place group)の位置を使う。
 function renderProfileGeofence(active: Profile): string {
   const places = config.places ?? []
   if (places.length === 0) return ''
@@ -887,7 +887,7 @@ function renderHome(): string {
     <button class="save-btn sm" data-action="open-add-source">${icon('plus', { size: 14 })} Add source</button>
 
     <div class="cmp-label cmp-label-row">Places<span class="cmp-actions"><button class="link-btn" data-action="manage-places">Manage</button></span></div>
-    <div class="cmp-sub">Saved spots for the Location source (distance &amp; bearing from here).</div>
+    <div class="cmp-sub">Saved places for geofencing: preset auto-switch and &ldquo;At place&rdquo; conditions.</div>
 
     ${renderGlassSection()}
 
@@ -930,7 +930,7 @@ function renderSourceDetail(): string {
 
 // Sources 一覧: 全 source 実体 (preset 非依存)。編集・削除はここに集約。
 function renderSources(): string {
-  // Manage all は URL を持つ server source のみ (client=weather は Home の Add/Remove で管理)。
+  // Manage all は URL を持つ server source のみ (client=Location は Home の Add/Remove で管理)。
   const sources = config.sources.filter((s) => s.kind === 'server')
   const html = sources.length
     ? sources.map(sourceManageRow).join('')
@@ -962,9 +962,9 @@ function renderAddSource(): string {
   `
 }
 
-// ── 保存地点管理 (#42) ──
-// 各保存地点を name + 座標 + 削除で並べ、現在地を新規保存できる。地点ナビ(Places source)が
-// ここの保存地点までの距離・方位を出す。
+// ── 保存地点管理 (#43 geofence) ──
+// 各保存地点を name + 座標 + 半径 + 削除で並べ、現在地を新規保存できる。保存地点は geofence
+// (preset 自動切替/提案・inPlace 表示条件)の領域定義に使う。距離/方位ナビ表示(#42)は撤廃済。
 function placeManageRow(p: Place): string {
   const radius = p.radiusM ?? DEFAULT_PLACE_RADIUS_M
   return `<div class="src"><div class="src-head">
@@ -983,7 +983,7 @@ function renderPlaces(): string {
   return `
     <div class="topbar"><button class="nav-btn" data-action="home">${icon('arrow-left', { size: 16 })} Home</button>
       <span class="h-title">Places</span><span></span></div>
-    <div class="cmp-sub">Distance and bearing to these spots show under the Places source (enable it in Add source).</div>
+    <div class="cmp-sub">Saved places drive geofencing — preset auto-switch/suggestions and &ldquo;At place&rdquo; visibility. Requires the Location source enabled.</div>
     ${html}
     <button class="save-btn sm" data-action="add-current-place">${icon('plus', { size: 14 })} Save current location</button>
   `
@@ -1004,11 +1004,11 @@ function getCompanionPosition(): Promise<{ lat: number; lon: number }> {
   })
 }
 
-// 保存地点変更後の共通処理: 永続化 → store へ反映(setSavedPlaces 経由) → 地点ナビ再計算 → 再描画。
+// 保存地点変更後の共通処理: 永続化 → store へ反映(setSavedPlaces 経由) → Location 再 poll → 再描画。
 function afterPlacesChange(): void {
   void saveConfig(config)
-  setSourcesFromConfig(config) // store の savedPlaces を最新化(Location source が有効なら再 fetch 範囲も同期)
-  refreshSourceById(LOCATION_SOURCE_ID) // 現在地から距離・方位を再計算(統合 Location source)
+  setSourcesFromConfig(config) // store の savedPlaces を最新化(geofence の圏内判定に即反映)
+  refreshSourceById(LOCATION_SOURCE_ID) // Location が有効なら再 poll(refreshGeofencePosition で lastPos も更新)
   render()
 }
 

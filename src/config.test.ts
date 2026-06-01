@@ -182,10 +182,11 @@ test('migrate: 旧 5 location source を client.location(2 group) へ畳む', ()
   expect(cfg.sources.filter((s) => s.kind === 'client').map((s) => s.id)).toEqual([
     LOCATION_SOURCE_ID,
   ])
-  // 素材: weather group = 旧 weather + 旧 air、place group = 旧 geocode + geoinfo + nav。
+  // 素材: weather group = 旧 weather + 旧 air。place group = 旧 geocode + geoinfo
+  // (旧 nav の here/pl_x は距離ナビ撤廃 migrateDropPlaceNav で除去済 #42)。
   const g = cfg.groups[LOCATION_SOURCE_ID]
   expect(g.weather.segments.map((s) => s.id).sort()).toEqual(['aqi', 'cond', 'pm25', 'temp'])
-  expect(g.place.segments.map((s) => s.id).sort()).toEqual(['city', 'elev', 'here', 'pl_x'])
+  expect(g.place.segments.map((s) => s.id).sort()).toEqual(['city', 'elev'])
   // options は union でマージ。
   const loc = cfg.sources.find((s) => s.id === LOCATION_SOURCE_ID)
   expect(loc?.options?.tempUnit).toBe('F')
@@ -206,11 +207,12 @@ test('migrate: enabled は旧→client.location へ集約、disabled 由来 segm
   expect(vw.weather.segments.cond).toBe(true)
   expect(vw.weather.segments.aqi).toBe(false)
   expect(vw.weather.segments.pm25).toBe(false)
-  // place group: city は表示(geocode 有効)、elev/here/pl_x は false(geoinfo/places 無効だった)。
+  // place group: city は表示(geocode 有効)、elev は false(geoinfo 無効だった)。
+  // here/pl_x(旧 nav)は距離ナビ撤廃(migrateDropPlaceNav)で view からも除去される。
   expect(vw.place.segments.city).toBe(true)
   expect(vw.place.segments.elev).toBe(false)
-  expect(vw.place.segments.here).toBe(false)
-  expect(vw.place.segments.pl_x).toBe(false)
+  expect(vw.place.segments.here).toBeUndefined()
+  expect(vw.place.segments.pl_x).toBeUndefined()
 })
 
 test('migrate: groupOrder/glassLayout を sourceId+groupId remap & dedupe (＠right 保持)', () => {
@@ -242,6 +244,117 @@ test('migrate: 統合は冪等 (2 回流しても client.location 1 つ・group 
     'pm25',
     'temp',
   ])
+})
+
+// ── 距離/方位ナビ(#42)撤廃 migration (migrateDropPlaceNav) ──
+// 統合済 client.location の place group に焼かれた nav 動的 segment(pl_xxxx)と presence(here)を、
+// 素材・view・glassLayout から除去する。geofence(places/profile.geofence/inPlace 条件)は温存する。
+function locationV4WithNav(): Record<string, unknown> {
+  return {
+    version: 4,
+    sources: [
+      { id: 'builtin.local', kind: 'builtin', label: 'Device', urls: [] },
+      { id: 'server.x', kind: 'server', label: 'X', urls: ['http://x.local/api/status'] },
+      {
+        id: LOCATION_SOURCE_ID,
+        kind: 'client',
+        label: 'Location',
+        urls: [],
+        origin: 'app_bundled',
+        options: { tempUnit: 'F', distUnit: 'mi', bearingStyle: 'arrow' },
+      },
+    ],
+    places: [{ id: 'pl_home', label: 'Home', lat: 35, lon: 139, radiusM: 150 }],
+    groups: {
+      [LOCATION_SOURCE_ID]: {
+        weather: { segments: [{ id: 'temp' }] },
+        place: { segments: [{ id: 'city' }, { id: 'elev' }, { id: 'here' }, { id: 'pl_home' }] },
+      },
+      'server.x': {
+        g: {
+          segments: [
+            {
+              id: 's1',
+              visibility: {
+                combinator: 'and',
+                conditions: [{ kind: 'inPlace', placeId: 'pl_home' }],
+              },
+            },
+          ],
+        },
+      },
+    },
+    profiles: [
+      {
+        id: 'default',
+        name: 'Default',
+        enabledSourceIds: ['builtin.local', 'server.x', LOCATION_SOURCE_ID],
+        geofence: { placeId: 'pl_home', mode: 'auto' },
+        view: {
+          groups: {
+            [LOCATION_SOURCE_ID]: {
+              weather: { enabled: true, segments: { temp: true } },
+              place: {
+                enabled: true,
+                segments: { city: true, elev: true, here: false, pl_home: true },
+              },
+            },
+          },
+          groupOrder: [{ sourceId: LOCATION_SOURCE_ID, groupId: 'place' }],
+          glassLayout: {
+            rows: [
+              [`${LOCATION_SOURCE_ID}|place|city`, `${LOCATION_SOURCE_ID}|place|pl_home`],
+              [`${LOCATION_SOURCE_ID}|place|here`, 'builtin.local|clock|datetime'],
+            ],
+          },
+        },
+      },
+    ],
+    activeProfileId: 'default',
+  }
+}
+
+test('migrate: 距離ナビ撤廃 — place group の pl_xxxx/here を素材/view/glassLayout から除去', () => {
+  const cfg = migrate(locationV4WithNav())
+  const g = cfg.groups[LOCATION_SOURCE_ID]
+  // 素材: 地名/標高は残り、nav(here/pl_home)は消える。
+  expect(g.place.segments.map((s) => s.id).sort()).toEqual(['city', 'elev'])
+  const vw = activeProfile(cfg).view.groups[LOCATION_SOURCE_ID]
+  expect(vw.place.segments.city).toBe(true)
+  expect(vw.place.segments.elev).toBe(true)
+  expect(vw.place.segments.here).toBeUndefined()
+  expect(vw.place.segments.pl_home).toBeUndefined()
+  // glassLayout: nav chip(pl_home/here)だけ除去、他 chip(city/clock)は保つ(空行は残す)。
+  const rows = activeProfile(cfg).view.glassLayout?.rows
+  expect(rows?.[0]).toEqual([`${LOCATION_SOURCE_ID}|place|city`])
+  expect(rows?.[1]).toEqual(['builtin.local|clock|datetime'])
+  // 廃止オプション値は掃除、weather 系は残す。
+  const loc = cfg.sources.find((s) => s.id === LOCATION_SOURCE_ID)
+  expect(loc?.options?.tempUnit).toBe('F')
+  expect(loc?.options?.distUnit).toBeUndefined()
+  expect(loc?.options?.bearingStyle).toBeUndefined()
+})
+
+test('migrate: 距離ナビ撤廃でも geofence(places/profile.geofence/inPlace 条件)は温存', () => {
+  const cfg = migrate(locationV4WithNav())
+  // 保存地点は残る(geofence 領域定義)。
+  expect(cfg.places?.map((p) => p.id)).toEqual(['pl_home'])
+  // profile の geofence 連動は残る。
+  expect(activeProfile(cfg).geofence).toEqual({ placeId: 'pl_home', mode: 'auto' })
+  // 他 segment の inPlace 表示条件は残る。
+  expect(cfg.groups['server.x'].g.segments[0].visibility?.conditions).toEqual([
+    { kind: 'inPlace', placeId: 'pl_home' },
+  ])
+})
+
+test('migrate: 距離ナビ撤廃は冪等 (2 回流しても place は地名/標高のみ)', () => {
+  const once = migrate(locationV4WithNav())
+  const twice = migrate(JSON.parse(JSON.stringify(once)) as Record<string, unknown>)
+  expect(twice.groups[LOCATION_SOURCE_ID].place.segments.map((s) => s.id).sort()).toEqual([
+    'city',
+    'elev',
+  ])
+  expect(twice.places?.map((p) => p.id)).toEqual(['pl_home'])
 })
 
 test('places CRUD: 追加/改名/座標更新/削除', () => {
@@ -397,8 +510,8 @@ test('migrate 冪等: category backfill を二度かけても安定', () => {
 })
 
 test('syncSourceWithStatus: place group の segment に正しい category を seed する', () => {
-  // 統合後: 保存地点ナビは client.location の 'place' group(LOCATION_PLACE_GROUP_ID)。
-  // taxonomy キーが 'nav' のままだと here/地点が custom に落ちる(group 統合の取りこぼし回帰を pin)。
+  // 統合後: place group は地名(geocode)+標高/TZ(geoinfo)。taxonomy キーが 'place|*' へ
+  // 統合された取りこぼし回帰を pin する(距離/方位ナビ #42 は撤廃済=pl_xxxx/here は出ない)。
   const cfg = emptyConfig()
   const doc = {
     version: 1,
@@ -408,16 +521,16 @@ test('syncSourceWithStatus: place group の segment に正しい category を se
         id: LOCATION_PLACE_GROUP_ID,
         label: 'Place',
         segments: [
-          { id: 'here', label: 'At', value: 'Home' },
-          { id: 'pl_abc12345', label: 'Home', value: '2km' },
+          { id: 'city', label: 'City', value: 'Tokyo' },
+          { id: 'elev', label: 'Elev', value: '40m' },
         ],
       },
     ],
   }
   syncSourceWithStatus(cfg, LOCATION_SOURCE_ID, doc as unknown as StatusDoc)
   const segs = cfg.groups[LOCATION_SOURCE_ID][LOCATION_PLACE_GROUP_ID].segments
-  expect(segs.find((s) => s.id === 'here')?.category).toBe('place_geofence')
-  expect(segs.find((s) => s.id === 'pl_abc12345')?.category).toBe('place_distance')
+  expect(segs.find((s) => s.id === 'city')?.category).toBe('place_city')
+  expect(segs.find((s) => s.id === 'elev')?.category).toBe('elevation')
 })
 
 test('migrate(v3 単発): server segment に category が seed される', () => {

@@ -230,38 +230,12 @@ const AIRQUALITY_OPTION_FIELDS: OptionField[] = [
   },
 ]
 
-// places (client.places) source 単位の表示オプション (#42)。距離単位と方位スタイル。
-const PLACES_OPTION_FIELDS: OptionField[] = [
-  {
-    kind: 'select',
-    id: 'distUnit',
-    label: 'Distance unit',
-    choices: [
-      { value: 'km', label: 'km' },
-      { value: 'mi', label: 'mi' },
-    ],
-    default: 'km',
-  },
-  {
-    kind: 'select',
-    id: 'bearingStyle',
-    label: 'Bearing',
-    choices: [
-      { value: 'text', label: 'Text (N/NE)' },
-      { value: 'compass16', label: '16-point (NNE)' },
-      { value: 'arrow', label: 'Arrow' },
-    ],
-    default: 'text',
-  },
-]
-
-// 統合 client source "Location" は 1 つの options バッグに 4 系統(weather/geoinfo/airquality/places)の
-// field を持つ(field id は非衝突)。旧 5 source の schema を union して返す。
+// 統合 client source "Location" は 1 つの options バッグに 3 系統(weather/geoinfo/airquality)の
+// field を持つ(field id は非衝突)。距離/方位ナビ(#42)撤廃に伴い places の distUnit/bearingStyle は廃止。
 const LOCATION_OPTION_FIELDS: OptionField[] = [
   ...WEATHER_OPTION_FIELDS,
   ...GEOINFO_OPTION_FIELDS,
   ...AIRQUALITY_OPTION_FIELDS,
-  ...PLACES_OPTION_FIELDS,
 ]
 
 export function sourceOptionSchema(sourceId: string): OptionField[] {

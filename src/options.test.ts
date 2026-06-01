@@ -40,9 +40,10 @@ test('segmentOptionSchema / sourceOptionSchema: 未知 source は空', () => {
   expect(sourceOptionSchema('client.unknown')).toEqual([]) // location 以外は空
 })
 
-test('sourceOptionSchema: client.location は 4 系統(weather/geoinfo/airquality/places)の union', () => {
+test('sourceOptionSchema: client.location は 3 系統(weather/geoinfo/airquality)の union', () => {
   const fields = sourceOptionSchema(LOCATION_SOURCE_ID)
-  // 統合 source の 1 バッグに全系統の field が並ぶ(field id は非衝突)。
+  // 統合 source の 1 バッグに全系統の field が並ぶ(field id は非衝突)。距離/方位ナビ(#42)撤廃で
+  // places の distUnit/bearingStyle は廃止。
   expect(fields.map((f) => f.id)).toEqual([
     'tempUnit',
     'windUnit',
@@ -55,8 +56,6 @@ test('sourceOptionSchema: client.location は 4 系統(weather/geoinfo/airqualit
     'rainGranularity',
     'elevUnit', // geoinfo
     'aqiStandard', // airquality
-    'distUnit', // places
-    'bearingStyle', // places
   ])
   // rainThreshold のみ number、それ以外は select。
   expect(fields.find((f) => f.id === 'rainThreshold')?.kind).toBe('number')
@@ -113,8 +112,6 @@ test('resolveSourceOptions / resolveSegmentOptions: スキーマ空なら {} / l
     rainGranularity: 'auto',
     elevUnit: 'm',
     aqiStandard: 'us',
-    distUnit: 'km',
-    bearingStyle: 'text',
   })
 })
 

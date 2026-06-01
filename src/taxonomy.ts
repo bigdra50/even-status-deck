@@ -45,7 +45,8 @@ const DEFAULT_CATEGORY: Record<string, string> = {
   'weather|pm25': 'pm25',
   'weather|pm10': 'pm10',
   'weather|pollen': 'pollen',
-  // client.location group 'place' (地名 + 標高/TZ + 保存地点ナビ)。旧 geocode + geoinfo + places(nav) を集約。
+  // client.location group 'place' (地名 + 標高/TZ)。旧 geocode + geoinfo を集約。
+  // 距離/方位ナビ(#42 旧 places, pl_xxxx/here)は撤廃済(place 表示を全廃・geofence のみ存続)。
   'place|city': 'place_city',
   'place|area': 'place_area',
   'place|region': 'place_region',
@@ -53,14 +54,9 @@ const DEFAULT_CATEGORY: Record<string, string> = {
   'place|elev': 'elevation',
   'place|tz': 'timezone_offset',
   'place|zone': 'timezone',
-  'place|here': 'place_geofence',
 }
 
-// groupId,segId から既定 leaf category を解決する。
-// place group の動的 segment(保存地点ごと id=pl_xxxx。LOCATION_PLACE_GROUP_ID)は place_distance、未知は 'custom'。
+// groupId,segId から既定 leaf category を解決する。未知 segment は 'custom'。
 export function defaultCategory(groupId: string, segId: string): string {
-  const hit = DEFAULT_CATEGORY[`${groupId}|${segId}`]
-  if (hit) return hit
-  if (groupId === 'place') return 'place_distance' // LOCATION_PLACE_GROUP_ID (config.ts)
-  return 'custom'
+  return DEFAULT_CATEGORY[`${groupId}|${segId}`] ?? 'custom'
 }

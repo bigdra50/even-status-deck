@@ -385,8 +385,9 @@ function ensureClientLocation(cfg: Config): void {
   cfg.places ??= []
 }
 
-// 地点ナビの group id (#42)。保存地点ごとの segment(id=place.id)をこの 1 group に集約する。
-export const PLACES_GROUP_ID = 'nav'
+// 旧地点ナビ source(client.places)の group id (#42)。距離ナビ撤廃後は LOCATION_MERGE_MAP の
+// legacy 移行(旧 nav group → place group)でのみ参照する内部定数(export 不要)。
+const PLACES_GROUP_ID = 'nav'
 const MAX_PLACES = 16 // 保存地点の上限(glass 行数 + UI が現実的な範囲)
 const MAX_PLACE_LABEL = 24
 export const DEFAULT_PLACE_RADIUS_M = 150 // ジオフェンス既定半径(m, #43)
@@ -627,6 +628,7 @@ function migrateV4Same(c: Config): Config {
   ensureBuiltin(c)
   migrateLocationSourcesMerge(c) // 旧 5 location source → client.location(2 group)。ensureClientLocation を内包
   ensureClientLocation(c)
+  migrateDropPlaceNav(c) // 距離/方位ナビ(#42)撤廃: place group の pl_xxxx/here orphan を掃除(geofence は温存)
   normalizePlaces(c)
   c.imu ??= defaultImuConfig()
   delete (c as Record<string, unknown>).batteryRate
@@ -853,6 +855,46 @@ function migrateLocationSourcesMerge(c: Config): void {
   c.sources = c.sources.filter((s) => !oldIds.has(s.id))
 }
 
+// 距離/方位ナビ(#42)撤廃に伴う orphan 掃除。既存 user config の place group に焼かれた nav 動的 segment
+// (保存地点ごと id=pl_xxxx)と presence segment(id=here)を、素材・全 profile の view・glassLayout から除去する。
+// geofence(#43)用の Config.places / profile.geofence / 他 segment の inPlace visibility 条件は温存する
+// (地点定義と圏内判定は残す)。migrateLocationSourcesMerge の「後」に呼ぶ(旧 places が place group へ畳まれた後)。
+// 冪等: 対象 segment が無ければ no-op。CONFIG_VERSION 据え置き(additive 同様、毎 load 実行で安全)。
+function migrateDropPlaceNav(c: Config): void {
+  const gid = LOCATION_PLACE_GROUP_ID
+  const savedIds = new Set((c.places ?? []).map((p) => p.id))
+  // place group の表示 segment のうち nav 由来(pl_ 前置 / here / 保存地点 id)を判定する。
+  // 地名/標高/TZ の固定 seg(city/area/region/country/elev/tz/zone)は対象外。
+  const isNavSeg = (id: string): boolean =>
+    id === 'here' || id.startsWith('pl_') || savedIds.has(id)
+
+  // 1. 素材から除去。
+  const meta = c.groups[LOCATION_SOURCE_ID]?.[gid]
+  if (meta) meta.segments = meta.segments.filter((s) => !isNavSeg(s.id))
+
+  // 2. 各 profile の view.groups + glassLayout.rows から除去(行位置は保つ=空行も残す)。
+  for (const p of c.profiles) {
+    const vg = p.view.groups[LOCATION_SOURCE_ID]?.[gid]
+    if (vg) for (const id of Object.keys(vg.segments)) if (isNavSeg(id)) delete vg.segments[id]
+    const lay = p.view.glassLayout
+    if (lay) {
+      lay.rows = lay.rows.map((row) =>
+        row.filter((k) => {
+          const parts = k.split('|')
+          return !(parts[0] === LOCATION_SOURCE_ID && parts[1] === gid && isNavSeg(parts[2] ?? ''))
+        }),
+      )
+    }
+  }
+
+  // 3. 廃止オプション値(distUnit/bearingStyle)を掃除(無害だが残さない)。
+  const src = c.sources.find((s) => s.id === LOCATION_SOURCE_ID)
+  if (src?.options) {
+    delete src.options.distUnit
+    delete src.options.bearingStyle
+  }
+}
+
 // 永続化された recentlyRemoved を検証・間引く。壊れた entry は破棄し、件数上限を超えたら古い順に削る。
 function normalizeRemovedViews(c: Config): void {
   const rv = c.recentlyRemoved
@@ -910,6 +952,7 @@ function migrateV3ToV4(old: V3Config): Config {
   ensureBuiltin(cfg)
   migrateLocationSourcesMerge(cfg) // 旧 location source があれば畳む(v3 は通常無いが冪等・防御的)
   ensureClientLocation(cfg)
+  migrateDropPlaceNav(cfg) // 距離/方位ナビ(#42)撤廃: place group の pl_xxxx/here orphan を掃除(geofence は温存)
   normalizePlaces(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
@@ -980,6 +1023,7 @@ function migrateLegacyToV4(parsed: Record<string, unknown>): Config {
   ensureBuiltin(cfg)
   migrateLocationSourcesMerge(cfg) // 旧 location source があれば畳む(legacy は通常無いが冪等・防御的)
   ensureClientLocation(cfg)
+  migrateDropPlaceNav(cfg) // 距離/方位ナビ(#42)撤廃: place group の pl_xxxx/here orphan を掃除(geofence は温存)
   normalizePlaces(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)

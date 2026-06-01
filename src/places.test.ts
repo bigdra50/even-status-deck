@@ -1,72 +1,64 @@
-// places.ts の純粋ロジック(computeNav/buildPlacesDoc/readPlacesOptions)。geolocation は除外。
+// geofence(#43) 位置/圏内モジュールの単体テスト。距離/方位ナビ(#42)撤廃後の契約。
+// 距離計算の純ロジックは geo.test.ts、preset 提案は suggest.test.ts が担う。ここは
+// 「保存地点が無ければ位置を取らない」「現在地キャッシュ更新後に圏内判定できる」を検証する。
 // 実行: bun test src/places.test.ts
 import { expect, test } from 'bun:test'
 import type { Place } from './config'
-import { PLACES_GROUP_ID } from './config'
-import { buildPlacesDoc, computeNav, DEFAULT_PLACES_OPTIONS, readPlacesOptions } from './places'
+import {
+  getCurrentPlaceId,
+  getInsidePlaceIds,
+  refreshGeofencePosition,
+  setSavedPlaces,
+} from './places'
 
-const places: Place[] = [
-  { id: 'pl_far', label: 'Osaka', lat: 34.7, lon: 135.5 },
-  { id: 'pl_near', label: 'Shinjuku', lat: 35.69, lon: 139.7 },
-]
-const tokyo = { lat: 35.681, lon: 139.767 }
+const tokyo: Place = { id: 'pl_tokyo', label: 'Tokyo', lat: 35.681, lon: 139.767 }
 
-test('readPlacesOptions: 既定 km/text、選択値を採用、不正は既定', () => {
-  expect(readPlacesOptions(undefined)).toEqual({ distUnit: 'km', bearingStyle: 'text' })
-  expect(readPlacesOptions({ distUnit: 'mi', bearingStyle: 'arrow' })).toEqual({
-    distUnit: 'mi',
-    bearingStyle: 'arrow',
-  })
-  expect(readPlacesOptions({ distUnit: 'lightyear', bearingStyle: 'x' })).toEqual({
-    distUnit: 'km',
-    bearingStyle: 'text',
-  })
+type GeoOk = (p: { coords: { latitude: number; longitude: number } }) => void
+
+// navigator.geolocation.getCurrentPosition をモックする。null で navigator を外す。
+function setGeo(pos: { lat: number; lon: number } | null): void {
+  const g = globalThis as { navigator?: { geolocation: { getCurrentPosition: unknown } } }
+  if (!pos) {
+    delete g.navigator
+    return
+  }
+  g.navigator = {
+    geolocation: {
+      getCurrentPosition: (ok: GeoOk) => ok({ coords: { latitude: pos.lat, longitude: pos.lon } }),
+    },
+  }
+}
+
+// 注: lastPos はモジュール singleton。以下のテストは順に実行され、各々が refresh で lastPos を確定させる。
+test('refreshGeofencePosition: 保存地点が無ければ位置を取らない(getCurrentPlaceId は null)', async () => {
+  setGeo(null) // navigator 無し: 呼ばれたら reject するが、early return で触れない
+  setSavedPlaces([])
+  await refreshGeofencePosition(new AbortController().signal)
+  expect(getCurrentPlaceId()).toBeNull()
+  expect(getInsidePlaceIds()).toBeNull() // lastPos 未確定
 })
 
-test('computeNav: 距離昇順・ラベルfold・距離方位の文字列', () => {
-  const nav = computeNav(places, tokyo, DEFAULT_PLACES_OPTIONS)
-  expect(nav.map((n) => n.id)).toEqual(['pl_near', 'pl_far']) // 近い順(新宿 < 大阪)
-  expect(nav[0].label).toBe('Shinjuku')
-  expect(nav[0].value).toMatch(/^[\d.]+km [NESW]+$/) // "6.x km NW" のような形
-  expect(nav[1].value).toMatch(/km (SW|WSW|W)/) // 大阪は東京の西〜南西
+test('refreshGeofencePosition: 現在地が圏内なら getCurrentPlaceId / getInsidePlaceIds が地点を返す', async () => {
+  setSavedPlaces([tokyo])
+  setGeo({ lat: tokyo.lat, lon: tokyo.lon }) // 地点ど真ん中=圏内
+  await refreshGeofencePosition(new AbortController().signal)
+  expect(getCurrentPlaceId()).toBe('pl_tokyo')
+  expect(getInsidePlaceIds()?.has('pl_tokyo')).toBe(true)
 })
 
-test('computeNav: ラベルの非 ASCII は fold(空なら Place)', () => {
-  const nav = computeNav(
-    [{ id: 'p', label: '東京', lat: 35.7, lon: 139.7 }],
-    tokyo,
-    DEFAULT_PLACES_OPTIONS,
-  )
-  expect(nav[0].label).toBe('Place') // CJK は fold で空 → 'Place'
+test('refreshGeofencePosition: 現在地が圏外なら getCurrentPlaceId は null(圏内集合は空)', async () => {
+  setSavedPlaces([tokyo])
+  setGeo({ lat: 0, lon: 0 }) // 赤道沖=圏外
+  await refreshGeofencePosition(new AbortController().signal)
+  expect(getCurrentPlaceId()).toBeNull()
+  expect(getInsidePlaceIds()?.size).toBe(0) // lastPos は fresh だが圏内 0 件
 })
 
-test('computeNav: arrow/mi オプション反映', () => {
-  const nav = computeNav([places[1]], tokyo, { distUnit: 'mi', bearingStyle: 'arrow' })
-  expect(nav[0].value).toMatch(/mi [↑↗→↘↓↙←↖]$/)
-})
-
-test('buildPlacesDoc: 各地点 = 既定 ON segment、空配列は空 group', () => {
-  const nav = computeNav(places, tokyo, DEFAULT_PLACES_OPTIONS)
-  const g = buildPlacesDoc(nav, undefined, 1).groups[0]
-  expect(g.id).toBe(PLACES_GROUP_ID)
-  expect(g.label).toBe('Places')
-  expect(g.segments).toHaveLength(2)
-  expect(g.segments[0].defaultEnabled).toBe(true)
-  expect(g.segments[0].id).toBe('pl_near')
-  expect(buildPlacesDoc([], undefined, 1).groups[0].segments).toHaveLength(0)
-})
-
-test('buildPlacesDoc: here(現在地)segment は既定 OFF で先頭に出る (#43)', () => {
-  const g = buildPlacesDoc([], 'Home', 1).groups[0]
-  expect(g.segments).toHaveLength(1)
-  expect(g.segments[0].id).toBe('here')
-  expect(g.segments[0].value).toBe('Home')
-  expect(g.segments[0].defaultEnabled).toBe(false)
-  // 圏外なら 'Away'
-  expect(buildPlacesDoc([], 'Away', 1).groups[0].segments[0].value).toBe('Away')
-})
-
-test('buildPlacesDoc: state/message を載せられる (stale)', () => {
-  const doc = buildPlacesDoc([], undefined, 1, 'stale', 'using last position')
-  expect(doc.groups[0].state).toBe('stale')
+test('refreshGeofencePosition: abort 済み signal は lastPos を更新しない', async () => {
+  setSavedPlaces([tokyo])
+  setGeo({ lat: tokyo.lat, lon: tokyo.lon })
+  const ac = new AbortController()
+  ac.abort()
+  await refreshGeofencePosition(ac.signal)
+  expect(getCurrentPlaceId()).toBeNull() // 直前テストの圏外位置が保持され、東京は圏内にならない
 })

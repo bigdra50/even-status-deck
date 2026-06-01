@@ -14,13 +14,15 @@ test('defaultCategory: 既知 segment は device_class leaf を返す', () => {
   // 統合後: 地名(旧 geocode)・大気質(旧 airquality)は group 'weather'/'place' へ畳まれている。
   expect(defaultCategory('place', 'country')).toBe('place_country') // 旧 geocode|country
   expect(defaultCategory('weather', 'pm25')).toBe('pm25') // 旧 airquality|pm25
+  // place group は地名(city/area/region/country)+標高/TZ(elev/tz/zone)のみ。実 group id を pin。
+  expect(LOCATION_PLACE_GROUP_ID).toBe('place')
+  expect(defaultCategory(LOCATION_PLACE_GROUP_ID, 'elev')).toBe('elevation')
 })
 
-test('defaultCategory: place group の here は place_geofence, 動的地点は place_distance', () => {
-  // 統合 client.location の place group(地名+標高+保存地点ナビ)。実 group id を config から pin する。
-  expect(LOCATION_PLACE_GROUP_ID).toBe('place')
-  expect(defaultCategory(LOCATION_PLACE_GROUP_ID, 'here')).toBe('place_geofence')
-  expect(defaultCategory(LOCATION_PLACE_GROUP_ID, 'pl_abc12345')).toBe('place_distance') // 保存地点 id(pl_ 前置)
+test('defaultCategory: 距離ナビ撤廃後、pl_xxxx/here は custom(place_distance/place_geofence は廃止)', () => {
+  // 距離/方位ナビ(#42)撤廃: place group の動的 segment(pl_xxxx)と presence(here)は分類対象外。
+  expect(defaultCategory(LOCATION_PLACE_GROUP_ID, 'here')).toBe('custom')
+  expect(defaultCategory(LOCATION_PLACE_GROUP_ID, 'pl_abc12345')).toBe('custom')
 })
 
 test('defaultCategory: 未知 group/segment は custom', () => {
