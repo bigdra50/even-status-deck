@@ -1,7 +1,13 @@
 // 表示オプション基盤 (#36) の純粋ロジック: schema / 解決 (default 込み) / 書込 (clock は format 合成)。
 // 実行: bun test src/options.test.ts
 import { expect, test } from 'bun:test'
-import { BUILTIN_SOURCE_ID, type Config, emptyConfig, sourceById } from './config'
+import {
+  BUILTIN_SOURCE_ID,
+  type Config,
+  emptyConfig,
+  LOCATION_SOURCE_ID,
+  sourceById,
+} from './config'
 import {
   applyDefaults,
   coerce,
@@ -31,11 +37,12 @@ test('segmentOptionSchema: clock datetime は Time/Date/Order の 3 select', () 
 test('segmentOptionSchema / sourceOptionSchema: 未知 source は空', () => {
   expect(segmentOptionSchema('client.unknown', 'g', 's')).toEqual([])
   expect(segmentOptionSchema(BUILTIN_SOURCE_ID, 'g2', 'level')).toEqual([])
-  expect(sourceOptionSchema('client.unknown')).toEqual([]) // weather 以外は空
+  expect(sourceOptionSchema('client.unknown')).toEqual([]) // location 以外は空
 })
 
-test('sourceOptionSchema: client.weather は単位/フォーマット/降水の option 群 (#38/#40/#39)', () => {
-  const fields = sourceOptionSchema('client.weather')
+test('sourceOptionSchema: client.location は 4 系統(weather/geoinfo/airquality/places)の union', () => {
+  const fields = sourceOptionSchema(LOCATION_SOURCE_ID)
+  // 統合 source の 1 バッグに全系統の field が並ぶ(field id は非衝突)。
   expect(fields.map((f) => f.id)).toEqual([
     'tempUnit',
     'windUnit',
@@ -46,6 +53,10 @@ test('sourceOptionSchema: client.weather は単位/フォーマット/降水の 
     'rainMode',
     'rainThreshold',
     'rainGranularity',
+    'elevUnit', // geoinfo
+    'aqiStandard', // airquality
+    'distUnit', // places
+    'bearingStyle', // places
   ])
   // rainThreshold のみ number、それ以外は select。
   expect(fields.find((f) => f.id === 'rainThreshold')?.kind).toBe('number')
@@ -77,19 +88,20 @@ test('setSegmentOption: segment 不在 / 未知 field は false', () => {
   expect(setSegmentOption(c, BUILTIN_SOURCE_ID, 'clock', 'datetime', 'bogus', 'x')).toBe(false)
 })
 
-test('setSourceOption: スキーマの無い source は false / weather は書き込める', () => {
-  const c = emptyConfig() // ensureClientWeather で client.weather は実在する
+test('setSourceOption: スキーマの無い source は false / location は書き込める', () => {
+  const c = emptyConfig() // ensureClientLocation で client.location は実在する
   expect(setSourceOption(c, 'client.unknown', 'tempUnit', 'F')).toBe(false) // schema 無し
-  expect(setSourceOption(c, 'client.weather', 'tempUnit', 'F')).toBe(true)
-  expect(sourceById(c, 'client.weather')?.options?.tempUnit).toBe('F')
-  expect(setSourceOption(c, 'client.weather', 'bogusField', 'x')).toBe(false) // 未知 field
+  expect(setSourceOption(c, LOCATION_SOURCE_ID, 'tempUnit', 'F')).toBe(true)
+  expect(sourceById(c, LOCATION_SOURCE_ID)?.options?.tempUnit).toBe('F')
+  expect(setSourceOption(c, LOCATION_SOURCE_ID, 'elevUnit', 'ft')).toBe(true) // geoinfo 系も同バッグ
+  expect(setSourceOption(c, LOCATION_SOURCE_ID, 'bogusField', 'x')).toBe(false) // 未知 field
 })
 
-test('resolveSourceOptions / resolveSegmentOptions: スキーマ空なら {} / weather は default 解決', () => {
+test('resolveSourceOptions / resolveSegmentOptions: スキーマ空なら {} / location は default 解決', () => {
   const c = emptyConfig()
   expect(resolveSourceOptions(c, 'client.unknown')).toEqual({}) // schema 無し
   expect(resolveSegmentOptions(c, BUILTIN_SOURCE_ID, 'g2', 'level')).toEqual({})
-  expect(resolveSourceOptions(c, 'client.weather')).toEqual({
+  expect(resolveSourceOptions(c, LOCATION_SOURCE_ID)).toEqual({
     tempUnit: 'C',
     windUnit: 'kmh',
     windDir: 'text',
@@ -99,6 +111,10 @@ test('resolveSourceOptions / resolveSegmentOptions: スキーマ空なら {} / w
     rainMode: 'nextrain',
     rainThreshold: 0.1,
     rainGranularity: 'auto',
+    elevUnit: 'm',
+    aqiStandard: 'us',
+    distUnit: 'km',
+    bearingStyle: 'text',
   })
 })
 

@@ -16,15 +16,12 @@ import {
   parseClockFormat,
 } from './builtins'
 import {
-  AIRQUALITY_SOURCE_ID,
   BUILTIN_SOURCE_ID,
   type Config,
-  GEOINFO_SOURCE_ID,
+  LOCATION_SOURCE_ID,
   type OptionValues,
-  PLACES_SOURCE_ID,
   type SegMeta,
   sourceById,
-  WEATHER_SOURCE_ID,
 } from './config'
 
 // 1 オプションの宣言。companion はこれを見て select / toggle / number を描く。
@@ -258,11 +255,17 @@ const PLACES_OPTION_FIELDS: OptionField[] = [
   },
 ]
 
+// 統合 client source "Location" は 1 つの options バッグに 4 系統(weather/geoinfo/airquality/places)の
+// field を持つ(field id は非衝突)。旧 5 source の schema を union して返す。
+const LOCATION_OPTION_FIELDS: OptionField[] = [
+  ...WEATHER_OPTION_FIELDS,
+  ...GEOINFO_OPTION_FIELDS,
+  ...AIRQUALITY_OPTION_FIELDS,
+  ...PLACES_OPTION_FIELDS,
+]
+
 export function sourceOptionSchema(sourceId: string): OptionField[] {
-  if (sourceId === WEATHER_SOURCE_ID) return WEATHER_OPTION_FIELDS
-  if (sourceId === GEOINFO_SOURCE_ID) return GEOINFO_OPTION_FIELDS
-  if (sourceId === AIRQUALITY_SOURCE_ID) return AIRQUALITY_OPTION_FIELDS
-  if (sourceId === PLACES_SOURCE_ID) return PLACES_OPTION_FIELDS
+  if (sourceId === LOCATION_SOURCE_ID) return LOCATION_OPTION_FIELDS
   return []
 }
 

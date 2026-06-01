@@ -26,9 +26,9 @@ import {
   isCustomLabelKey,
   isRightDivider,
   isSourceEnabled,
+  LOCATION_SOURCE_ID,
   loadConfig,
   type OptionValues,
-  PLACES_SOURCE_ID,
   type Place,
   type Profile,
   RIGHT_DIVIDER,
@@ -986,8 +986,8 @@ function getCompanionPosition(): Promise<{ lat: number; lon: number }> {
 // 保存地点変更後の共通処理: 永続化 → store へ反映(setSavedPlaces 経由) → 地点ナビ再計算 → 再描画。
 function afterPlacesChange(): void {
   void saveConfig(config)
-  setSourcesFromConfig(config) // store の savedPlaces を最新化(Places source が有効なら再 fetch 範囲も同期)
-  refreshSourceById(PLACES_SOURCE_ID) // 現在地から距離・方位を再計算
+  setSourcesFromConfig(config) // store の savedPlaces を最新化(Location source が有効なら再 fetch 範囲も同期)
+  refreshSourceById(LOCATION_SOURCE_ID) // 現在地から距離・方位を再計算(統合 Location source)
   render()
 }
 

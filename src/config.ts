@@ -24,6 +24,15 @@ export const AIRQUALITY_SOURCE_ID = 'client.airquality'
 export const GEOCODE_SOURCE_ID = 'client.geocode'
 // 地点ナビ client source の決定的 ID (#42)。外部 fetch なし(geolocation + Config.places から純計算)。
 export const PLACES_SOURCE_ID = 'client.places'
+
+// 統合 client source の決定的 ID。位置由来の旧 5 source(weather/geoinfo/airquality/geocode/places)を
+// 1 source に畳み、内部は 2 group(weather=気象+大気質 / place=地名+標高/TZ+保存地点ナビ)に集約する。
+// 旧 5 SOURCE_ID は migration(migrateLocationSourcesMerge)でのみ参照する legacy 定数。
+export const LOCATION_SOURCE_ID = 'client.location'
+// 統合先の group id。weather group は WEATHER_GROUP_ID(weather.ts)と一致(suncountdown anchors の整合)。
+export const LOCATION_WEATHER_GROUP_ID = 'weather'
+export const LOCATION_PLACE_GROUP_ID = 'place'
+
 export const DEFAULT_PROFILE_ID = 'default'
 
 // glass layout の「ラベル chip」を表す予約 segId。items の key が `src|grp|@label` のとき、
@@ -91,6 +100,10 @@ export type SourceDef = {
   // 出自を区別する (tasks/display-model-spec.md)。Phase1 は型のみ (builtin g2 のみ seed)、
   // 消費 (バッジ/displayLabel 焼込) は Phase2/3。
   displayOwner?: string
+  // origin: source の出自。'app_bundled' = アプリ同梱(builtin Device / 統合 Location)、
+  // 'user_added' = ユーザーが追加(server / 将来の外部 client provider)。未設定は user_added 相当。
+  // companion の Home セクション分け(Included / Connected / 将来 Extensions)が kind と併せて読む。
+  origin?: 'app_bundled' | 'user_added'
 }
 
 // ── 素材 (共有資産) ──
@@ -328,6 +341,7 @@ function ensureBuiltin(cfg: Config): void {
     existing.label = 'Device' // SOURCES には出さない (companion 側で builtin を除外)。内部表示用
     existing.urls ??= []
     existing.displayOwner = 'Glass' // 主要衝突源 (g2 電池 vs PC 電池) の出自。コード所有
+    existing.origin = 'app_bundled' // 同梱 source (Home の Included セクション)
   } else {
     cfg.sources.unshift({
       id: BUILTIN_SOURCE_ID,
@@ -335,6 +349,7 @@ function ensureBuiltin(cfg: Config): void {
       label: 'Device',
       urls: [],
       displayOwner: 'Glass',
+      origin: 'app_bundled',
     })
   }
   if (!cfg.groups[BUILTIN_SOURCE_ID]) cfg.groups[BUILTIN_SOURCE_ID] = {}
@@ -346,71 +361,27 @@ function ensureBuiltin(cfg: Config): void {
   migrateBuiltinGroups(cfg)
 }
 
-// 気象 client source (現在地ベース)。SDK に GPS が無いため位置は companion WebView の
-// geolocation で取得する。既定は無効 (opt-in): enabledSourceIds に入れず、ユーザーが
-// "Add source" で有効化したとき初めて位置許可を求める。素材 group は status sync が補充する。
-function ensureClientWeather(cfg: Config): void {
-  const existing = cfg.sources.find((s) => s.id === WEATHER_SOURCE_ID)
-  if (existing) {
-    existing.kind = 'client'
-    existing.label = 'Weather'
-    existing.urls ??= []
-  } else {
-    cfg.sources.push({ id: WEATHER_SOURCE_ID, kind: 'client', label: 'Weather', urls: [] })
-  }
-  cfg.groups[WEATHER_SOURCE_ID] ??= {}
-}
-
-// 標高/タイムゾーン client source (#45)。weather と同様に既定無効(opt-in)。素材 group は status sync が補充する。
-function ensureClientGeoinfo(cfg: Config): void {
-  const existing = cfg.sources.find((s) => s.id === GEOINFO_SOURCE_ID)
+// 統合 client source "Location" (現在地ベース)。SDK に GPS が無いため位置は companion WebView の
+// geolocation で取得する。既定は無効 (opt-in): enabledSourceIds に入れず、ユーザーが "Add source" で
+// 有効化したとき初めて位置許可を求める。素材 group(weather/place)は status sync が補充する。
+// 旧 5 source(weather/geoinfo/airquality/geocode/places)は migrateLocationSourcesMerge で本 source へ畳む。
+function ensureClientLocation(cfg: Config): void {
+  const existing = cfg.sources.find((s) => s.id === LOCATION_SOURCE_ID)
   if (existing) {
     existing.kind = 'client'
     existing.label = 'Location'
     existing.urls ??= []
+    existing.origin = 'app_bundled'
   } else {
-    cfg.sources.push({ id: GEOINFO_SOURCE_ID, kind: 'client', label: 'Location', urls: [] })
+    cfg.sources.push({
+      id: LOCATION_SOURCE_ID,
+      kind: 'client',
+      label: 'Location',
+      urls: [],
+      origin: 'app_bundled',
+    })
   }
-  cfg.groups[GEOINFO_SOURCE_ID] ??= {}
-}
-
-// 空気質 client source (#41)。weather と同様に既定無効(opt-in)。素材 group は status sync が補充する。
-function ensureClientAirquality(cfg: Config): void {
-  const existing = cfg.sources.find((s) => s.id === AIRQUALITY_SOURCE_ID)
-  if (existing) {
-    existing.kind = 'client'
-    existing.label = 'Air'
-    existing.urls ??= []
-  } else {
-    cfg.sources.push({ id: AIRQUALITY_SOURCE_ID, kind: 'client', label: 'Air', urls: [] })
-  }
-  cfg.groups[AIRQUALITY_SOURCE_ID] ??= {}
-}
-
-// 地名(逆ジオコーディング) client source (#37)。weather と同様に既定無効(opt-in)。素材 group は status sync が補充する。
-function ensureClientGeocode(cfg: Config): void {
-  const existing = cfg.sources.find((s) => s.id === GEOCODE_SOURCE_ID)
-  if (existing) {
-    existing.kind = 'client'
-    existing.label = 'Place'
-    existing.urls ??= []
-  } else {
-    cfg.sources.push({ id: GEOCODE_SOURCE_ID, kind: 'client', label: 'Place', urls: [] })
-  }
-  cfg.groups[GEOCODE_SOURCE_ID] ??= {}
-}
-
-// 地点ナビ client source (#42)。weather と同様に既定無効(opt-in)。保存地点ごとの segment は status sync が補充する。
-function ensureClientPlaces(cfg: Config): void {
-  const existing = cfg.sources.find((s) => s.id === PLACES_SOURCE_ID)
-  if (existing) {
-    existing.kind = 'client'
-    existing.label = 'Places'
-    existing.urls ??= []
-  } else {
-    cfg.sources.push({ id: PLACES_SOURCE_ID, kind: 'client', label: 'Places', urls: [] })
-  }
-  cfg.groups[PLACES_SOURCE_ID] ??= {}
+  cfg.groups[LOCATION_SOURCE_ID] ??= {}
   cfg.places ??= []
 }
 
@@ -506,11 +477,12 @@ export function removePlace(cfg: Config, id: string): boolean {
   if (cfg.places.length === before) return false
   // 孤立 segment を掃除する(素材 + 全 profile view + glassLayout 配置)。さもないと削除後に
   // layout editor が glassLayout.rows の stale chip を描き続ける(discardSource と同じ理由)。
-  const key = segKey(PLACES_SOURCE_ID, PLACES_GROUP_ID, id)
-  const meta = cfg.groups[PLACES_SOURCE_ID]?.[PLACES_GROUP_ID]
+  // 保存地点 segment は統合後 client.location の 'place' group 配下(旧 client.places|nav から畳み済)。
+  const key = segKey(LOCATION_SOURCE_ID, LOCATION_PLACE_GROUP_ID, id)
+  const meta = cfg.groups[LOCATION_SOURCE_ID]?.[LOCATION_PLACE_GROUP_ID]
   if (meta) meta.segments = meta.segments.filter((s) => s.id !== id)
   for (const prof of cfg.profiles) {
-    const vg = prof.view.groups[PLACES_SOURCE_ID]?.[PLACES_GROUP_ID]
+    const vg = prof.view.groups[LOCATION_SOURCE_ID]?.[LOCATION_PLACE_GROUP_ID]
     if (vg) delete vg.segments[id]
     const lay = prof.view.glassLayout
     if (lay) lay.rows = lay.rows.map((row) => row.filter((k) => k !== key))
@@ -568,11 +540,7 @@ export function emptyConfig(): Config {
     imu: defaultImuConfig(),
   }
   ensureBuiltin(c)
-  ensureClientWeather(c)
-  ensureClientGeoinfo(c)
-  ensureClientAirquality(c)
-  ensureClientGeocode(c)
-  ensureClientPlaces(c)
+  ensureClientLocation(c)
   normalizePlaces(c)
   return c
 }
@@ -657,11 +625,8 @@ function migrateV4Same(c: Config): Config {
   c.sources ??= []
   for (const s of c.sources) normalizeSourceUrls(s)
   ensureBuiltin(c)
-  ensureClientWeather(c)
-  ensureClientGeoinfo(c)
-  ensureClientAirquality(c)
-  ensureClientGeocode(c)
-  ensureClientPlaces(c)
+  migrateLocationSourcesMerge(c) // 旧 5 location source → client.location(2 group)。ensureClientLocation を内包
+  ensureClientLocation(c)
   normalizePlaces(c)
   c.imu ??= defaultImuConfig()
   delete (c as Record<string, unknown>).batteryRate
@@ -762,6 +727,132 @@ function reKeyGroupId(key: string, sourceId: string, fromGid: string, toGid: str
   return parts.join('|')
 }
 
+// 旧 location source(1 source=1 group) → 統合先 client.location の group へのマッピング。
+// weather + airquality → group 'weather'(気象+大気質)、geocode + geoinfo + places(nav) → group 'place'。
+// segment id は集約先で衝突しない(各 source の seg id は重複しない)。
+const LOCATION_MERGE_MAP: { src: string; grp: string; newGrp: string }[] = [
+  { src: WEATHER_SOURCE_ID, grp: 'weather', newGrp: LOCATION_WEATHER_GROUP_ID },
+  { src: AIRQUALITY_SOURCE_ID, grp: 'airquality', newGrp: LOCATION_WEATHER_GROUP_ID },
+  { src: GEOCODE_SOURCE_ID, grp: 'geocode', newGrp: LOCATION_PLACE_GROUP_ID },
+  { src: GEOINFO_SOURCE_ID, grp: 'geoinfo', newGrp: LOCATION_PLACE_GROUP_ID },
+  { src: PLACES_SOURCE_ID, grp: PLACES_GROUP_ID, newGrp: LOCATION_PLACE_GROUP_ID },
+]
+
+// 旧 5 location source を 1 つの client.location(2 group: weather/place)へ畳む(group 統合)。
+// source id remap に加え group id remap + segment 再グルーピングを伴う。素材・view・groupOrder・
+// glassLayout・options・enabledSourceIds の全層を移送する。
+// 冪等: 旧 source が 1 つも無ければ no-op(新規/移行後の再実行で安定)。
+// codex 条件: disabled だった旧 source 由来の segment は view 非表示(false)で残す(Location 有効化で復活させない)。
+function migrateLocationSourcesMerge(c: Config): void {
+  const oldIds = new Set(LOCATION_MERGE_MAP.map((m) => m.src))
+  if (!c.sources.some((s) => oldIds.has(s.id))) return
+  ensureClientLocation(c) // 統合先を確保(origin app_bundled / groups 枠)
+  const destGroups = c.groups[LOCATION_SOURCE_ID]
+
+  // 1. 素材(GroupMeta.segments)を統合先 group へマージ(seg id 衝突は先勝ち)。
+  for (const { src, grp, newGrp } of LOCATION_MERGE_MAP) {
+    const fromMeta = c.groups[src]?.[grp]
+    if (!fromMeta) continue
+    destGroups[newGrp] ??= { segments: [] }
+    const dest = destGroups[newGrp]
+    const seen = new Set(dest.segments.map((s) => s.id))
+    for (const sm of fromMeta.segments) {
+      if (seen.has(sm.id)) continue
+      dest.segments.push(sm)
+      seen.add(sm.id)
+    }
+  }
+
+  // 2. options: 旧 source の options バッグを統合先へマージ(field id は非衝突。既存 dest 値を優先)。
+  const destSrc = c.sources.find((s) => s.id === LOCATION_SOURCE_ID)
+  if (destSrc) {
+    for (const { src } of LOCATION_MERGE_MAP) {
+      const from = c.sources.find((s) => s.id === src)
+      if (from?.options) destSrc.options = { ...from.options, ...(destSrc.options ?? {}) }
+    }
+  }
+
+  // 3. profile ごとに enabled 状態と view を統合先 group/segment へ落とす。
+  for (const p of c.profiles) {
+    const enabledOld = new Set(
+      LOCATION_MERGE_MAP.filter((m) => p.enabledSourceIds.includes(m.src)).map((m) => m.src),
+    )
+    const anyEnabled = enabledOld.size > 0
+
+    // 3a. enabledSourceIds: 旧のどれかが有効なら client.location を旧の先頭位置へ挿入。旧は全除去。
+    const firstIdx = p.enabledSourceIds.findIndex((sid) => oldIds.has(sid))
+    p.enabledSourceIds = p.enabledSourceIds.filter((sid) => !oldIds.has(sid))
+    if (anyEnabled && !p.enabledSourceIds.includes(LOCATION_SOURCE_ID)) {
+      if (firstIdx >= 0) p.enabledSourceIds.splice(firstIdx, 0, LOCATION_SOURCE_ID)
+      else p.enabledSourceIds.push(LOCATION_SOURCE_ID)
+    }
+
+    // 3b. view.groups: 旧 ViewGroup を統合先 group へマージ。disabled だった旧 source の segment は
+    //     view 非表示(false)に落とす(復活防止)。group enabled は寄与 source のどれかが有効なら true。
+    p.view.groups[LOCATION_SOURCE_ID] ??= {}
+    const destView = p.view.groups[LOCATION_SOURCE_ID]
+    for (const { src, grp, newGrp } of LOCATION_MERGE_MAP) {
+      const fromVg = p.view.groups[src]?.[grp]
+      if (!fromVg) continue
+      const wasEnabled = enabledOld.has(src)
+      destView[newGrp] ??= {
+        enabled: false,
+        segments: {},
+        showDefaultLabel: defaultShowGroupLabel(newGrp),
+      }
+      const dvg = destView[newGrp]
+      dvg.enabled = dvg.enabled || (fromVg.enabled ?? true)
+      for (const [segId, vis] of Object.entries(fromVg.segments ?? {})) {
+        dvg.segments[segId] = wasEnabled ? (vis ?? true) : false
+      }
+    }
+    for (const { src } of LOCATION_MERGE_MAP) delete p.view.groups[src]
+
+    // 3c. groupOrder: {oldSrc, oldGrp} → {client.location, newGrp}。重複は先勝ちで dedupe。
+    const seenOrder = new Set<string>()
+    p.view.groupOrder = p.view.groupOrder.flatMap((r) => {
+      const m = LOCATION_MERGE_MAP.find((x) => x.src === r.sourceId && x.grp === r.groupId)
+      const ref: GroupRef = m
+        ? { sourceId: LOCATION_SOURCE_ID, groupId: m.newGrp }
+        : { sourceId: r.sourceId, groupId: r.groupId }
+      const k = `${ref.sourceId}|${ref.groupId}`
+      if (seenOrder.has(k)) return []
+      seenOrder.add(k)
+      return [ref]
+    })
+
+    // 3d. glassLayout.rows: segKey の sourceId+groupId を remap。remap した location key だけ dedupe
+    //     (@right / customLabel / 他 source key は素通し・dedupe しない = 複数行の @right を保つ)。
+    const lay = p.view.glassLayout
+    if (lay) {
+      const seenKey = new Set<string>()
+      lay.rows = lay.rows.map((row) =>
+        row.flatMap((k) => {
+          const parts = k.split('|')
+          const m =
+            parts.length >= 3
+              ? LOCATION_MERGE_MAP.find((x) => x.src === parts[0] && x.grp === parts[1])
+              : undefined
+          if (!m) return [k]
+          parts[0] = LOCATION_SOURCE_ID
+          parts[1] = m.newGrp
+          const remapped = parts.join('|')
+          if (seenKey.has(remapped)) return []
+          seenKey.add(remapped)
+          return [remapped]
+        }),
+      )
+    }
+  }
+
+  // 4. 旧素材 groups + 旧 SourceDef + tombstone を削除。
+  for (const { src } of LOCATION_MERGE_MAP) {
+    delete c.groups[src]
+    if (c.recentlyRemoved) delete c.recentlyRemoved[src]
+  }
+  c.sources = c.sources.filter((s) => !oldIds.has(s.id))
+}
+
 // 永続化された recentlyRemoved を検証・間引く。壊れた entry は破棄し、件数上限を超えたら古い順に削る。
 function normalizeRemovedViews(c: Config): void {
   const rv = c.recentlyRemoved
@@ -817,11 +908,8 @@ function migrateV3ToV4(old: V3Config): Config {
   def.enabledSourceIds = cfg.sources.filter((s) => s.kind !== 'client').map((s) => s.id)
   // builtin が先頭に来るよう ensureBuiltin を再適用 (順序 + enabledSourceIds)。
   ensureBuiltin(cfg)
-  ensureClientWeather(cfg)
-  ensureClientGeoinfo(cfg)
-  ensureClientAirquality(cfg)
-  ensureClientGeocode(cfg)
-  ensureClientPlaces(cfg)
+  migrateLocationSourcesMerge(cfg) // 旧 location source があれば畳む(v3 は通常無いが冪等・防御的)
+  ensureClientLocation(cfg)
   normalizePlaces(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
@@ -890,11 +978,8 @@ function migrateLegacyToV4(parsed: Record<string, unknown>): Config {
   // builtin + 旧ユーザー source(server)のみ。さもないと旧 config の升級で位置許可/外部 fetch が走る。
   def.enabledSourceIds = cfg.sources.filter((s) => s.kind !== 'client').map((s) => s.id)
   ensureBuiltin(cfg)
-  ensureClientWeather(cfg)
-  ensureClientGeoinfo(cfg)
-  ensureClientAirquality(cfg)
-  ensureClientGeocode(cfg)
-  ensureClientPlaces(cfg)
+  migrateLocationSourcesMerge(cfg) // 旧 location source があれば畳む(legacy は通常無いが冪等・防御的)
+  ensureClientLocation(cfg)
   normalizePlaces(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)

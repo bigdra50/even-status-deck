@@ -24,7 +24,7 @@ const DEFAULT_CATEGORY: Record<string, string> = {
   'system|mem': 'memory_percent',
   'system|battery': 'battery',
   'system|disk': 'disk_free',
-  // client.weather (Weather)
+  // client.location group 'weather' (気象 + 大気質)。旧 client.weather + client.airquality を集約。
   'weather|temp': 'temperature',
   'weather|cond': 'weather_code',
   'weather|wind': 'wind_speed',
@@ -41,30 +41,26 @@ const DEFAULT_CATEGORY: Record<string, string> = {
   'weather|sunset': 'sunset',
   'weather|daylength': 'daylength',
   'weather|suncountdown': 'countdown',
-  // client.geoinfo (Location)
-  'geoinfo|elev': 'elevation',
-  'geoinfo|tz': 'timezone_offset',
-  'geoinfo|zone': 'timezone',
-  // client.airquality (Air)
-  'airquality|aqi': 'aqi',
-  'airquality|pm25': 'pm25',
-  'airquality|pm10': 'pm10',
-  'airquality|pollen': 'pollen',
-  // client.geocode (Place)
-  'geocode|city': 'place_city',
-  'geocode|area': 'place_area',
-  'geocode|region': 'place_region',
-  'geocode|country': 'place_country',
-  // client.places (Places)。group id は PLACES_GROUP_ID = 'nav' (config.ts。'places' ではない)。
-  // config を import すると config→taxonomy の逆向き循環になるため literal で持つ (test が実 id で pin)。
-  'nav|here': 'place_geofence',
+  'weather|aqi': 'aqi',
+  'weather|pm25': 'pm25',
+  'weather|pm10': 'pm10',
+  'weather|pollen': 'pollen',
+  // client.location group 'place' (地名 + 標高/TZ + 保存地点ナビ)。旧 geocode + geoinfo + places(nav) を集約。
+  'place|city': 'place_city',
+  'place|area': 'place_area',
+  'place|region': 'place_region',
+  'place|country': 'place_country',
+  'place|elev': 'elevation',
+  'place|tz': 'timezone_offset',
+  'place|zone': 'timezone',
+  'place|here': 'place_geofence',
 }
 
 // groupId,segId から既定 leaf category を解決する。
-// places(group id='nav')の動的 segment(保存地点ごと id=pl_xxxx)は place_distance、未知は 'custom'。
+// place group の動的 segment(保存地点ごと id=pl_xxxx。LOCATION_PLACE_GROUP_ID)は place_distance、未知は 'custom'。
 export function defaultCategory(groupId: string, segId: string): string {
   const hit = DEFAULT_CATEGORY[`${groupId}|${segId}`]
   if (hit) return hit
-  if (groupId === 'nav') return 'place_distance' // PLACES_GROUP_ID (config.ts)
+  if (groupId === 'place') return 'place_distance' // LOCATION_PLACE_GROUP_ID (config.ts)
   return 'custom'
 }
