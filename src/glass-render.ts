@@ -134,13 +134,19 @@ function groupLine(
     parts.push(seg.label ? `${seg.label} ${seg.value}` : seg.value)
   }
   if (!parts.length) return null
+  // 見出しは displayName(衝突解決/手動) を最優先、無ければ live g.label (builtin は '' = 前置なし、不変)。
+  // groupLabelText と falsy 扱いを揃えるため空文字 displayName は採用しない(|| で g.label にフォール)。
+  const gname = meta.displayName || g.label
   // summary は値を素のまま連結する (formatSegmentValue を通さない) ため、行全体を sanitize する。
   // 切り詰めが無くグラスの折り返しに任せる経路なので、出力段の sanitize で幅問題は起きない。
-  return sanitizeGlyphs(g.label ? `${g.label}  ${parts.join('  ')}` : parts.join('  '))
+  return sanitizeGlyphs(gname ? `${gname}  ${parts.join('  ')}` : parts.join('  '))
 }
 
-// group ラベルテキスト (builtin は code-owned、server は status group.label or source label)。
+// group ラベルテキスト。衝突解決/手動の displayName(素材) を最優先し、無ければ
+// builtin=code-owned / server=status group.label or source label。
 function groupLabelText(d: GlassData, sourceId: string, groupId: string): string {
+  const override = d.config.groups[sourceId]?.[groupId]?.displayName
+  if (override) return override
   if (sourceId === BUILTIN_SOURCE_ID) return BUILTIN_GROUP_LABELS[groupId] ?? groupId
   return (
     findGroup(d, { sourceId, groupId })?.label ||

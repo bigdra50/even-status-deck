@@ -2,6 +2,7 @@ import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
 import { MAX_ROWS } from './glass-types'
 import { defaultImuConfig, type ImuConfig } from './imu'
 import type { StatusDoc } from './status-types'
+import { defaultCategory } from './taxonomy'
 import { segKey, type VisibilityCond, type VisibilityLeaf } from './visibility/keys'
 
 // 設定 (v4): 素材 (sources / groups) とレシピ (profiles) の 2 層構成。
@@ -86,6 +87,10 @@ export type SourceDef = {
   urls: string[]
   machineId?: string
   options?: OptionValues
+  // displayOwner: 表示用オーナー (例 'Glass' / 'Mac')。同系統データ衝突時に owner バッジ/prefix で
+  // 出自を区別する (tasks/display-model-spec.md)。Phase1 は型のみ (builtin g2 のみ seed)、
+  // 消費 (バッジ/displayLabel 焼込) は Phase2/3。
+  displayOwner?: string
 }
 
 // ── 素材 (共有資産) ──
@@ -97,8 +102,23 @@ export type SegMeta = {
   format?: string
   options?: OptionValues
   visibility?: VisibilityCond
+  // 表示 identity (tasks/display-model-spec.md)。素材 = profile 非依存。
+  // category: device_class ベースの leaf 語彙 (例 'battery' / 'temperature')。新規 segment は sync 時に
+  //   defaultCategory で seed、既存は migrate で backfill。「種類」軸として整列/衝突判定に使う。
+  // displayLabel: 衝突時に焼き込む静的ラベル (Phase3 で glass が読む)。Phase1 は書かない。
+  // tags: 横断フィルタ/preset 自動化の裏軸 (多対多・任意)。Phase1 は型と sanitize のみ (producer 出力なし)。
+  category?: string
+  displayLabel?: string
+  tags?: string[]
 }
-export type GroupMeta = { segments: SegMeta[] }
+// 素材の group メタ。displayName: 同 source 内で label が衝突した group を区別する表示名 (例 'Claude (limits)')。
+// displayNameSource: 'auto'=衝突検出が自動付与 (再計算で上書き可) / 'user'=ユーザーがリネーム (自動上書きしない)。
+// label 自体は producer 由来(status)なので素材には持たず、effective 名 = displayName ?? liveLabel で解決する。
+export type GroupMeta = {
+  segments: SegMeta[]
+  displayName?: string
+  displayNameSource?: 'auto' | 'user'
+}
 
 export type GAlign = 'top' | 'bottom'
 export type GroupRef = { sourceId: string; groupId: string }
@@ -307,8 +327,15 @@ function ensureBuiltin(cfg: Config): void {
     existing.kind = 'builtin'
     existing.label = 'Device' // SOURCES には出さない (companion 側で builtin を除外)。内部表示用
     existing.urls ??= []
+    existing.displayOwner = 'Glass' // 主要衝突源 (g2 電池 vs PC 電池) の出自。コード所有
   } else {
-    cfg.sources.unshift({ id: BUILTIN_SOURCE_ID, kind: 'builtin', label: 'Device', urls: [] })
+    cfg.sources.unshift({
+      id: BUILTIN_SOURCE_ID,
+      kind: 'builtin',
+      label: 'Device',
+      urls: [],
+      displayOwner: 'Glass',
+    })
   }
   if (!cfg.groups[BUILTIN_SOURCE_ID]) cfg.groups[BUILTIN_SOURCE_ID] = {}
   // builtin は全 profile の enabledSourceIds に必ず含める (fetch 範囲に builtin を残す)。
@@ -645,8 +672,40 @@ function migrateV4Same(c: Config): Config {
   migrateMacGroupToSystem(c) // OD-1: server source の system provider group id 'mac' → 'system'
   consolidateClock(c)
   normalizeRemovedViews(c) // tombstone を間引き (壊れていれば破棄)
+  normalizeDisplayMeta(c) // 表示モデル Phase1。group id remap の「後」に呼ぶこと (下記ヘルパ参照)
   pruneOrphans(c)
   return c
+}
+
+// 表示モデル Phase1 の正規化 (category backfill / displayOwner / tags sanitize) をまとめて流す。
+// 全 migrate 経路 (v4Same / v3 / legacy) で同一に呼ぶための共通ヘルパ。
+// 重要: category seed は group id の remap (mac→system / clock 統合) の「後」に呼ぶこと。
+// 先に呼ぶと旧 group id (mac 等) でキーが引けず custom に誤確定し、文字列ゆえ二度と矯正されない。
+function normalizeDisplayMeta(c: Config): void {
+  normalizeMetaCategoryAll(c) // 素材 segment の category を backfill/sanitize
+  normalizeSourceDisplayOwner(c) // source の displayOwner を sanitize
+  normalizeTagsAll(c) // 素材 segment の tags を sanitize
+  normalizeGroupDisplayNames(c) // group の displayName/displayNameSource を sanitize
+}
+
+// group displayName の sanitize。空/非文字列は外す。displayNameSource は 'auto'|'user' のみ許可
+// (不正は 'auto' 扱い)。衝突に基づく自動付与は companion(status を持つ層)が行う=ここでは整形のみ。
+function normalizeGroupDisplayNames(c: Config): void {
+  for (const groups of Object.values(c.groups ?? {})) {
+    for (const meta of Object.values(groups)) {
+      if (
+        meta.displayName !== undefined &&
+        (typeof meta.displayName !== 'string' || meta.displayName === '')
+      ) {
+        delete meta.displayName
+      }
+      if (meta.displayName === undefined) {
+        delete meta.displayNameSource // 名前が無いのに source だけ残らないように
+      } else if (meta.displayNameSource !== 'user') {
+        meta.displayNameSource = 'auto'
+      }
+    }
+  }
 }
 
 // OD-1 移行: 旧 macSystemProvider の group id 'mac' を新クロスプラットフォーム system provider の
@@ -767,6 +826,7 @@ function migrateV3ToV4(old: V3Config): Config {
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
   consolidateClock(cfg)
+  normalizeDisplayMeta(cfg) // 表示モデル Phase1: clock 統合の後に category 等を seed (v4Same と同経路)
   pruneOrphans(cfg)
   return cfg
 }
@@ -838,6 +898,7 @@ function migrateLegacyToV4(parsed: Record<string, unknown>): Config {
   normalizePlaces(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
+  normalizeDisplayMeta(cfg) // 表示モデル Phase1: legacy 経路でも category 等を seed (v4Same と同一)
   pruneOrphans(cfg)
   return cfg
 }
@@ -924,6 +985,62 @@ function normalizeMetaVisibilityAll(c: Config): void {
   }
 }
 
+// tag 文字列の上限長 (異常データ/巨大値の防御。横断フィルタのラベルなので短くてよい)。
+const MAX_TAG_LEN = 32
+
+// 素材 segment の category を backfill/sanitize する (tasks/display-model-spec.md)。
+// 未設定/非文字列/空文字は defaultCategory(groupId|segId) で埋める = migrate 後は常に category が付く
+// (「category 必須」の意味づけ)。sync 前に素材化済みの旧 config も全 segment に category が付く。
+function normalizeMetaCategoryAll(c: Config): void {
+  for (const groups of Object.values(c.groups ?? {})) {
+    for (const [gid, meta] of Object.entries(groups)) {
+      for (const sm of meta.segments) {
+        if (typeof sm.category !== 'string' || sm.category === '') {
+          sm.category = defaultCategory(gid, sm.id)
+        }
+      }
+    }
+  }
+}
+
+// source の displayOwner を sanitize する (非文字列/空文字は外す)。Phase1 は seed しない
+// (builtin g2 のみ ensureBuiltin で注入)。owner 既定の本格 seed は Phase2 (バッジ UI が消費する時点)。
+function normalizeSourceDisplayOwner(c: Config): void {
+  for (const s of c.sources) {
+    if (
+      s.displayOwner !== undefined &&
+      (typeof s.displayOwner !== 'string' || s.displayOwner === '')
+    ) {
+      delete s.displayOwner
+    }
+  }
+}
+
+// 素材 segment の tags を sanitize する (配列以外は外す / 非文字列・空を除去 / 重複除去 / 長さ制限)。
+// Phase1 は producer が tags を出さないので大半 undefined。型と正規化だけ先に確定させる (Phase3 再移行回避)。
+function normalizeTagsAll(c: Config): void {
+  for (const groups of Object.values(c.groups ?? {})) {
+    for (const meta of Object.values(groups)) {
+      for (const sm of meta.segments) {
+        if (sm.tags === undefined) continue
+        if (!Array.isArray(sm.tags)) {
+          delete sm.tags
+          continue
+        }
+        const cleaned = [
+          ...new Set(
+            sm.tags
+              .filter((t): t is string => typeof t === 'string' && t !== '')
+              .map((t) => t.slice(0, MAX_TAG_LEN)),
+          ),
+        ]
+        if (cleaned.length) sm.tags = cleaned
+        else delete sm.tags
+      }
+    }
+  }
+}
+
 // profile.view の glassLayout / groupOrder / ViewGroup を正規化する (additive)。
 function normalizeProfileView(p: Profile): void {
   p.view ??= emptyProfileView()
@@ -958,6 +1075,15 @@ function normalizeProfileView(p: Profile): void {
 
 export function sourceById(cfg: Config, id: string): SourceDef | undefined {
   return cfg.sources.find((s) => s.id === id)
+}
+
+// group の表示名 override (素材)。未設定は undefined。effective 名 = これ ?? liveLabel で解決する。
+export function groupDisplayName(
+  cfg: Config,
+  sourceId: string,
+  groupId: string,
+): string | undefined {
+  return cfg.groups[sourceId]?.[groupId]?.displayName
 }
 
 // ── profile 操作 (Phase 2: プリセット切替) ──
@@ -1526,7 +1652,8 @@ export function syncSourceWithStatus(cfg: Config, sourceId: string, status: Stat
     }
     for (const seg of g.segments) {
       if (!gm.segments.some((s) => s.id === seg.id)) {
-        gm.segments.push({ id: seg.id })
+        // 新規 segment 素材化時に category を seed (defaultCategory: groupId|segId 既定、未知=custom)。
+        gm.segments.push({ id: seg.id, category: defaultCategory(g.id, seg.id) })
         changed = true
       }
       if (vg.segments[seg.id] === undefined) {

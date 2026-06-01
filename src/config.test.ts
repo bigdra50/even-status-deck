@@ -6,6 +6,8 @@ import {
   activeProfile,
   addPlace,
   addProfile,
+  addServer,
+  BUILTIN_SOURCE_ID,
   DEFAULT_PLACE_RADIUS_M,
   emptyConfig,
   GEOINFO_SOURCE_ID,
@@ -16,9 +18,22 @@ import {
   renamePlace,
   setPlaceRadius,
   setProfileGeofence,
+  syncSourceWithStatus,
   updatePlaceLocation,
   WEATHER_SOURCE_ID,
 } from './config'
+import type { StatusDoc } from './status-types'
+
+// 表示モデル Phase1 用の最小 StatusDoc ビルダ (g2 group の segment を渡す)。
+function g2Doc(segIds: string[]): StatusDoc {
+  return {
+    version: 1,
+    ts: 0,
+    groups: [
+      { id: 'g2', label: '', segments: segIds.map((id) => ({ id, label: '', value: 'x' })) },
+    ],
+  }
+}
 
 test('setProfileGeofence: bind/解除 + 不正 place は外す (#43)', () => {
   const cfg = emptyConfig()
@@ -180,4 +195,115 @@ test('migrate(v4 same): 不正な places を sanitize する', () => {
   ]
   const cfg = migrate(v4 as unknown as Record<string, unknown>)
   expect(cfg.places?.map((p) => p.id)).toEqual(['ok'])
+})
+
+// ── 表示モデル Phase1: category seed / displayOwner / tags sanitize (tasks/display-model-spec.md) ──
+
+test('syncSourceWithStatus: 新規 segment に category を seed する', () => {
+  const cfg = emptyConfig()
+  syncSourceWithStatus(cfg, BUILTIN_SOURCE_ID, g2Doc(['level', 'rate', 'eta']))
+  const segs = cfg.groups[BUILTIN_SOURCE_ID].g2.segments
+  expect(segs.find((s) => s.id === 'level')?.category).toBe('battery')
+  expect(segs.find((s) => s.id === 'rate')?.category).toBe('power_rate')
+  expect(segs.find((s) => s.id === 'eta')?.category).toBe('duration')
+})
+
+test('migrate: builtin source に displayOwner=Glass を seed する', () => {
+  const cfg = migrate(emptyConfig() as unknown as Record<string, unknown>)
+  expect(cfg.sources.find((s) => s.id === BUILTIN_SOURCE_ID)?.displayOwner).toBe('Glass')
+})
+
+test('migrate: 旧 config(category なし)を backfill する', () => {
+  // sync で g2 を正規登録 → category を消して旧 config を再現 → migrate で再付与。
+  const cfg = emptyConfig()
+  syncSourceWithStatus(cfg, BUILTIN_SOURCE_ID, g2Doc(['level']))
+  for (const sm of cfg.groups[BUILTIN_SOURCE_ID].g2.segments) {
+    delete (sm as { category?: string }).category
+  }
+  const migrated = migrate(JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>)
+  expect(
+    migrated.groups[BUILTIN_SOURCE_ID].g2.segments.find((s) => s.id === 'level')?.category,
+  ).toBe('battery')
+})
+
+test('migrate: 不正な category / tags を sanitize する', () => {
+  const cfg = emptyConfig()
+  syncSourceWithStatus(cfg, BUILTIN_SOURCE_ID, g2Doc(['level']))
+  const sm = cfg.groups[BUILTIN_SOURCE_ID].g2.segments[0] as { category?: unknown; tags?: unknown }
+  sm.category = 123 // 非文字列 → defaultCategory で battery に矯正
+  sm.tags = ['a', 'a', '', 1, 'b'] // 重複/空/非文字列を除去
+  const migrated = migrate(JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>)
+  const out = migrated.groups[BUILTIN_SOURCE_ID].g2.segments[0]
+  expect(out.category).toBe('battery')
+  expect(out.tags).toEqual(['a', 'b'])
+})
+
+test('migrate 冪等: category backfill を二度かけても安定', () => {
+  const cfg = emptyConfig()
+  syncSourceWithStatus(cfg, BUILTIN_SOURCE_ID, g2Doc(['level']))
+  const once = migrate(JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>)
+  const twice = migrate(JSON.parse(JSON.stringify(once)) as Record<string, unknown>)
+  expect(twice.groups[BUILTIN_SOURCE_ID].g2.segments.find((s) => s.id === 'level')?.category).toBe(
+    'battery',
+  )
+})
+
+test('syncSourceWithStatus: places(group nav) の segment に正しい category を seed する', () => {
+  // places の group id は 'nav' (PLACES_GROUP_ID)。taxonomy キーが 'places' だと here/地点が custom に落ちる。
+  const cfg = emptyConfig()
+  const doc = {
+    version: 1,
+    ts: 0,
+    groups: [
+      {
+        id: PLACES_GROUP_ID,
+        label: 'Places',
+        segments: [
+          { id: 'here', label: 'At', value: 'Home' },
+          { id: 'pl_abc12345', label: 'Home', value: '2km' },
+        ],
+      },
+    ],
+  }
+  syncSourceWithStatus(cfg, PLACES_SOURCE_ID, doc as unknown as StatusDoc)
+  const segs = cfg.groups[PLACES_SOURCE_ID][PLACES_GROUP_ID].segments
+  expect(segs.find((s) => s.id === 'here')?.category).toBe('place_geofence')
+  expect(segs.find((s) => s.id === 'pl_abc12345')?.category).toBe('place_distance')
+})
+
+test('migrate(v3 単発): server segment に category が seed される', () => {
+  // v3/legacy 経路も migrateV4Same と同じ normalizeDisplayMeta を通す (単発 migrate で穴を作らない)。
+  const v3 = {
+    version: 3,
+    sources: [{ id: 'server.a', kind: 'server', label: 'A', url: 'http://a.local/api/status' }],
+    groups: { 'server.a': { system: { segments: [{ id: 'cpu' }, { id: 'battery' }] } } },
+    groupOrder: [{ sourceId: 'server.a', groupId: 'system' }],
+  }
+  const cfg = migrate(v3 as unknown as Record<string, unknown>)
+  const segs = cfg.groups['server.a'].system.segments
+  expect(segs.find((s) => s.id === 'cpu')?.category).toBe('cpu_percent')
+  expect(segs.find((s) => s.id === 'battery')?.category).toBe('battery')
+})
+
+test('migrate: 旧 mac group は system へ rename 後に category が付く (seed 順序)', () => {
+  // 旧 config(OD-1 前)の system provider は group id 'mac' で category 未設定。
+  // category seed が group rename の「前」に走ると 'mac|cpu' が引けず custom に誤確定する。
+  // 順序(rename 後に seed)が正しいことを検証する。
+  const cfg = emptyConfig()
+  const s = addServer(cfg, 'Local', 'http://x.local/api/status')
+  const prof = activeProfile(cfg)
+  cfg.groups[s.id] = {
+    mac: { segments: [{ id: 'cpu' }, { id: 'battery' }, { id: 'disk' }] },
+  }
+  prof.view.groups[s.id] = {
+    mac: { enabled: true, segments: { cpu: true, battery: true, disk: true } },
+  }
+  prof.view.groupOrder.push({ sourceId: s.id, groupId: 'mac' })
+  const migrated = migrate(JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>)
+  const sys = migrated.groups[s.id].system
+  expect(sys).toBeDefined()
+  expect(sys.segments.find((x) => x.id === 'cpu')?.category).toBe('cpu_percent')
+  expect(sys.segments.find((x) => x.id === 'battery')?.category).toBe('battery')
+  expect(sys.segments.find((x) => x.id === 'disk')?.category).toBe('disk_free')
+  expect(migrated.groups[s.id].mac).toBeUndefined() // 旧 group は消える
 })

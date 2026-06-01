@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="ja">
+<!--
+  Status Deck companion — 新 IA モックアップ (操作可能)
+  画面遷移: Home(Profile) → Source Detail / Glass Layout Editor
+  責務分割: Source Detail=素材を選ぶ / Glass Layout=混ぜて並べる / Shared=全profile素材定義
+  generic 基盤(canvas/edges/matrix/event delegation/viewport)はテンプレ流用・touch しない。
+-->
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Flow Overview · Status Deck companion IA</title>
+  <style>
+    @layer tokens, base, app, canvas;
+
+    /* === tokens (src/styles.css の :root から取り込み) === */
+    @layer tokens {
+      :root {
+        --viewport-px: 375px;
+        --viewport-h-px: 667px;
+        --bg: #111111;
+        --surface: #1a1a1a;
+        --surface-2: #242424;
+        --surface-3: #2e2e2e;
+        --border: #2a2a2a;
+        --text: #ffffff;
+        --text-dim: #8a8a8a;
+        --input-bg: rgba(255, 255, 255, 0.08);
+        --accent: #fef991;        /* Even brand yellow */
+        --glass: #3cfa44;         /* glasses green */
+        --ok: #6ee7b7;
+        --warn: #fbbf24;
+        --err: #fb7185;
+        --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+        --space-5: 20px; --space-6: 24px; --space-7: 32px;
+        --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px; --radius-pill: 999px;
+        --font-sans:
+          -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", "Noto Sans JP",
+          "Segoe UI", Roboto, sans-serif;
+        --font-mono: "Berkeley Mono", "Menlo", "Consolas", monospace;
+        --font-size-xs: 10px; --font-size-sm: 11px; --font-size-md: 12px;
+        --font-size-base: 13px; --font-size-lg: 14px; --font-size-xl: 18px;
+        color-scheme: dark;
+      }
+    }
+
+    /* === base (touch しない) === */
+    @layer base {
+      * { box-sizing: border-box; margin: 0; }
+      html, body {
+        background: #07080b; color: var(--text); font-family: var(--font-sans);
+        font-size: var(--font-size-lg); line-height: 1.55; min-height: 100%;
+      }
+      body { padding: 32px 16px 64px; }
+    }
+
+    /* === app (Status Deck 固有 view 用クラス) === */
+    @layer app {
+      .sd { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-3); }
+      .sd-label {
+        font-size: var(--font-size-xs); letter-spacing: 0.18em; text-transform: uppercase;
+        color: var(--text-dim); margin: var(--space-2) 0 2px;
+      }
+      .sd-label-row { display: flex; align-items: center; justify-content: space-between; }
+      .sd-link { background: none; border: none; color: var(--accent); font-size: var(--font-size-sm); cursor: pointer; }
+
+      /* preset bar */
+      .sd-presetbar { display: flex; align-items: center; gap: var(--space-2); }
+      .sd-select {
+        flex: 1; background: var(--input-bg); border: 1px solid var(--border);
+        color: var(--text); border-radius: var(--radius-sm); padding: 6px 8px; font-size: var(--font-size-base);
+      }
+      .sd-icon {
+        width: 28px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
+        background: var(--input-bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+        color: var(--text-dim); cursor: pointer; font-size: var(--font-size-md);
+      }
+      .sd-geofence {
+        display: flex; align-items: center; gap: var(--space-2);
+        font-size: var(--font-size-sm); color: var(--text-dim);
+      }
+
+      /* source card */
+      .sd-card {
+        display: flex; align-items: center; gap: var(--space-3); width: 100%;
+        background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md);
+        padding: var(--space-3); cursor: pointer; text-align: left; color: var(--text);
+      }
+      .sd-card:hover { border-color: var(--accent); background: var(--surface-2); }
+      .sd-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+      .sd-card-name { font-weight: 600; font-size: var(--font-size-base); }
+      .sd-card-note { color: var(--text-dim); font-size: var(--font-size-sm); margin-left: auto; }
+      .sd-chev { color: var(--text-dim); font-size: var(--font-size-lg); }
+      .sd-empty { color: var(--text-dim); font-size: var(--font-size-sm); padding: var(--space-4) var(--space-2); text-align: center; }
+      .sd-addbtn {
+        align-self: flex-start; background: var(--input-bg); border: 1px solid var(--border);
+        color: var(--text); border-radius: var(--radius-sm); padding: 6px 12px; font-size: var(--font-size-sm); cursor: pointer;
+      }
+      .sd-back { background: none; border: none; color: var(--accent); font-size: var(--font-size-lg); cursor: pointer; padding: 0; }
+
+      /* source detail header */
+      .sd-dhead { display: flex; align-items: center; gap: var(--space-2); }
+      .sd-dtitle { font-size: var(--font-size-xl); font-weight: 700; }
+      .sd-owner {
+        font-size: var(--font-size-sm); color: var(--text-dim);
+        background: var(--input-bg); border: 1px solid var(--border); border-radius: var(--radius-pill);
+        padding: 2px 10px; cursor: pointer;
+      }
+      .sd-owner:hover { color: var(--accent); border-color: var(--accent); }
+      .sd-owner-fixed { cursor: default; opacity: 0.75; }
+      .sd-health { margin-left: auto; font-size: var(--font-size-sm); display: flex; align-items: center; gap: 6px; }
+
+      /* scope sections: profile固有 vs 全profile共有 を視覚的に分ける */
+      .sd-scope { border-radius: var(--radius-md); padding: var(--space-3); }
+      .sd-scope-profile { background: var(--surface); border: 1px solid var(--border); }
+      .sd-scope-shared {
+        background: color-mix(in srgb, var(--accent) 7%, var(--surface-2));
+        border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+        border-left: 3px solid var(--accent);
+      }
+      .sd-scope-tag {
+        display: inline-block; font-size: var(--font-size-xs); letter-spacing: 0.14em; text-transform: uppercase;
+        border-radius: var(--radius-pill); padding: 2px 8px; margin-bottom: var(--space-3);
+      }
+      .sd-tag-profile { background: var(--input-bg); color: var(--text-dim); border: 1px solid var(--border); }
+      .sd-tag-shared { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); border: 1px solid var(--accent); }
+      .sd-scope-hint { font-size: var(--font-size-xs); color: var(--text-dim); margin-bottom: var(--space-3); }
+
+      .sd-group { border-top: 1px solid var(--border); padding-top: var(--space-2); margin-top: var(--space-2); }
+      .sd-group:first-of-type { border-top: none; margin-top: 0; }
+      .sd-grouphead { display: flex; align-items: center; gap: var(--space-2); }
+      .sd-groupname { font-weight: 600; font-size: var(--font-size-base); }
+      .sd-segrow { display: flex; align-items: center; gap: var(--space-2); padding: 5px 0 5px var(--space-4); }
+      .sd-segname { font-size: var(--font-size-base); }
+      .sd-segval { margin-left: auto; font-family: var(--font-mono); font-size: var(--font-size-sm); color: var(--text-dim); }
+      .sd-cat { font-family: var(--font-mono); font-size: var(--font-size-xs); color: var(--text-dim); }
+
+      /* toggle pill */
+      .sd-tg {
+        flex: 0 0 auto; width: 34px; height: 20px; border-radius: var(--radius-pill);
+        border: 1px solid var(--border); background: var(--input-bg); position: relative; cursor: pointer;
+      }
+      .sd-tg::after {
+        content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+        border-radius: 50%; background: var(--text-dim); transition: transform 0.15s, background 0.15s;
+      }
+      .sd-tg.on { background: color-mix(in srgb, var(--accent) 30%, transparent); border-color: var(--accent); }
+      .sd-tg.on::after { transform: translateX(14px); background: var(--accent); }
+      .sd-tg.sm { width: 28px; height: 17px; }
+      .sd-tg.sm::after { width: 12px; height: 12px; }
+      .sd-tg.sm.on::after { transform: translateX(11px); }
+      .sd-lblbtn {
+        flex: 0 0 auto; font-size: var(--font-size-xs); border-radius: var(--radius-sm); padding: 2px 6px;
+        background: var(--input-bg); border: 1px solid var(--border); color: var(--text-dim); cursor: pointer;
+      }
+      .sd-lblbtn.on { color: var(--accent); border-color: var(--accent); }
+
+      /* shared settings rows */
+      .sd-shrow { display: flex; align-items: center; gap: var(--space-2); padding: 5px 0; font-size: var(--font-size-sm); }
+      .sd-shrow .k { color: var(--text-dim); min-width: 92px; }
+      .sd-pill { font-size: var(--font-size-sm); background: var(--input-bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 2px 8px; }
+
+      /* glass preview + layout */
+      .sd-glass {
+        aspect-ratio: 2 / 1; background: #000; border: 1px solid var(--border); border-radius: var(--radius-sm);
+        padding: 8px 10px; font-family: var(--font-mono); font-size: 11px; color: var(--glass);
+        display: flex; flex-direction: column; gap: 3px; overflow: hidden;
+      }
+      .sd-glass .gjust { display: flex; justify-content: space-between; }
+      .sd-glassrow { display: flex; align-items: stretch; gap: 6px; }
+      .sd-rownum { width: 16px; font-family: var(--font-mono); font-size: var(--font-size-xs); color: var(--text-dim); align-self: center; }
+      .sd-zone { flex: 1; min-height: 26px; border: 1px dashed var(--border); border-radius: var(--radius-sm); padding: 3px; display: flex; flex-wrap: wrap; gap: 4px; }
+      .sd-zone-r { background: rgba(255,255,255,0.02); }
+      .sd-chip {
+        display: inline-flex; align-items: center; gap: 4px; font-size: var(--font-size-xs);
+        background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 2px 6px;
+      }
+      .sd-chip-badge {
+        font-size: 9px; letter-spacing: 0.04em; border-radius: var(--radius-pill); padding: 0 5px;
+        background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); border: 1px solid var(--accent);
+      }
+      .sd-shelf { display: flex; flex-wrap: wrap; gap: 6px; padding: var(--space-2); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+    }
+
+    /* === canvas (touch しない: フロー図/Matrix の generic 基盤) === */
+    @layer canvas {
+      .stage { max-width: 1500px; margin: 0 auto; }
+      .stage-head { text-align: center; margin-bottom: 32px; }
+      .stage-head h1 { font-size: 22px; margin-bottom: 6px; }
+      .stage-head p { color: var(--text-dim); font-size: 13px; }
+      .play-bar {
+        display: inline-flex; align-items: center; gap: 10px;
+        margin-top: 12px; padding: 6px 14px;
+        background: rgba(255,255,255,0.03); border: 1px solid var(--border);
+        border-radius: 999px; font-size: 12px; color: var(--text-dim);
+      }
+      .play-bar .play-dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: var(--ok); box-shadow: 0 0 8px var(--ok);
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes pulse { 0%,100% {opacity:1;} 50% {opacity:0.4;} }
+      .play-bar button {
+        background: transparent; border: 1px solid var(--border);
+        color: var(--text-dim); padding: 2px 10px; border-radius: 999px;
+        font-size: 11px; cursor: pointer;
+      }
+      .viewport-controls {
+        display: flex; flex-wrap: wrap; justify-content: center; gap: 8px;
+        margin-top: 16px; padding: 10px 16px;
+        background: rgba(255,255,255,0.02); border: 1px solid var(--border);
+        border-radius: 10px; font-size: 12px;
+      }
+      .viewport-controls .label {
+        color: var(--text-dim); font-size: 10px; letter-spacing: 0.18em;
+        text-transform: uppercase; align-self: center;
+      }
+      .viewport-controls button {
+        background: var(--surface); border: 1px solid var(--border);
+        color: var(--text-dim); padding: 4px 12px; border-radius: 6px;
+        font-size: 11px; cursor: pointer;
+      }
+      .viewport-controls button.active {
+        background: color-mix(in srgb, var(--accent) 22%, transparent);
+        border-color: var(--accent); color: var(--accent);
+      }
+      .section-title {
+        font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase;
+        color: var(--text-dim); margin: 48px 0 6px;
+        padding-bottom: 8px; border-bottom: 1px solid var(--border);
+      }
+      .canvas {
+        position: relative; display: flex; flex-wrap: wrap;
+        justify-content: center; gap: 80px 100px; padding: 40px 20px 60px;
+      }
+      .node {
+        position: relative; z-index: 2; flex: 0 0 auto;
+        width: var(--viewport-px);
+        background: #14161c; border: 1px solid var(--border);
+        border-radius: 12px; overflow: hidden;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+        display: flex; flex-direction: column;
+        transition: border-color 0.2s, box-shadow 0.2s;
+      }
+      .node.active {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px var(--accent), 0 12px 40px rgba(254,249,145,0.22);
+      }
+      .node-head {
+        display: flex; align-items: center; gap: 8px;
+        padding: 10px 14px; background: rgba(255,255,255,0.025);
+        border-bottom: 1px solid var(--border);
+      }
+      .node-head .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); }
+      .node-head .dot:nth-child(2) { background: var(--warn); }
+      .node-head .dot:nth-child(3) { background: var(--ok); }
+      .node-head .name { font-size: 12px; font-weight: 600; }
+      .node-head .id {
+        margin-left: auto; font-family: var(--font-mono); font-size: 10px;
+        color: var(--text-dim); letter-spacing: 0.16em; text-transform: uppercase;
+      }
+      .node-body {
+        background: var(--bg); height: var(--viewport-h-px); max-height: 80vh;
+        overflow-y: auto; overflow-x: hidden;
+      }
+      .node-body .miniature { width: 100%; min-height: 100%; }
+
+      .edges { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+      .edges path { fill: none; stroke: var(--text-dim); stroke-width: 1.5; opacity: 0.5; }
+      .edges path.primary { stroke: var(--accent); opacity: 0.9; }
+      .edges path.firing {
+        stroke: var(--accent); stroke-width: 2.5; opacity: 1;
+        animation: dash 0.6s ease-out;
+      }
+      @keyframes dash { from { stroke-dashoffset: 24; } to { stroke-dashoffset: 0; } }
+      .edges .arrowhead { fill: var(--text-dim); }
+      .edges .arrowhead.primary { fill: var(--accent); }
+      .edges text {
+        fill: var(--text); font-family: var(--font-mono); font-size: 11px;
+        paint-order: stroke; stroke: var(--bg); stroke-width: 4;
+      }
+      .edges text.primary { fill: var(--accent); }
+
+      .matrix { display: flex; flex-direction: column; gap: 32px; }
+      .matrix-row { display: flex; flex-wrap: wrap; gap: 16px; }
+      .frame {
+        flex: 0 0 auto; width: var(--viewport-px);
+        background: #14161c; border: 1px solid var(--border);
+        border-radius: 8px; overflow: hidden;
+      }
+      .frame-head {
+        padding: 8px 12px; background: rgba(255,255,255,0.025);
+        border-bottom: 1px solid var(--border);
+        font-family: var(--font-mono); font-size: 10px;
+        color: var(--text-dim);
+      }
+      .frame-body {
+        background: var(--bg); height: var(--viewport-h-px); max-height: 70vh;
+        overflow-y: auto; overflow-x: hidden;
+      }
+      .frame-body .miniature { width: 100%; min-height: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <header class="stage-head">
+      <h1>Status Deck companion — 新 IA Flow Overview</h1>
+      <p>Home(Profile) → Source Detail / Glass Layout。Source Detail=素材を選ぶ / Glass Layout=混ぜて並べる / Shared=全 preset に効く素材定義</p>
+      <div class="play-bar">
+        <span class="play-dot"></span>
+        LIVE — 各 frame は操作可能 (カードtap=遷移 / トグル / owner編集)
+        <button id="btn-reset-all" type="button">RESET ALL</button>
+      </div>
+      <div class="viewport-controls" id="viewport-controls">
+        <span class="label">viewport (CSS px, w × h)</span>
+        <button type="button" data-vw="320"  data-vh="568">iPhone SE 320×568</button>
+        <button type="button" data-vw="375"  data-vh="667" class="active">375×667</button>
+        <button type="button" data-vw="393"  data-vh="852">iPhone 15 393×852</button>
+        <button type="button" data-vw="430"  data-vh="932">Pro Max 430×932</button>
+      </div>
+    </header>
+
+    <h2 class="section-title">▸ User Flow</h2>
+    <div class="canvas" id="canvas">
+      <svg class="edges" id="edges" aria-hidden="true">
+        <defs>
+          <marker id="arrow-primary" viewBox="0 0 10 10" refX="9" refY="5"
+                  markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" class="arrowhead primary"/>
+          </marker>
+          <marker id="arrow-secondary" viewBox="0 0 10 10" refX="9" refY="5"
+                  markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" class="arrowhead"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <h2 class="section-title">▸ States Matrix</h2>
+    <div class="matrix" id="matrix"></div>
+  </div>
+
+  <script>
+    // ============================================================
+    // SAMPLE = source カタログ (Status Deck ドメイン)。owner/health/groups/segs。
+    // ============================================================
+    const SAMPLE = [
+      { id: 'builtin.local', name: 'Device', owner: 'Glass', kind: 'builtin', health: 'online', note: 'On-device',
+        groups: [
+          { id: 'clock', name: 'Clock', segs: [{ id: 'datetime', label: '', val: '14:25 Thu', cat: 'timestamp' }] },
+          { id: 'g2', name: 'G2', segs: [
+            { id: 'level', label: 'Bat', val: '82%', cat: 'battery' },
+            { id: 'rate', label: 'Rate', val: '↓6%/h', cat: 'power_rate' },
+            { id: 'eta', label: 'Left', val: '13h', cat: 'duration' },
+          ]},
+        ]},
+      { id: 'server.local', name: 'Local', owner: 'Mac', kind: 'server', health: 'online', note: '192.168.1.10',
+        groups: [
+          { id: 'claude-code', name: 'Claude', segs: [
+            { id: 'cost', label: 'Cost', val: '$1.2', cat: 'energy_cost' },
+            { id: 'msgs', label: 'Msgs', val: '340', cat: 'counter' },
+          ]},
+          { id: 'codex', name: 'Codex', segs: [
+            { id: '5h', label: '5h', val: '45%', cat: 'usage_percent' },
+            { id: 'weekly', label: 'Weekly', val: '62%', cat: 'usage_percent' },
+          ]},
+          { id: 'system', name: 'System', segs: [
+            { id: 'cpu', label: 'CPU', val: '12%', cat: 'cpu_percent' },
+            { id: 'mem', label: 'Mem', val: '64%', cat: 'memory_percent' },
+            { id: 'battery', label: 'Bat', val: '78%', cat: 'battery' },
+            { id: 'disk', label: 'Disk', val: '82G', cat: 'disk_free' },
+          ]},
+        ]},
+      { id: 'client.weather', name: 'Weather', owner: 'Weather', kind: 'client', health: 'online', note: 'Device location',
+        groups: [{ id: 'weather', name: 'Weather', segs: [
+          { id: 'temp', label: '', val: '23°', cat: 'temperature' },
+          { id: 'humid', label: 'Hum', val: '60%', cat: 'humidity' },
+          { id: 'sunset', label: 'Set', val: '18:42', cat: 'sunset' },
+        ]}]},
+      { id: 'client.geoinfo', name: 'Location', owner: 'Location', kind: 'client', health: 'stale', note: 'Cached',
+        groups: [{ id: 'geoinfo', name: 'Location', segs: [
+          { id: 'elev', label: 'Alt', val: '45m', cat: 'elevation' },
+          { id: 'tz', label: '', val: '+9', cat: 'timezone_offset' },
+        ]}]},
+      { id: 'client.airquality', name: 'Air', owner: 'Air', kind: 'client', health: 'offline', note: 'Last seen 8m ago',
+        groups: [{ id: 'airquality', name: 'Air', segs: [
+          { id: 'aqi', label: 'AQI', val: '32', cat: 'aqi' },
+        ]}]},
+    ]
+
+    // owner のデモ上書き (edit-owner で循環)。effectiveOwner = override ?? source.owner。
+    const ownerOverride = new Map()
+    const ownerCycle = ['Mac', 'PC', 'Studio', 'Workstation']
+    function ownerOf(src) { return ownerOverride.get(src.id) ?? src.owner }
+
+    // 同系統衝突 category (display-identity.collisionCategories と同じ構造判定)。
+    function collisionCats() {
+      const m = {}
+      for (const s of SAMPLE) {
+        const o = ownerOf(s)
+        for (const g of s.groups) for (const seg of g.segs) {
+          if (!seg.cat) continue
+          ;(m[seg.cat] ??= new Set()).add(o)
+        }
+      }
+      return new Set(Object.keys(m).filter((c) => m[c].size >= 2))
+    }
+    function healthColor(h) { return h === 'online' ? 'var(--ok)' : h === 'stale' ? 'var(--warn)' : 'var(--err)' }
+    function on(state, key, dflt = true) { return state.toggles?.[key] ?? dflt }
+
+    // ============================================================
+    // view 関数 (state -> HTML 純粋関数)
+    // ============================================================
+
+    // 画面1: Home (Profile)
+    function renderHomeView(state) {
+      const empty = state.variant === 'empty'
+      const sources = empty ? [] : SAMPLE
+      const cards = sources.map((s) => `
+        <button class="sd-card" data-action="open-source" data-value="${s.id}">
+          <span class="sd-dot" style="background:${healthColor(s.health)}"></span>
+          <span class="sd-card-name">${s.name}</span>
+          <span class="sd-card-note">${s.note}</span>
+          <span class="sd-chev">›</span>
+        </button>`).join('')
+      const glass = `
+        <div class="sd-glass">
+          <div class="gjust"><span>14:25 Thu</span><span>${ownerOf(SAMPLE[0])} 82%</span></div>
+          <div class="gjust"><span>Weather 23° Hum 60</span><span>Set 18:42</span></div>
+          <div class="gjust"><span>${ownerOf(SAMPLE[1])} Bat 78%</span><span>CPU 12%</span></div>
+        </div>`
+      return `
+        <div class="sd">
+          <div class="sd-label">Preset</div>
+          <div class="sd-presetbar">
+            <select class="sd-select" data-action="noop"><option>Default</option><option>Work</option><option>Outdoor</option></select>
+            <span class="sd-icon">✎</span><span class="sd-icon">⧉</span><span class="sd-icon">+</span><span class="sd-icon">🗑</span>
+          </div>
+          <div class="sd-geofence">When at <span class="sd-pill">Home</span> <span class="sd-pill">Auto-switch</span></div>
+
+          <div class="sd-label sd-label-row"><span>Sources (this preset)</span><button class="sd-link" data-action="noop">Manage all</button></div>
+          ${empty ? '<div class="sd-empty">No sources in this preset.<br>Add a source to start.</div>' : cards}
+          <button class="sd-addbtn" data-action="noop">+ Add source</button>
+
+          <div class="sd-label sd-label-row"><span>Places</span><button class="sd-link" data-action="noop">Manage</button></div>
+
+          <div class="sd-label sd-label-row"><span>Glass</span><button class="sd-link" data-action="open-glass">Edit layout ›</button></div>
+          ${glass}
+          <div class="sd-scope-hint">旧 flat Items リストは廃止。source を tap して中身を設定 / Glass で横断配置。</div>
+        </div>`
+    }
+
+    // 画面2: Source Detail
+    function renderSourceDetailView(state) {
+      const s = SAMPLE.find((x) => x.id === state.selectedId) ?? SAMPLE[0]
+      const collide = collisionCats()
+      const isBuiltin = s.kind === 'builtin'
+      const owner = ownerOf(s)
+      const ownerEl = isBuiltin
+        ? `<span class="sd-owner sd-owner-fixed" title="code-owned">${owner}</span>`
+        : `<button class="sd-owner" data-action="edit-owner" data-value="${s.id}">${owner} ✎</button>`
+
+      const groups = s.groups.map((g) => {
+        const gk = 'grp:' + g.id, lk = 'lbl:' + g.id
+        const segs = g.segs.map((seg) => {
+          const sk = g.id + ':' + seg.id
+          const nm = seg.label ? seg.label : (isBuiltin ? seg.id : seg.id)
+          return `
+            <div class="sd-segrow">
+              <span class="sd-segname">${nm || seg.id}</span>
+              <span class="sd-segval">${seg.val}</span>
+              <button class="sd-tg sm ${on(state, sk) ? 'on' : ''}" data-action="toggle" data-value="${sk}"></button>
+            </div>`
+        }).join('')
+        return `
+          <div class="sd-group">
+            <div class="sd-grouphead">
+              <span class="sd-groupname">${g.name}</span>
+              <button class="sd-lblbtn ${on(state, lk, g.id !== 'clock') ? 'on' : ''}" data-action="toggle" data-value="${lk}" title="glass で group 名を前置">tag</button>
+              <button class="sd-tg ${on(state, gk) ? 'on' : ''}" data-action="toggle" data-value="${gk}" style="margin-left:auto"></button>
+            </div>
+            ${segs}
+          </div>`
+      }).join('')
+
+      // Shared settings: この source の素材(全 preset 共有)。衝突 category は注記。
+      const sharedCats = s.groups.flatMap((g) => g.segs).filter((seg) => seg.cat)
+        .map((seg) => {
+          const hit = collide.has(seg.cat)
+          return `<div class="sd-shrow"><span class="k">${seg.label || seg.id}</span><span class="sd-cat">category: ${seg.cat}</span>${hit ? `<span class="sd-chip-badge" style="margin-left:auto">⚠ ${owner}</span>` : ''}</div>`
+        }).join('')
+
+      return `
+        <div class="sd">
+          <button class="sd-back" data-action="back">← Sources</button>
+          <div class="sd-dhead">
+            <span class="sd-dtitle">${s.name}</span>
+            ${ownerEl}
+            <span class="sd-health"><span class="sd-dot" style="background:${healthColor(s.health)}"></span>${s.health === 'offline' ? s.note : s.health}</span>
+          </div>
+
+          <div class="sd-scope sd-scope-profile">
+            <span class="sd-scope-tag sd-tag-profile">This preset only</span>
+            <div class="sd-scope-hint">ここのトグルは今の preset(Default)だけに効く。group/segment の ON/OFF と group 名前置。</div>
+            ${groups}
+          </div>
+
+          <div class="sd-scope sd-scope-shared">
+            <span class="sd-scope-tag sd-tag-shared">All presets (shared)</span>
+            <div class="sd-scope-hint">ここは素材=全 preset に効く。表示オプション・表示条件・category。owner はヘッダで編集。</div>
+            <div class="sd-shrow"><span class="k">Units</span><span class="sd-pill">°C</span><span class="sd-pill">km/h</span></div>
+            <div class="sd-shrow"><span class="k">Show when</span><span class="sd-pill">${isBuiltin ? 'always' : 'Bat ≤ 20%'}</span><span class="sd-pill">+ At place</span></div>
+            <div class="sd-label" style="margin-top:8px">Category (同系統の区別軸)</div>
+            ${sharedCats}
+          </div>
+        </div>`
+    }
+
+    // 画面3: Glass Layout Editor (横断配置)
+    function renderGlassLayoutView(state) {
+      const collide = collisionCats()
+      const chip = (srcId, gId, segId) => {
+        const s = SAMPLE.find((x) => x.id === srcId); const g = s.groups.find((x) => x.id === gId); const seg = g.segs.find((x) => x.id === segId)
+        const badge = seg.cat && collide.has(seg.cat) ? `<span class="sd-chip-badge">${ownerOf(s)}</span>` : ''
+        const lbl = seg.label ? `${seg.label} ${seg.val}` : seg.val
+        return `<span class="sd-chip">${badge}<span>${lbl}</span></span>`
+      }
+      const row = (n, left, right) => `
+        <div class="sd-glassrow">
+          <span class="sd-rownum">${n}</span>
+          <div class="sd-zone">${left}</div>
+          <div class="sd-zone sd-zone-r">${right}</div>
+        </div>`
+      const placed = state.variant === 'empty'
+        ? [row(1, '', ''), row(2, '', ''), row(3, '', '')].join('')
+        : [
+            row(1, chip('builtin.local', 'clock', 'datetime'), chip('builtin.local', 'g2', 'level')),
+            row(2, chip('client.weather', 'weather', 'temp') + chip('client.weather', 'weather', 'humid'), chip('client.weather', 'weather', 'sunset')),
+            row(3, chip('server.local', 'system', 'cpu'), chip('server.local', 'system', 'battery')),
+            row(4, '', ''),
+          ].join('')
+      // unplaced 棚: 衝突する電池2つ(owner バッジ付き) + 非衝突
+      const shelf = [
+        chip('server.local', 'claude-code', 'cost'),
+        chip('server.local', 'codex', '5h'),
+        chip('server.local', 'system', 'mem'),
+        chip('client.geoinfo', 'geoinfo', 'elev'),
+        chip('client.airquality', 'airquality', 'aqi'),
+      ].join('')
+      return `
+        <div class="sd">
+          <button class="sd-back" data-action="back">← Home</button>
+          <div class="sd-label">Glass layout — 576×288 / 10 行 (横断配置)</div>
+          <div style="display:flex;flex-direction:column;gap:5px">${placed}</div>
+          <div class="sd-scope-hint">行 = glass 上からの位置。左ゾーン｜右ゾーン。右は実機で右寄せ。</div>
+          <div class="sd-label">Unplaced — picker (owner バッジで同系統を区別)</div>
+          <div class="sd-shelf">${shelf}</div>
+          <div class="sd-scope-hint">⚠ 同 category を複数 owner が出すと <span class="sd-chip-badge">owner</span> バッジが付く(例 Glass Bat / Mac Bat)。非衝突は無印。</div>
+          <button class="sd-addbtn" data-action="noop">+ Custom label</button>
+        </div>`
+    }
+
+    // ルータ
+    function renderState(state) {
+      switch (state.kind) {
+        case 'source': return renderSourceDetailView(state)
+        case 'glass':  return renderGlassLayoutView(state)
+        default:       return renderHomeView(state)
+      }
+    }
+
+    // ============================================================
+    // state ファクトリ
+    // ============================================================
+    function defaultHomeState(variant = 'filled') { return { kind: 'home', variant, toggles: {} } }
+    function defaultSourceState(selectedId = 'server.local') { return { kind: 'source', selectedId, toggles: {} } }
+    function defaultGlassState(variant = 'placed') { return { kind: 'glass', variant, toggles: {} } }
+
+    const flowFrames = [
+      { key: 'flow:home',   area: 'A', name: 'Home (Profile)',     initial: () => defaultHomeState() },
+      { key: 'flow:source', area: 'B', name: 'Source Detail',      initial: () => defaultSourceState() },
+      { key: 'flow:glass',  area: 'C', name: 'Glass Layout Editor', initial: () => defaultGlassState() },
+    ]
+
+    const matrixScreens = [
+      { id: 'home', name: 'Home', frames: [
+        { key: 'matrix:home:filled', variantName: 'sources あり', state: () => defaultHomeState('filled') },
+        { key: 'matrix:home:empty',  variantName: 'source 空 preset', state: () => defaultHomeState('empty') },
+      ]},
+      { id: 'source', name: 'Source Detail', frames: [
+        { key: 'matrix:source:server', variantName: 'server (Local / owner編集可)', state: () => defaultSourceState('server.local') },
+        { key: 'matrix:source:builtin', variantName: 'builtin (Device / owner固定)', state: () => defaultSourceState('builtin.local') },
+      ]},
+      { id: 'glass', name: 'Glass Layout', frames: [
+        { key: 'matrix:glass:placed', variantName: '配置済み + picker', state: () => defaultGlassState('placed') },
+        { key: 'matrix:glass:empty',  variantName: '未配置(棚にバッジ付き)', state: () => defaultGlassState('empty') },
+      ]},
+    ]
+
+    const flowEdges = [
+      { from: 'flow:home', to: 'flow:source', label: 'tap source', kind: 'primary', side: { from: 'right', to: 'left' }, offset: -40 },
+      { from: 'flow:source', to: 'flow:home', label: '← back', kind: 'secondary', side: { from: 'left', to: 'right' }, offset: 40 },
+      { from: 'flow:home', to: 'flow:glass', label: 'Edit layout', kind: 'primary', side: { from: 'bottom', to: 'left' }, offset: 0 },
+      { from: 'flow:glass', to: 'flow:home', label: '← back', kind: 'secondary', side: { from: 'top', to: 'bottom' }, offset: 0 },
+    ]
+
+    // ============================================================
+    // generic 基盤 — touch しない
+    // ============================================================
+    const frameStates = new Map()
+    function initFrameStates() {
+      frameStates.clear()
+      for (const f of flowFrames) frameStates.set(f.key, { ...f.initial(), frameKey: f.key })
+      for (const s of matrixScreens) for (const f of s.frames) frameStates.set(f.key, { ...f.state(), frameKey: f.key })
+    }
+    initFrameStates()
+    let flowActive = flowFrames[0].key
+
+    const canvas = document.getElementById('canvas')
+    const edgesSvg = document.getElementById('edges')
+
+    function renderNode(frame) {
+      const state = frameStates.get(frame.key)
+      const isActive = flowActive === frame.key
+      return `
+        <article class="node${isActive ? ' active' : ''}" data-frame-key="${frame.key}">
+          <div class="node-head">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <span class="name">${frame.name}</span>
+            <span class="id">${frame.key.split(':').pop()}</span>
+          </div>
+          <div class="node-body"><div class="miniature">${renderState(state)}</div></div>
+        </article>`
+    }
+    function buildCanvas() {
+      for (const n of canvas.querySelectorAll('.node')) n.remove()
+      for (const f of flowFrames) canvas.insertAdjacentHTML('beforeend', renderNode(f))
+    }
+    function renderFrame(frame) {
+      const state = frameStates.get(frame.key)
+      return `
+        <article class="frame" data-frame-key="${frame.key}">
+          <div class="frame-head">${frame.variantName}</div>
+          <div class="frame-body"><div class="miniature">${renderState(state)}</div></div>
+        </article>`
+    }
+    function buildMatrix() {
+      const root = document.getElementById('matrix')
+      root.innerHTML = ''
+      for (const screen of matrixScreens) {
+        const wrap = document.createElement('section')
+        wrap.innerHTML = `
+          <header style="margin-bottom:12px;display:flex;gap:12px;align-items:baseline;">
+            <h3 style="font-size:14px;">${screen.name}</h3>
+            <span style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim);">${screen.frames.length} variants</span>
+          </header>
+          <div class="matrix-row">${screen.frames.map(renderFrame).join('')}</div>`
+        root.appendChild(wrap)
+      }
+    }
+    function anchor(rect, side, parent) {
+      const x = rect.left - parent.left, y = rect.top - parent.top
+      switch (side) {
+        case 'top':    return { x: x + rect.width/2, y }
+        case 'bottom': return { x: x + rect.width/2, y: y + rect.height }
+        case 'left':   return { x, y: y + rect.height/2 }
+        case 'right':  return { x: x + rect.width, y: y + rect.height/2 }
+      }
+    }
+    function curve(p1, p2) {
+      const dx = p2.x-p1.x, dy = p2.y-p1.y
+      const handle = Math.max(40, Math.min(140, Math.abs(dx)*0.45 + Math.abs(dy)*0.45))
+      const isHoriz = Math.abs(dx) > Math.abs(dy)
+      const c1 = isHoriz ? {x:p1.x+Math.sign(dx)*handle,y:p1.y} : {x:p1.x,y:p1.y+Math.sign(dy)*handle}
+      const c2 = isHoriz ? {x:p2.x-Math.sign(dx)*handle,y:p2.y} : {x:p2.x,y:p2.y-Math.sign(dy)*handle}
+      return `M ${p1.x} ${p1.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p2.x} ${p2.y}`
+    }
+    function drawEdges(firingIdx = -1) {
+      for (const el of edgesSvg.querySelectorAll('g.edge')) el.remove()
+      const parent = canvas.getBoundingClientRect()
+      edgesSvg.setAttribute('width', parent.width)
+      edgesSvg.setAttribute('height', parent.height)
+      edgesSvg.setAttribute('viewBox', `0 0 ${parent.width} ${parent.height}`)
+      const nodeMap = new Map()
+      for (const n of canvas.querySelectorAll('.node')) nodeMap.set(n.dataset.frameKey, n.getBoundingClientRect())
+      flowEdges.forEach((e, idx) => {
+        const fr = nodeMap.get(e.from), tr = nodeMap.get(e.to)
+        if (!fr || !tr) return
+        const p1 = anchor(fr, e.side.from, parent), p2 = anchor(tr, e.side.to, parent)
+        if (e.offset) {
+          if (e.side.from === 'left' || e.side.from === 'right') { p1.y += e.offset } else { p1.x += e.offset }
+          if (e.side.to === 'left' || e.side.to === 'right') { p2.y += e.offset } else { p2.x += e.offset }
+        }
+        const g = document.createElementNS('http://www.w3.org/2000/svg', 'g'); g.classList.add('edge')
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+        path.setAttribute('d', curve(p1, p2))
+        if (e.kind === 'primary') path.classList.add('primary')
+        if (idx === firingIdx) path.classList.add('firing')
+        path.setAttribute('marker-end', `url(#arrow-${e.kind || 'secondary'})`)
+        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text')
+        text.setAttribute('x', (p1.x+p2.x)/2); text.setAttribute('y', (p1.y+p2.y)/2 - 6)
+        text.setAttribute('text-anchor', 'middle')
+        if (e.kind === 'primary') text.classList.add('primary')
+        text.textContent = e.label
+        g.appendChild(path); g.appendChild(text); edgesSvg.appendChild(g)
+      })
+    }
+    function findFrameKey(target) { return target.closest('[data-frame-key]')?.dataset?.frameKey ?? null }
+    function fireEdge(from, to) {
+      const idx = flowEdges.findIndex((e) => e.from === from && e.to === to)
+      drawEdges(idx); setTimeout(() => drawEdges(), 600)
+    }
+    function rerender() { buildCanvas(); buildMatrix(); drawEdges() }
+
+    // ============================================================
+    // handleAction — Status Deck の action
+    // ============================================================
+    function handleAction(action, target, frameKey) {
+      const state = frameStates.get(frameKey)
+      if (!state) return
+      const inFlow = frameKey.startsWith('flow:')
+      switch (action) {
+        case 'open-source':
+          if (inFlow) {
+            frameStates.get('flow:source').selectedId = target.dataset.value
+            flowActive = 'flow:source'; fireEdge('flow:home', 'flow:source')
+          }
+          break
+        case 'open-glass':
+          if (inFlow) { flowActive = 'flow:glass'; fireEdge('flow:home', 'flow:glass') }
+          break
+        case 'back':
+          if (inFlow) { const from = flowActive; flowActive = 'flow:home'; fireEdge(from, 'flow:home') }
+          break
+        case 'toggle': {
+          const k = target.dataset.value
+          const cur = state.toggles?.[k]
+          // 既定は ON (clock label は OFF 既定だが表示上は現在値を反転)
+          state.toggles = state.toggles || {}
+          state.toggles[k] = !(cur ?? true)
+          break
+        }
+        case 'edit-owner': {
+          const id = target.dataset.value
+          const s = SAMPLE.find((x) => x.id === id)
+          const cur = ownerOf(s)
+          const i = ownerCycle.indexOf(cur)
+          ownerOverride.set(id, ownerCycle[(i + 1) % ownerCycle.length])
+          break
+        }
+        case 'noop': break
+      }
+      rerender()
+    }
+
+    document.addEventListener('click', (e) => {
+      const target = e.target.closest('[data-action]')
+      if (!target || target.tagName === 'SELECT' || target.tagName === 'INPUT' || target.disabled) return
+      handleAction(target.dataset.action, target, findFrameKey(target))
+    })
+    document.addEventListener('change', (e) => {
+      const target = e.target.closest('[data-action]')
+      if (!target) return
+      handleAction(target.dataset.action, target, findFrameKey(target))
+    })
+    document.getElementById('btn-reset-all').addEventListener('click', () => {
+      ownerOverride.clear(); initFrameStates(); flowActive = flowFrames[0].key; rerender()
+    })
+    document.getElementById('viewport-controls').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-vw]')
+      if (!btn) return
+      document.documentElement.style.setProperty('--viewport-px',   `${btn.dataset.vw}px`)
+      document.documentElement.style.setProperty('--viewport-h-px', `${btn.dataset.vh}px`)
+      for (const b of e.currentTarget.querySelectorAll('button[data-vw]')) b.classList.toggle('active', b === btn)
+      requestAnimationFrame(() => drawEdges()); setTimeout(() => drawEdges(), 50)
+    })
+
+    rerender()
+    new ResizeObserver(() => drawEdges()).observe(canvas)
+    window.addEventListener('resize', () => drawEdges())
+  </script>
+</body>
+</html>

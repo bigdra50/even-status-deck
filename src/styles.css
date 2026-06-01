@@ -324,6 +324,57 @@ textarea {
   font-size: var(--fs-sm);
   color: var(--text-dim);
 }
+/* Source nav カード (新 IA): tap で Source Detail へ。横スワイプで右端🗑を露出 (swipe-to-delete)。 */
+.swipe-row {
+  position: relative; /* .src が border/radius/overflow:hidden/margin を持つ。背面🗑を絶対配置する */
+}
+/* 背面: 右端の削除。前面がずれると露出する。 */
+.swipe-bg {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: flex-end;
+}
+.swipe-del {
+  width: 72px; /* JS の SWIPE_ACTION_W と一致させる */
+  border: none;
+  background: var(--err);
+  color: #111111;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+/* 前面: タップ領域 (カード本体)。translateX で左へずれる。drag 中は transition なし(JS が外す)。 */
+.swipe-fg {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: transform 0.22s cubic-bezier(0.22, 0.61, 0.36, 1);
+  touch-action: pan-y; /* 縦スクロールは通し、横は JS が preventDefault で掴む */
+}
+.swipe-fg:hover {
+  background: var(--surface-2, var(--surface));
+}
+.src-chev {
+  margin-left: var(--space-2);
+  color: var(--text-dim);
+  display: inline-flex;
+  align-items: center;
+}
+/* Source Detail ヘッダ (owner バッジ + 接続状態)。 */
+.src-detail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0 var(--space-3);
+}
 .src-metrics {
   padding: 0 var(--space-4) var(--space-3) 40px;
   display: flex;
@@ -417,6 +468,29 @@ textarea {
   color: var(--accent);
   border-color: var(--accent);
   opacity: 1;
+}
+/* owner バッジ (表示モデル Phase2): 同系統衝突 group に出自を表示。button はリネーム可、span は固定。 */
+.owner-badge {
+  flex: 0 0 auto;
+  font-size: var(--fs-sm);
+  font-family: inherit;
+  color: var(--text-dim);
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+button.owner-badge {
+  cursor: pointer;
+}
+button.owner-badge:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.owner-badge.owner-fixed {
+  cursor: default;
+  opacity: 0.7;
 }
 /* 表示タイミング条件エディタ (各 metric 行のサブ行) */
 .metric {
