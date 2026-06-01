@@ -498,6 +498,22 @@ function sourceDotNote(s: SourceDef): { dotCls: string; note: string } {
   return { dotCls, note: sourceUrl(s) ?? 'Not set' }
 }
 
+// Home の provenance セクション (view 限定の grouping。データモデルに tier 実体は足さない)。
+// 見出し = 出自、行 = 既存の dot+note が capability を表す (codex: 見出しに permission を混ぜない)。
+// 判定は kind + origin: builtin / app_bundled client は Included、server は Connected、
+// user_added client (将来の外部 provider) は Extensions。
+type SourceSection = 'included' | 'connected' | 'extensions'
+function sourceSection(s: SourceDef): SourceSection {
+  if (s.kind === 'server') return 'connected'
+  if (s.kind === 'client' && s.origin !== 'app_bundled') return 'extensions'
+  return 'included' // builtin + app_bundled client (Device / Location)
+}
+const SOURCE_SECTIONS: { key: SourceSection; label: string; hint: string }[] = [
+  { key: 'included', label: 'Included', hint: 'Bundled with the app' },
+  { key: 'connected', label: 'Connected', hint: 'Servers you run' },
+  { key: 'extensions', label: 'Extensions', hint: 'Added providers' },
+]
+
 // Home: この preset で使う source の nav カード (新 IA)。tap で Source Detail へドリルダウン。
 // builtin(Device) も含めて出す。preset から外すのは横スワイプ→🗑 (iOS 風 swipe-to-delete)。
 function sourceNavRow(s: SourceDef): string {
@@ -853,8 +869,13 @@ function renderHome(): string {
   // 新 IA: この preset で有効な全 source (builtin 含む) を nav カードで出す。tap で Source Detail へ。
   // 旧 flat Items リスト (全 source 横断の group リスト) は廃止。中身の設定は Source Detail に移設。
   const sources = config.sources.filter((s) => isSourceEnabled(config, s.id))
+  // provenance でセクション化 (Included / Connected / Extensions)。空セクションは描かない。
   const sourcesHtml = sources.length
-    ? sources.map(sourceNavRow).join('')
+    ? SOURCE_SECTIONS.map(({ key, label, hint }) => {
+        const inSec = sources.filter((s) => sourceSection(s) === key)
+        if (!inSec.length) return ''
+        return `<div class="src-section" title="${esc(hint)}">${label}</div>${inSec.map(sourceNavRow).join('')}`
+      }).join('')
     : '<div class="cmp-sub">No sources in this preset.</div>'
   return `
     ${renderSuggestionBanner()}
@@ -866,7 +887,7 @@ function renderHome(): string {
     <button class="save-btn sm" data-action="open-add-source">${icon('plus', { size: 14 })} Add source</button>
 
     <div class="cmp-label cmp-label-row">Places<span class="cmp-actions"><button class="link-btn" data-action="manage-places">Manage</button></span></div>
-    <div class="cmp-sub">Saved spots for the Places source (distance &amp; bearing from here).</div>
+    <div class="cmp-sub">Saved spots for the Location source (distance &amp; bearing from here).</div>
 
     ${renderGlassSection()}
 

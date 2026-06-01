@@ -139,6 +139,19 @@ textarea {
   color: var(--text-dim);
   font-size: var(--fs-md);
 }
+/* Home: provenance セクション見出し (Included / Connected / Extensions)。cmp-label より控えめ。 */
+.src-section {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  opacity: 0.72;
+  margin: var(--space-4) 0 var(--space-2);
+}
+.src-section:first-of-type {
+  margin-top: var(--space-2);
+}
 
 /* machine: select + gear */
 .machine-bar {
