@@ -11,8 +11,10 @@ const groupTitles = (p: Page) => p.locator('#source-list .src-head .src-name').a
 
 // SortableJS のマウスドラッグ (companion.spec と同じ手順)。
 async function dragGroupBelow(p: Page, fromGroupId: string, toGroupId: string): Promise<void> {
-  const grip = p.locator(`.src[data-key="${key(fromGroupId)}"] .src-grip`)
-  const target = p.locator(`.src[data-key="${key(toGroupId)}"]`)
+  const grip = p.locator(`#source-list .src[data-key="${key(fromGroupId)}"] .src-grip`)
+  const target = p.locator(`#source-list .src[data-key="${key(toGroupId)}"]`)
+  // 新 IA: #source-list は Glass セクション内で fold より下に来るため drag 前に view へ送る。
+  await target.scrollIntoViewIfNeeded()
   const fb = await grip.boundingBox()
   const tb = await target.boundingBox()
   if (!fb || !tb) throw new Error('bounding box not found')

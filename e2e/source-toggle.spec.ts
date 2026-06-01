@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { attachConsoleErrors, MACHINE, SERVER_ID, STATUS } from './fixtures'
+import { attachConsoleErrors, MACHINE, SERVER_ID, STATUS, swipeRemoveFromPreset } from './fixtures'
 
 // preset への source 追加/除外 (enabledSourceIds) の回帰テスト。
 // preset に含まれない source は preset 画面に出さない (Remove で外す / Add で足す)。
@@ -34,8 +34,8 @@ test('removing a source from the preset hides its items; adding it back restores
 }) => {
   await expect.poll(() => itemNames(page)).toContain('CPU')
 
-  // preset から外す -> fetch 停止 + Items/glass から消え、preset の Sources からも消える。
-  await page.locator(`[data-action="remove-from-preset"][data-src="${SERVER_ID}"]`).click()
+  // preset から外す (swipe→🗑) -> fetch 停止 + Items/glass から消え、preset の Sources からも消える。
+  await swipeRemoveFromPreset(page, SERVER_ID)
   await expect.poll(() => itemNames(page)).not.toContain('CPU')
   await expect.poll(() => itemNames(page)).not.toContain('Memory')
   await expect(removeBtn(page)).toHaveCount(0)
@@ -49,8 +49,8 @@ test('removing a source from the preset hides its items; adding it back restores
 })
 
 test('source membership is independent per preset', async ({ page }) => {
-  // Default で source を外す。
-  await page.locator(`[data-action="remove-from-preset"][data-src="${SERVER_ID}"]`).click()
+  // Default で source を外す (swipe→🗑)。
+  await swipeRemoveFromPreset(page, SERVER_ID)
   await expect.poll(() => itemNames(page)).not.toContain('CPU')
 
   // 新規 preset (addProfile は builtin + 全 server を enabledSourceIds に入れる) -> CPU が出る。
