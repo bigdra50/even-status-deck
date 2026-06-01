@@ -3,199 +3,145 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>実装ノート — overlay イベント搬送路 (PROTOCOL §11)</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script type="module">
-      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'
-      mermaid.initialize({ startOnLoad: true, theme: 'dark' })
-    </script>
+    <title>Status Deck — Location source 統合 実装ノート</title>
     <style>
-      body { background: #0b0f14; color: #d6deeb; }
-      .badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; font-weight: 600; }
-      .decided { background: #14432a; color: #7ee2a8; border: 1px solid #2f8f5b; }
-      .deviation { background: #4a2a14; color: #f2b27e; border: 1px solid #b5703a; }
-      .tradeoff { background: #2a2f4a; color: #9fb0f2; border: 1px solid #5b6bb5; }
-      .open { background: #4a1f2a; color: #f29faf; border: 1px solid #b53a5b; }
-      code { color: #9fe6c8; }
-      summary { cursor: pointer; }
-      table { border-collapse: collapse; width: 100%; }
-      td, th { border: 1px solid #24303d; padding: 6px 10px; text-align: left; vertical-align: top; }
-      th { background: #111923; }
-      a { color: #7ec8f2; }
+      :root {
+        --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --ink: #e6e8ee; --dim: #9aa3b2;
+        --line: #2a2f3a; --accent: #6ea8fe; --ok: #4ade80; --dev: #fbbf24; --trade: #c084fc;
+        --open: #fb7185; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--ink);
+        font: 15px/1.65 system-ui, "Hiragino Sans", sans-serif; }
+      .wrap { max-width: 980px; margin: 0 auto; padding: 32px 20px 80px; }
+      h1 { font-size: 24px; margin: 0 0 4px; }
+      h2 { font-size: 18px; margin: 36px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+      .meta { color: var(--dim); font-size: 13px; margin-bottom: 8px; }
+      .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+      .badge { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+        border: 1px solid; letter-spacing: .02em; }
+      .b-decided { color: var(--ok); border-color: var(--ok); }
+      .b-deviation { color: var(--dev); border-color: var(--dev); }
+      .b-tradeoff { color: var(--trade); border-color: var(--trade); }
+      .b-open { color: var(--open); border-color: var(--open); }
+      .b-done { color: var(--ok); border-color: var(--ok); background: rgba(74,222,128,.1); }
+      .b-pending { color: var(--dim); border-color: var(--line); }
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+        padding: 14px 16px; margin: 10px 0; }
+      .card h3 { margin: 0 0 6px; font-size: 15px; display: flex; gap: 8px; align-items: center; }
+      .card p { margin: 6px 0; }
+      .card .why { color: var(--dim); font-size: 13.5px; }
+      pre { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+        padding: 12px 14px; overflow-x: auto; font: 12.5px/1.5 var(--mono); color: #cdd3df; }
+      code { font-family: var(--mono); background: var(--panel2); padding: 1px 5px; border-radius: 4px;
+        font-size: 13px; }
+      table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13.5px; }
+      th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+      th { color: var(--dim); font-weight: 600; }
+      .phases { display: flex; flex-wrap: wrap; gap: 8px; }
+      .phase { flex: 1 1 180px; background: var(--panel); border: 1px solid var(--line);
+        border-radius: 8px; padding: 10px 12px; }
+      .phase b { display: block; margin-bottom: 4px; }
+      .dim { color: var(--dim); }
+      a { color: var(--accent); }
     </style>
   </head>
-  <body class="max-w-5xl mx-auto px-6 py-8 leading-relaxed">
-    <header class="mb-6">
-      <h1 class="text-2xl font-bold text-white">overlay イベント搬送路 (PROTOCOL §11)</h1>
-      <p class="text-sm text-slate-400">
-        provider/watcher → server → glass で通知/トースト/バナーを push する。代表例 = Mac 通知転送。
-      </p>
-      <p class="text-xs text-slate-500 mt-1">最終更新: 2026-05-30 ・ ステータス:
-        <span class="badge decided">forward + dialog 往復 実機確認済</span>
-        <span class="badge decided">notification/toast/banner + dialog はい/いいえ往復 OK</span> ・ gpt-5.5 と設計確定
-      </p>
-      <p class="text-xs mt-2 p-2 rounded" style="background:#3a1420;border:1px solid #b53a5b;">
-        <b style="color:#f29faf;">実機で判明した罠 (修正済 0.1.74):</b>
-        glass は別オリジンから <code>application/json</code> で <code>POST /api/action</code> するため
-        WKWebView が <b>CORS preflight(OPTIONS)</b> を投げる。server が OPTIONS 未対応(404)だと本 POST が
-        握り潰され dialog 応答が返らない (GET=simple は preflight 無しなので forward は動き症状が分かりにくい)。
-        → client を <code>text/plain</code> で simple request 化 + server で OPTIONS 対応。一時診断
-        <code>/api/_debug/inbound</code> で glass(LAN IP) の POST 到達→completed を観測し確証 (診断は撤去済)。
-      </p>
-    </header>
-
-    <section class="mb-8">
-      <h2 class="text-lg font-semibold text-white mb-2">データフロー</h2>
-      <pre class="mermaid">
-flowchart LR
-  N["Mac ネイティブ通知"] --> W["watcher<br/>sqlite3 + plutil"]
-  W -->|"POST /api/emit<br/>(loopback 127.0.0.1)"| B["server<br/>ring buffer<br/>seq / id dedupe / ttl"]
-  B -->|"GET /api/events?since&waitMs<br/>(long-poll, LAN)"| C["client src/events.ts<br/>id で dedupe"]
-  C -->|"window 'toolbar:overlay'"| O["glass overlay<br/>notification / toast / banner"]
-      </pre>
-    </section>
-
-    <section class="mb-8">
-      <h2 class="text-lg font-semibold text-white mb-2">dialog 往復チャネル <span class="text-xs text-slate-500">(はい/いいえ応答を source へ返す・gpt-5.5 と確定)</span></h2>
-      <p class="text-sm text-slate-400 mb-2">forward の逆。source が質問を push → ユーザーがリングで選択 → 結果を source へ返す request/response。§10 reserved の <code>POST /api/action</code> を <code>type:"dialog.result"</code> のみ正規化。</p>
-      <pre class="mermaid">
-sequenceDiagram
-  participant W as watcher(Mac,loopback)
-  participant S as server
-  participant G as glass(client,LAN)
-  W->>S: POST /api/emit {kind:dialog, actions:[はい,いいえ]}
-  S-->>W: {ok, seq, requestId:R}
-  W->>S: GET /api/action-result?requestId=R (loopback long-poll)
-  G->>S: GET /api/events (long-poll)
-  S-->>G: dialog{R, actions}
-  Note over G: overlay.dialog → ユーザー選択 i
-  G->>S: POST /api/action {requestId:R, index:i, action} (LAN)
-  S-->>W: {status:completed, result:{index:i, action}}
-  Note over W: 結果を受けて動作
-      </pre>
-      <div class="space-y-2 mt-2">
-        <details class="bg-slate-900/40 rounded p-3">
-          <summary><span class="badge decided">decided</span> <b class="ml-2">結果 endpoint は LAN 受理（forward の emit と非対称）</b></summary>
-          <p class="mt-2 text-sm text-slate-300">結果は client（iPhone, LAN）から来るので <code>POST /api/action</code> は loopback でなく LAN を受理。安全性 = <b>server 生成の unguessable requestId（capability token）+ index/action 検証 + accept-once</b>。<code>GET /api/action-result</code>（質問側 watcher の受信）は loopback 限定。</p>
-        </details>
-        <details class="bg-slate-900/40 rounded p-3">
-          <summary><span class="badge decided">decided</span> <b class="ml-2">requestId は server 払い出し・相関ストアは ring buffer と別</b></summary>
-          <p class="mt-2 text-sm text-slate-300"><code>server/actions.ts</code> が pending(<code>requestId/providerId/actions/expiresAt/status/result</code>)を保持。TTL（既定60s）= 表示有効期限 兼 受理期限。event ring buffer は配送、action store は相関で役割分離。</p>
-        </details>
-        <details class="bg-slate-900/40 rounded p-3">
-          <summary><span class="badge tradeoff">tradeoff</span> <b class="ml-2">範囲は dialog.result のみ正規化</b></summary>
-          <p class="mt-2 text-sm text-slate-300">glass gesture からの任意 source 遠隔操作（<code>type:"source.action"</code>）は §10 reserved のまま。今回は「source の質問への応答」だけを固める。確認 CLI = <code>bun run server ask "..." はい いいえ</code>（選択ラベルを stdout）。</p>
-        </details>
+  <body>
+    <div class="wrap">
+      <h1>Location source 統合 — 実装ノート</h1>
+      <div class="meta">最終更新 2026-06-01 ・ ブランチ <code>feat/display-model-ia</code> ・ 計画 <code>~/.claude/plans/melodic-soaring-pillow.md</code></div>
+      <div class="legend">
+        <span class="badge b-decided">decided</span>
+        <span class="badge b-deviation">deviation</span>
+        <span class="badge b-tradeoff">tradeoff</span>
+        <span class="badge b-open">open question</span>
       </div>
-    </section>
+      <p class="dim">位置情報由来の client source が 5 つ(weather/geoinfo/airquality/geocode/places)に分裂していた違和感を解消するため、1 つの opt-in <code>client.location</code> source に畳み、内部 group も 2 つ(Weather/Place)に集約する。設計は codex(GPT-5.5) と 3 往復で確定、いずれもユーザー指摘(よりフラットに)を支持。</p>
 
-    <section class="mb-8">
-      <h2 class="text-lg font-semibold text-white mb-3">Design decisions <span class="text-xs text-slate-500">(gpt-5.5 と確定)</span></h2>
-      <div class="space-y-2">
-        <details open class="bg-slate-900/40 rounded p-3">
-          <summary><span class="badge decided">decided</span> <b class="ml-2">D1 搬送 = cursor 付き long-poll（別 path）</b></summary>
-          <p class="mt-2 text-sm text-slate-300"><code>GET /api/events?since=&lt;seq&gt;&amp;waitMs=25000</code>。pending か reset で即返し、無ければ waitMs まで保留。<code>StatusDoc</code> に混ぜない（fire-once と永続状態の混在回避）。SSE/WS は WKWebView の jettison/電池が未検証なので MVP では賭けない。idle churn ~25s/回・イベント時 latency ≈ RTT。</p>
-        </details>
-        <details class="bg-slate-900/40 rounded p-3">
-          <summary><span class="badge decided">decided</span> <b class="ml-2">D2 取り込み = POST /api/emit（loopback 限定）</b></summary>
-          <p class="mt-2 text-sm text-slate-300">外部 watcher が同一ホストから投入。native watcher を server に抱えず分離（OS 依存を隔離）。NDJSON 常駐 provider は後付け adapter で追加可。</p>
-        </details>
-        <details class="bg-slate-900/40 rounded p-3">
-          <summary><span class="badge decided">decided</span> <b class="ml-2">D3 配送 = source-local seq + (providerId,id) dedupe + ttl ring buffer</b></summary>
-          <p class="mt-2 text-sm text-slate-300">client は <code>since</code> cursor と seenId で重複排除。古すぎ/再起動は <code>reset:true</code> で連続性破棄。失効分は配送しない（古い通知を蒸し返さない）。</p>
-        </details>
-        <details class="bg-slate-900/40 rounded p-3">
-          <summary><span class="badge decided">decided</span> <b class="ml-2">D4 dialog はリモート非対応</b></summary>
-          <p class="mt-2 text-sm text-slate-300">notification/toast/banner のみ。dialog は onResult の往復が要るので §10 の <code>POST /api/action</code> 方向で別途扱う。</p>
-        </details>
-        <details class="bg-slate-900/40 rounded p-3">
-          <summary><span class="badge decided">decided</span> <b class="ml-2">D5 security = loopback emit + rate limit + sanitize</b></summary>
-          <p class="mt-2 text-sm text-slate-300">emit は <code>127.0.0.1</code>/<code>::1</code> のみ受理（LAN は 403）。providerId 単位 rate limit、body size 上限、文字列 clip/clamp、kind allowlist、空通知破棄。</p>
-        </details>
+      <h2>フェーズ進捗</h2>
+      <div class="phases">
+        <div class="phase"><b>Phase 0 <span class="badge b-done">done</span></b><span class="dim">表示モデル基盤を 3 コミットに確定(provider / companion IA / release)。</span></div>
+        <div class="phase"><b>Phase 1 <span class="badge b-done">done</span></b><span class="dim">データ層: 統合 producer・store dispatch・config 移行・taxonomy・options・glass。172 tests green。実機 migration 確認待ち。</span></div>
+        <div class="phase"><b>Phase 2 <span class="badge b-pending">pending</span></b><span class="dim">companion UI: Add-source は 1 source 化が自動達成。Source Detail の 2 group 表示確認。</span></div>
+        <div class="phase"><b>Phase 3 <span class="badge b-pending">pending</span></b><span class="dim">provenance セクション(Included/Connected)+ capability バッジ。view 限定。</span></div>
       </div>
-    </section>
 
-    <section class="mb-8">
-      <h2 class="text-lg font-semibold text-white mb-3">Deviations <span class="text-xs text-slate-500">(gpt 案からの逸脱・補強)</span></h2>
-      <div class="space-y-2">
-        <details open class="bg-slate-900/40 rounded p-3">
-          <summary><span class="badge deviation">deviation</span> <b class="ml-2">emit はトークンでなく loopback 限定で守る</b></summary>
-          <p class="mt-2 text-sm text-slate-300">gpt は「shared/boot token」も挙げたが、watcher は同一 Mac 常駐なので <b>loopback バインドチェックだけ</b>で偽装を防げ、トークン配布の運用を消せる。<code>/api/events</code> は LAN 公開のまま。</p>
-        </details>
-        <details class="bg-slate-900/40 rounded p-3">
-          <summary><span class="badge deviation">deviation</span> <b class="ml-2">events loop は capability 広告 source のみ</b></summary>
-          <p class="mt-2 text-sm text-slate-300">補強: client は <code>/api/machine</code> の <code>capabilities.events:true</code> を出す source だけ long-poll する。対応しない source に余計な held 接続を張らない（jettison/電池対策）。</p>
-        </details>
-        <details class="bg-slate-900/40 rounded p-3">
-          <summary><span class="badge deviation">deviation</span> <b class="ml-2">watcher は bun:sqlite でなく sqlite3/plutil CLI</b></summary>
-          <p class="mt-2 text-sm text-slate-300"><code>bun:sqlite</code> は bun 専用で型/ランタイムが結合する。macOS 標準の <code>sqlite3</code>（<code>immutable=1</code> でロックせず読む）+ <code>plutil</code>（binary plist → JSON、失敗時 XML 正規表現フォールバック）にして node/bun 両対応・型問題なしにした。</p>
-        </details>
+      <h2>データモデルの変化</h2>
+      <pre>before                                  after
+client.weather   - weather(16)           client.location  (opt-in, origin=app_bundled)
+client.airquality- airquality(4)   --+    +- group "Weather"  = 旧 weather + 旧 air
+client.geocode   - geocode(4)      --+--> +- group "Place"    = 旧 geocode + geoinfo + nav
+client.geoinfo   - geoinfo(3)      --+
+client.places    - nav(here+保存地点)     health: 各 segment.state(per-host) / group.state は派生(primary 最悪)</pre>
+
+      <h2>主要な設計判断</h2>
+
+      <div class="card">
+        <h3><span class="badge b-decided">decided</span> source 5 → 1 (<code>client.location</code>)</h3>
+        <p>位置という 1 つの許可・1 つの現在地から派生する 5 系統を、local server が claude/codex/system を束ねるのと同型に 1 source へ。</p>
+        <p class="why">Why: 同じ許可・現在地・失敗原因を 5 回見せていた。source = フェッチ境界ではなく「producer / 許可 / UX 単位」と再定義(codex)。</p>
       </div>
-    </section>
 
-    <section class="mb-8">
-      <h2 class="text-lg font-semibold text-white mb-3">Tradeoffs</h2>
-      <div class="space-y-2">
-        <details class="bg-slate-900/40 rounded p-3">
-          <summary><span class="badge tradeoff">tradeoff</span> <b class="ml-2">long-poll vs SSE/短間隔 poll</b></summary>
-          <p class="mt-2 text-sm text-slate-300">long-poll は held 接続だが WKWebView では通常 fetch で、切断時は graceful に再張り。SSE は churn を更に減らすが挙動未検証。短間隔 poll は latency が間隔に律速。→ long-poll を採用、問題が出たら SSE/短 poll に切替可能（別 path なので局所差し替え）。</p>
-        </details>
-        <details class="bg-slate-900/40 rounded p-3">
-          <summary><span class="badge tradeoff">tradeoff</span> <b class="ml-2">Mac 通知の文面マッピング</b></summary>
-          <p class="mt-2 text-sm text-slate-300">overlay の <code>{app,sender,body}</code> に <code>{titl, subt, body}</code> を割当てた。投稿アプリ名（bundle id → 表示名）は引かず、通知の <code>titl</code> を先頭行にした（実用上は送信者/アプリ名が入る）。</p>
-        </details>
+      <div class="card">
+        <h3><span class="badge b-deviation">deviation</span> group は 5 維持 → 4 → <b>2(Weather/Place)</b></h3>
+        <p>当初計画は 5 group 維持。ユーザーの「細分化されすぎ」指摘で 4 group(Weather/Place/Air/Nearby)を経て、最終的に 2 group(Weather=気象+大気質 / Place=地名+標高/TZ+保存地点ナビ)。</p>
+        <p class="why">Why: <code>Segment.state</code> が per-segment health を持つので「per-group freshness のため group を分ける」必然が消えた。group は純粋に「トグル/glass 行/UI セクションの粗さ」最適化に。codex は当初 2 group に反対(4 推奨)→ display-IA 分離・既定OFF・segment.state を踏まえ撤回し 2 group を支持。</p>
       </div>
-    </section>
 
-    <section class="mb-8">
-      <h2 class="text-lg font-semibold text-white mb-3">Open questions <span class="text-xs text-slate-500">(確認/今後)</span></h2>
-      <ul class="space-y-2">
-        <li class="bg-slate-900/40 rounded p-3 text-sm"><span class="badge open">open</span> <b class="ml-2">Full Disk Access の付与 UX。</b> watcher を動かすプロセス（ターミナル/bun）に手動付与が要る。案内文は出すが、自動化はしない。</li>
-        <li class="bg-slate-900/40 rounded p-3 text-sm"><span class="badge open">open</span> <b class="ml-2">ノイズの多いアプリの除外。</b> 現状は全通知転送。providerId/bundle id 単位の allowlist/denylist は未実装（必要なら config 化）。</li>
-        <li class="bg-slate-900/40 rounded p-3 text-sm"><span class="badge open">open</span> <b class="ml-2">since の reload 永続化。</b> WKWebView reload(=jettison) で loop が since=0 から再開し、TTL 内の通知を再表示しうる。実害小なので未対応。</li>
-        <li class="bg-slate-900/40 rounded p-3 text-sm"><span class="badge open">open</span> <b class="ml-2">usernoted スキーマ依存。</b> macOS 版で <code>record</code>/<code>app</code> 構造や plist キーが変わると watcher が黙って空振りしうる。読めない行はスキップ。</li>
-      </ul>
-    </section>
+      <div class="card">
+        <h3><span class="badge b-decided">decided</span> built-in 常時ON 化は否 / opt-in 単一 source</h3>
+        <p class="why">Why: 位置は許可必須・通信あり・プライバシー敏感で、builtin Device(無許可・ネット不要・常時on・無効化不可)の契約と非両立。<code>origin: 'app_bundled'</code> で「同梱」性だけ表す。</p>
+      </div>
 
-    <section class="mb-8">
-      <h2 class="text-lg font-semibold text-white mb-3">変更ファイル</h2>
-      <table class="text-sm">
-        <tr><th>ファイル</th><th>役割</th></tr>
-        <tr><td><code>src/event-types.ts</code> <i>(新)</i></td><td>ワイヤ型 + <code>parseEmitInput</code>/<code>parseEventsDoc</code>（共有・サニタイズ）</td></tr>
-        <tr><td><code>server/events.ts</code> <i>(新)</i></td><td>ring buffer + dedupe/rate + long-poll（<code>emitEvent</code>/<code>pollEvents</code>）</td></tr>
-        <tr><td><code>server/http-server.ts</code></td><td><code>GET /api/events</code> + <code>POST /api/emit</code>（loopback 判定・body 上限）</td></tr>
-        <tr><td><code>server/machine.ts</code> / <code>src/data.ts</code></td><td><code>capabilities.events</code> 広告 + 受信</td></tr>
-        <tr><td><code>src/events.ts</code> <i>(新)</i></td><td>client long-poll loop（capability gate・dedupe・<code>toolbar:overlay</code> 配線）</td></tr>
-        <tr><td><code>src/glass.ts</code></td><td>init/config変更/cleanup で <code>startEvents</code>/<code>stopEvents</code></td></tr>
-        <tr><td><code>server/watchers/mac-notifications.ts</code> <i>(新)</i></td><td>通知センター DB → <code>/api/emit</code> 転送</td></tr>
-        <tr><td><code>server/actions.ts</code> <i>(新)</i></td><td>dialog 往復の相関ストア（requestId 払い出し・結果 long-poll）</td></tr>
-        <tr><td><code>server/cli/ask.ts</code> <i>(新)</i></td><td><code>ask</code> CLI（dialog を出して選択を待つ）</td></tr>
-        <tr><td><code>server/index.ts</code></td><td><code>watch</code> / <code>ask</code> サブコマンド</td></tr>
-        <tr><td><code>*.test.ts</code> <i>(新)</i></td><td>buffer/parse/dialog のユニットテスト（<code>bun test</code> 29 件）</td></tr>
+      <div class="card">
+        <h3><span class="badge b-decided">decided</span> health は <code>segment.state</code>、<code>group.state</code> は派生</h3>
+        <p>各 producer の group.state を、その group 由来の全 segment の <code>Segment.state</code> へ焼く。group.state は「primary(defaultEnabled)segment の最悪状態」で派生。</p>
+        <p class="why">Why: open-meteo は生きてるが bigdatacloud が死ぬ等を segment 単位で表現。既定OFF の air/nav の error で Weather/Place group 全体が赤くならないよう primary 基準。</p>
+      </div>
+
+      <div class="card">
+        <h3><span class="badge b-decided">decided</span> provenance は view 限定の階層(データに tier 実体を足さない)</h3>
+        <p>Home を Included(builtin + app_bundled client) / Connected(server) でセクション分け。判定は <code>kind</code> + <code>origin</code>。</p>
+        <p class="why">Why: YAGNI。kind/origin は既存属性。ラベルは "Built-in" でなく "Included"(常時ON 含意を避ける)。Phase 3 で実装。</p>
+      </div>
+
+      <h2>トレードオフ</h2>
+      <div class="card">
+        <h3><span class="badge b-tradeoff">tradeoff</span> producer 深いリファクタを避け、orchestrator で再編</h3>
+        <p><code>src/location.ts</code> が既存 5 producer をそのまま呼び、結果の segment を 2 group に再編。各 producer は独立に <code>getPosition</code> を呼ぶ。</p>
+        <p class="why">採用理由: テスト済みの整形ロジックを温存し低リスク。<code>maximumAge</code> で OS が位置をキャッシュするため許可ダイアログは実質 1 回。代償: 厳密な「1 回だけ取得」ではない(将来最適化余地)。</p>
+      </div>
+      <div class="card">
+        <h3><span class="badge b-tradeoff">tradeoff</span> Place group が静的(地名/標高)+ 動的(保存地点)混在</h3>
+        <p class="why">代償: Place を OFF にすると地名も保存地点ナビも一緒に消える。保存地点距離だけ失敗した時 group が粗く見え得る → primary 基準の group.state で吸収。許容(codex 確認)。</p>
+      </div>
+
+      <h2>確認してほしい点 (open questions)</h2>
+      <div class="card">
+        <h3><span class="badge b-open">open</span> 実機 migration 確認 (最優先)</h3>
+        <p>実機の既存 config(5 source)が <code>client.location</code>(2 group)へ正しく畳まれるか。enabled だった分だけ表示が残り、disabled 由来は復活しないか。glass/Source Detail の描画。</p>
+      </div>
+      <div class="card">
+        <h3><span class="badge b-open">open</span> 命名: source "Location" / group "Weather"・"Place"</h3>
+        <p class="why">codex 推奨。Conditions(抽象的)/Here(標高・保存地点に狭い)は不採用。日本語 UI なら別案も可。</p>
+      </div>
+      <div class="card">
+        <h3><span class="badge b-open">open</span> 既定ON segment と primary/advanced</h3>
+        <p class="why">codex 指摘: weather 16 segment を glass 1 行に流す設計は別問題。primary(temp/cond/rain) と detail/overflow の分離は Display-IA として後段で。現状は各 producer の <code>defaultEnabled</code> を踏襲(air/保存地点ナビは既定OFF)。</p>
+      </div>
+
+      <h2>触ったファイル(Phase 1)</h2>
+      <table>
+        <tr><th>file</th><th>変更</th></tr>
+        <tr><td><code>src/location.ts</code> (新規)</td><td>統合 producer。5 producer → 2 group 再編 + segment へ state 焼き + group.state 派生。</td></tr>
+        <tr><td><code>src/config.ts</code></td><td><code>LOCATION_SOURCE_ID</code>/group 定数・<code>SourceDef.origin</code>・<code>ensureClientLocation</code>・<code>migrateLocationSourcesMerge</code>・places ヘルパの key 更新。</td></tr>
+        <tr><td><code>src/store.ts</code></td><td>client dispatch を <code>locationStatus</code> 1 本に。</td></tr>
+        <tr><td><code>src/taxonomy.ts</code></td><td>category キーを <code>weather|*</code>/<code>place|*</code> へ。</td></tr>
+        <tr><td><code>src/options.ts</code></td><td><code>sourceOptionSchema(location)</code> = 4 系統の union。</td></tr>
+        <tr><td><code>src/glass.ts</code></td><td>suncountdown 再計算が <code>client.location</code> を参照。</td></tr>
+        <tr><td><code>src/companion.ts</code></td><td>places 再取得が <code>LOCATION_SOURCE_ID</code> を参照。</td></tr>
+        <tr><td colspan="2" class="dim"><code>*.test.ts</code>: 移行(畳み込み/enabled 落とし込み/remap+dedupe/冪等) + orchestrator 契約 + taxonomy/options 更新。172 pass。</td></tr>
       </table>
-    </section>
-
-    <section class="mb-8">
-      <h2 class="text-lg font-semibold text-white mb-3">検証</h2>
-      <ul class="list-disc ml-6 text-sm space-y-1 text-slate-300">
-        <li>tsc（src/ + server/）・biome（src/）green、e2e 29 / unit 16 pass。</li>
-        <li>HTTP スモーク: capabilities.events 広告 / emit→events / duplicate / toast / since cursor / <b>loopback 403</b> / long-poll 待機(0.77s) / reset / 300ms 後 emit で即 wake(0.33s)。</li>
-        <li>実機（グラス）での Mac 通知転送は次の upload で確認。watcher は要 Full Disk Access。</li>
-      </ul>
-    </section>
-
-    <section class="mb-4">
-      <h2 class="text-lg font-semibold text-white mb-3">使い方</h2>
-      <pre class="bg-black/40 rounded p-3 text-sm overflow-auto"><code># 1) サーバー起動 (claude/codex のある Mac)
-bun run server          # → http://0.0.0.0:8723 (LAN IP を表示)
-
-# 2) Mac 通知 watcher 起動 (別ターミナル。要 Full Disk Access)
-bun run server watch mac-notifications
-
-# 3) 動作確認 (watcher 無しでも curl で overlay を出せる)
-curl -X POST http://127.0.0.1:8723/api/emit -H 'Content-Type: application/json' \
-  -d '{"providerId":"test","id":"t1","kind":"toast","text":"hello glass"}'
-</code></pre>
-    </section>
+    </div>
   </body>
 </html>
