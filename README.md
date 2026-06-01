@@ -166,7 +166,7 @@ export default {
 apiKey = "xxxx"
 ```
 
-実例: [`even-claude-usage-provider`](https://github.com/bigdra50/even-claude-usage-provider)（Claude の rate-limit % を返す drop-in プラグイン。非公式 API のため本体から切り出した opt-in の別 repo）。`provider install <url> --accept-risk unofficial-api`（下記 CLI）で入れるか、手動なら `providers/claude-limits.mjs` に置き `[providers.claude-limits]` を登録する。`group()` がハングしても `/api/status` を止めないよう、fetch には必ずタイムアウトを入れる。
+実例: [`even-claude-usage-provider`](https://github.com/bigdra50/even-claude-usage-provider)（Claude の rate-limit % を返す drop-in プラグイン。非公式 API のため本体から切り出した opt-in の別 repo。リスクは各 provider の README で開示）。`provider install <url>`（下記 CLI）で入れるか、手動なら `providers/claude-limits.mjs` に置き `[providers.claude-limits]` を登録する。`group()` がハングしても `/api/status` を止めないよう、fetch には必ずタイムアウトを入れる。
 
 ### サーバー側 config（有効/無効・オプション）
 
@@ -199,23 +199,22 @@ config / ledger を書き換えるだけなので、**実行中サーバーの�
 
 | コマンド | 説明 |
 |---|---|
-| `list` | 全 provider を kind / status / managed / risk で一覧。`drift`（手動改変）や未登録ファイルも表示 |
+| `list` | 全 provider を kind / status / managed / name で一覧。`drift`（手動改変）や未登録ファイルも表示 |
 | `enable <id>` / `disable <id>` | 有効/無効を切り替え |
-| `install <https-url\|abs-path>` | **JS plugin** をインストール（引数1つ。**コードを実行せず**静的検証 → sha256 → risk 承認 → atomic 配置 → 登録。id は manifest 由来）|
+| `install <https-url\|abs-path>` | **JS plugin** をインストール（引数1つ。**コードを実行せず**静的検証 → sha256 → atomic 配置 → 登録。id/name 等は manifest 由来）|
 | `install <id> <command> [--timeout ms] [--ttl ms] [-- args...]` | **subprocess** を登録（引数2つ以上。command は bare/絶対パス）|
-| `update <id>` / `update --all` | managed provider を更新（sha 比較、新 risk のみ再承認）|
+| `update <id>` / `update --all` | managed provider を更新（sha 比較）|
 | `remove <id> [--keep-file]` | 削除（config → file → ledger）|
 | `check-updates [<id>]` | 更新有無を確認（DL せず ETag / sha 比較）|
 
-`install` は**引数の数で JS / subprocess を判別**する（JS は id が manifest 由来なので 1 つ、subprocess は id を明示するので 2 つ以上）。共通フラグ: `[--accept-risk a,b] [--force]`。
+`install` は**引数の数で JS / subprocess を判別**する（JS は id が manifest 由来なので 1 つ、subprocess は id を明示するので 2 つ以上）。共通フラグ: `[--force]`。
 
-risk のある provider（非公式 API 等）は `--accept-risk <tag>` で明示承認が要る。CLI 経由でインストールしたものは managed として ledger（`$XDG_STATE_HOME/status-deck/provider-ledger.json`）に記録され、update / drift 検知の対象になる。
+リスク（非公式 API 利用等）は本体に承認ゲートを持たず、各 provider の README での開示に委ねる。CLI 経由でインストールしたものは managed として ledger（`$XDG_STATE_HOME/status-deck/provider-ledger.json`）に記録され、`name`/`description`/`author` のキャッシュ・update / drift 検知の対象になる。
 
 ```bash
-# 例: claude-limits プラグイン (rate-limit %、非公式 API) をインストール
+# 例: claude-limits プラグイン (rate-limit %、非公式 API。リスクは provider の README 参照) をインストール
 bunx even-status-deck provider install \
-  https://raw.githubusercontent.com/bigdra50/even-claude-usage-provider/main/provider.mjs \
-  --accept-risk unofficial-api
+  https://raw.githubusercontent.com/bigdra50/even-claude-usage-provider/main/provider.mjs
 bunx even-status-deck provider list
 ```
 

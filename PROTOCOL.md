@@ -234,15 +234,17 @@ ttlMs = 30000
 export default {
   id: 'weather',                 // ファイル名 <id>.<ext> と一致させる
   group: (ctx) => Group | null,  // ctx.options = config の [providers.<id>]
-  risk?: ('unofficial-api' | 'terms-risk' | 'account-limitation-risk')[],
+  name?: string,                 // 表示名 (provider list/UI)。無ければ id
+  description?: string,          // 1行説明
+  author?: string,               // 任意・自由テキスト
   version?: string,
   dispose?: () => void,          // アンロード時に呼ばれる（timer/socket 解放）
 }
 ```
 
 - **gate**: ファイルを置くだけでは実行されない。config の `[providers.<id>]` 登録（または `provider enable`）された id の `<id>.<ext>` だけが import・実行される。未登録ファイルは import しない。
-- **`provider add-js <https-url|abs-path>`**: コードを**実行せず**に `export default { id }` を静的解析し、`risk` を読んで未承認なら `--accept-risk` を要求する。動的 manifest（`export default makeManifest()`）は静的に読めないため拒否する。HTTPS 強制・サイズ上限・sha256・同一 dir staging → atomic rename・ledger 記録。
-- `risk` は宣言値（provider 自己申告）。client/ホストは untrusted として扱い、install/list/update で提示してユーザーに承認させる。
+- **`provider install <https-url|abs-path>`**: コードを**実行せず**に `export default { id }` を静的解析し、`id`/`name`/`description`/`author`/`version` を読む。動的 manifest（`export default makeManifest()`）は静的に読めないため拒否する。HTTPS 強制・サイズ上限・sha256・同一 dir staging → atomic rename・ledger 記録。
+- リスク（非公式 API 利用等）は承認ゲートを持たず、provider 自身の README での開示に委ねる。`name`/`description`/`author` は install 時に ledger へキャッシュされ `provider list` で表示される。
 
 ### セキュリティ
 

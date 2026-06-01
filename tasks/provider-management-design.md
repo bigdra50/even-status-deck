@@ -1,5 +1,10 @@
 # eveng2-toolbar provider 管理 — 最終設計 (install / update / uninstall)
 
+> **更新 (2026-06): risk 機構は廃止**。本書中の `risk` タグ / `--accept-risk` / `acceptedRisks` /
+> risk 再承認フローは実装から撤廃済み(他エコシステムに承認ゲートの前例が無く、README 開示に委ねる方針)。
+> 代わりに manifest へ `name? / description? / author?`(人間向けメタ)を追加した。
+> リスク開示は各 provider の README で行う。以下の risk 関連記述は **superseded** として読むこと。
+
 元設計と敵対的レビュー (security / roundtrip) を統合した、実装可能な確定設計。
 矛盾解消・欠陥修正・未決の確定・段階分け・OPEN DECISIONS の分離を行った。
 

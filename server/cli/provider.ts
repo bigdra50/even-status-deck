@@ -4,7 +4,6 @@
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { loadLedger, loadServerConfig, PROVIDER_DIR } from '../config.ts'
-import type { RiskTag } from '../types.ts'
 import {
   appendSection,
   hasSection,
@@ -60,7 +59,7 @@ async function cmdList(): Promise<void> {
   const files = await jsFilesByName()
 
   const ids = new Set<string>([...BUILTIN_IDS, ...Object.keys(cfg.providers)])
-  const rows: string[][] = [['ID', 'KIND', 'STATUS', 'MANAGED', 'RISK']]
+  const rows: string[][] = [['ID', 'KIND', 'STATUS', 'MANAGED', 'NAME']]
   for (const id of [...ids].sort()) {
     const opts = cfg.providers[id]
     const kind = BUILTIN_IDS.has(id) ? 'builtin' : isSubprocess(opts) ? 'subprocess' : 'js'
@@ -73,13 +72,9 @@ async function cmdList(): Promise<void> {
       if (file && (await fileSha(join(PROVIDER_DIR, file))) !== led.installedSha256)
         status = 'drift'
     }
-    rows.push([
-      id,
-      kind,
-      status,
-      led ? 'managed' : '-',
-      led?.risk.length ? led.risk.join(',') : '-',
-    ])
+    // NAME: manifest 由来の表示名 (js のみ。無ければ '-')。
+    const name = led?.kind === 'js' && led.name ? led.name : '-'
+    rows.push([id, kind, status, led ? 'managed' : '-', name])
   }
   printTable(rows)
 
@@ -159,12 +154,11 @@ function done(id: string, what: string): void {
   console.log(`${id}: ${what}. 反映は実行中サーバーの次 poll (最大 3s)、restart 不要。`)
 }
 
-// 簡易フラグ parser。--accept-risk <csv> / --force / --keep-file / --all / --timeout / --ttl と
-// positional を分ける。`--` 以降は passthrough (add-subprocess の command 引数として渡す)。
+// 簡易フラグ parser。--force / --keep-file / --all / --timeout / --ttl と positional を分ける。
+// `--` 以降は passthrough (add-subprocess の command 引数として渡す)。
 function parseArgs(rest: string[]): {
   positional: string[]
   passthrough: string[]
-  acceptRisk: RiskTag[]
   force: boolean
   keepFile: boolean
   all: boolean
@@ -173,19 +167,11 @@ function parseArgs(rest: string[]): {
 } {
   const positional: string[] = []
   let passthrough: string[] = []
-  let acceptRisk: RiskTag[] = []
   let force = false
   let keepFile = false
   let all = false
   let timeoutMs: number | undefined
   let ttlMs: number | undefined
-  const VALID_RISK = new Set<string>(['unofficial-api', 'terms-risk', 'account-limitation-risk'])
-  // 不正タグは無視 (gate は宣言 risk と照合するので未知タグは効かない)。
-  const toTags = (s: string): RiskTag[] =>
-    s
-      .split(',')
-      .map((x) => x.trim())
-      .filter((x) => VALID_RISK.has(x)) as RiskTag[]
   const num = (s: string | undefined): number | undefined => {
     const v = Number(s)
     return Number.isInteger(v) && v > 0 ? v : undefined
@@ -206,39 +192,27 @@ function parseArgs(rest: string[]): {
         console.warn(`warning: ${a} の値 '${v}' が不正です (正の整数のみ)。既定値を使います`)
       else if (a === '--timeout') timeoutMs = p
       else ttlMs = p
-    } else if (a === '--accept-risk') {
-      const v = rest[i + 1]
-      // 次が別フラグ/欠落なら値を食わない (--accept-risk --force 事故を防ぐ)。
-      if (v && !v.startsWith('--')) {
-        acceptRisk = toTags(v)
-        i++
-      }
-    } else if (a.startsWith('--accept-risk=')) acceptRisk = toTags(a.slice('--accept-risk='.length))
-    else if (a.startsWith('--')) console.warn(`warning: 未知のフラグ ${a} を無視します`)
+    } else if (a.startsWith('--')) console.warn(`warning: 未知のフラグ ${a} を無視します`)
     else positional.push(a)
   }
-  return { positional, passthrough, acceptRisk, force, keepFile, all, timeoutMs, ttlMs }
+  return { positional, passthrough, force, keepFile, all, timeoutMs, ttlMs }
 }
 
-async function cmdUpdateAll(acceptRisk: RiskTag[]): Promise<void> {
+async function cmdUpdateAll(): Promise<void> {
   const ledger = await loadLedger()
   const ids = Object.values(ledger.providers)
     .filter((e) => e.kind === 'js')
     .map((e) => e.id)
-  const needAttention: string[] = []
+  const failed: string[] = []
   for (const id of ids) {
     try {
-      const r = await updateJs(id, { acceptRisk })
-      console.log(`${id}: ${r}`)
-      if (r === 'risk') needAttention.push(id)
+      console.log(`${id}: ${await updateJs(id)}`)
     } catch (e) {
       console.error(`${id}: ${e instanceof Error ? e.message : String(e)}`)
-      needAttention.push(id)
+      failed.push(id)
     }
   }
-  if (needAttention.length) {
-    console.log(`\n要対応 (--accept-risk を付けて個別 update): ${needAttention.join(', ')}`)
-  }
+  if (failed.length) console.log(`\n失敗 (個別に update を再実行): ${failed.join(', ')}`)
 }
 
 function requireValidId(sub: string, id: string | undefined): id is string {
@@ -278,13 +252,13 @@ export async function runProviderCli(argv: string[]): Promise<void> {
           'usage:\n' +
             '  provider install <https-url|abs-path>                 # JS plugin\n' +
             '  provider install <id> <command> [-- args...] [--timeout ms] [--ttl ms]   # subprocess\n' +
-            '  共通: [--accept-risk a,b] [--force]',
+            '  共通: [--force]',
         )
         process.exitCode = 1
         return
       }
       if (pos.length === 1) {
-        await addJs(pos[0] as string, { acceptRisk: flags.acceptRisk, force: flags.force })
+        await addJs(pos[0] as string, { force: flags.force })
         return
       }
       const id = pos[0] as string
@@ -300,7 +274,6 @@ export async function runProviderCli(argv: string[]): Promise<void> {
       await addSubprocess(id, command, flags.passthrough, {
         timeoutMs: flags.timeoutMs,
         ttlMs: flags.ttlMs,
-        acceptRisk: flags.acceptRisk,
         force: flags.force,
       })
       return
@@ -323,13 +296,12 @@ export async function runProviderCli(argv: string[]): Promise<void> {
     }
     case 'update': {
       if (flags.all) {
-        await cmdUpdateAll(flags.acceptRisk)
+        await cmdUpdateAll()
         return
       }
       const id = flags.positional[0]
       if (!requireValidId(sub, id)) return
-      const r = await updateJs(id, { acceptRisk: flags.acceptRisk })
-      console.log(`${id}: ${r}${r === 'risk' ? ' (--accept-risk を付けて再実行)' : ''}`)
+      console.log(`${id}: ${await updateJs(id)}`)
       return
     }
     default:
