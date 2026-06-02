@@ -1179,13 +1179,26 @@ button.owner-badge:hover {
   font-family: var(--font-mono);
   opacity: 0.7;
 }
-/* 未配置 list の 1 行(全幅・ドラッグ可能)。セクション内インデント。 */
+/* 未配置 list の 1 行(全幅)。行本体は pan(.fs-tray .fs-chip 継承)でスクロール。grip だけ drag。 */
 .fs-tray .fs-chip.fs-li {
   align-self: stretch;
   justify-content: flex-start;
   margin-left: 10px;
   border-radius: 6px;
-  padding: 6px 9px;
+  padding: 6px 9px 6px 0; /* 左 padding は grip が持つ */
+  gap: 2px;
+}
+/* ドラッグハンドル(touch-action:none で iOS でも確実に drag。十分な hit area)。 */
+.fs-li-grip {
+  flex: 0 0 auto;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  color: var(--glass);
+  opacity: 0.55;
+  cursor: grab;
+  touch-action: none;
 }
 .fs-li .fs-grp {
   flex: 0 0 auto;

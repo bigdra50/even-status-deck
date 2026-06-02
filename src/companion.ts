@@ -1972,11 +1972,12 @@ function renderFsCluster(keys: string[], rightSide: boolean): string {
     .join('')
 }
 
-// 未配置 list の 1 行(全幅・ドラッグ可能)。× は不要(未配置なので)。drag は .fs-chip で拾う。
+// 未配置 list の 1 行(全幅)。左の grip(touch-action:none)からドラッグ、行本体はスクロール。
+// × は不要(未配置)。grip 分離で iOS の「pan が drag を奪う(pointercancel)」を避ける。
 function fsListItem(key: string): string {
   const { group } = segLabelParts(key)
   const grp = !isCustomLabelKey(key) && group ? `<span class="fs-grp">${esc(group)}</span>` : ''
-  return `<span class="fs-chip fs-li" data-segkey="${esc(key)}">${grp}<span class="fs-txt">${esc(fsChipText(key))}</span></span>`
+  return `<span class="fs-chip fs-li" data-segkey="${esc(key)}"><span class="fs-li-grip">${icon('grip', { size: 14 })}</span>${grp}<span class="fs-txt">${esc(fsChipText(key))}</span></span>`
 }
 
 // プレビュー本体 (10 行 × 左/右ゾーン) + 右ペインの未配置 list(source 別折りたたみ) の HTML。
@@ -2087,8 +2088,16 @@ function onFsPointerDown(e: PointerEvent): void {
   const chip = target.closest('.fs-chip') as HTMLElement | null
   const key = chip?.dataset.segkey
   if (!chip || !key) return
-  // arm 前は preventDefault しない(tray のネイティブスクロールで chip を探せる)。静止して
-  // FS_LONGPRESS_MS 経過 → drag arm。しきい値超え移動 → スクロール意図とみなし arm キャンセル。
+  // 未配置 list の行: grip(touch-action:none)からのみ即ドラッグ。行本体(touch-action:pan)は
+  // ネイティブスクロールに委ねる。iOS WKWebView で「pan 許可 + arm 後 preventDefault」が pointercancel
+  // になり list→preview のドラッグが成立しない問題への対処(grip を none に分離)。
+  if (chip.classList.contains('fs-li')) {
+    if (!target.closest('.fs-li-grip')) return
+    e.preventDefault()
+    startFsDrag(chip, key, e.clientX, e.clientY)
+    return
+  }
+  // preview chip(touch-action:none、スクロール先なし): 移動 or 長押しで arm。
   fsPending = {
     key,
     chip,
@@ -2110,20 +2119,22 @@ function clearFsPending(): void {
   window.removeEventListener('pointercancel', clearFsPending)
 }
 
+// preview chip のみ pending を使う。移動 = ドラッグ意図 → arm(scroll 先が無いので即)。
 function onFsPendingMove(e: PointerEvent): void {
   if (!fsPending) return
-  if (Math.hypot(e.clientX - fsPending.x, e.clientY - fsPending.y) <= FS_MOVE_CANCEL_PX) return
-  // しきい値超え。tray chip はスクロール先(tray)があるので移動=スクロール意図 → drag しない。
-  // preview chip はスクロール先が無いので移動=ドラッグ意図 → 即 arm(長押し待ちにしない)。
-  if (fsPending.chip.closest('.fs-tray')) clearFsPending()
-  else armFsDrag()
+  if (Math.hypot(e.clientX - fsPending.x, e.clientY - fsPending.y) > FS_MOVE_CANCEL_PX) armFsDrag()
 }
 
-// 長押し成立: ここで初めて ghost を生成し drag 優先へ移行する(以降は preventDefault でスクロール抑止)。
+// 長押し成立(preview chip): pending から drag へ。
 function armFsDrag(): void {
   if (!fsPending) return
   const { key, chip, x, y } = fsPending
   clearFsPending()
+  startFsDrag(chip, key, x, y)
+}
+
+// ドラッグ開始: ghost 生成 + drag リスナ登録(grip 即時 / preview arm の共通処理)。
+function startFsDrag(chip: HTMLElement, key: string, x: number, y: number): void {
   const ghost = chip.cloneNode(true) as HTMLElement
   ghost.classList.add('fs-ghost')
   if (window.matchMedia('(orientation: portrait)').matches) ghost.classList.add('fs-ghost-rot')
