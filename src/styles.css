@@ -705,6 +705,62 @@ button.owner-badge:hover {
   font-family: var(--font-mono);
   color: var(--text-dim);
 }
+/* server source: 経路 (urls[]) 管理リスト — 古い IP を消して安定名を主経路にする */
+.url-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.url-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+}
+.url-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+}
+.url-text.mono {
+  font-family: var(--font-mono);
+}
+.url-primary-mark {
+  flex: 0 0 auto;
+  font-size: var(--fs-sm);
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.url-del {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.url-del:hover {
+  color: var(--err);
+}
+.help-link-static {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+.help-link-static .mono {
+  font-family: var(--font-mono);
+}
 .danger-btn {
   width: 100%;
   background: none;

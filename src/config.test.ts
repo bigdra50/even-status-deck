@@ -13,14 +13,24 @@ import {
   LOCATION_PLACE_GROUP_ID,
   LOCATION_SOURCE_ID,
   migrate,
+  promoteSourceUrl,
   removePlace,
+  removeSourceUrl,
   renamePlace,
+  type SourceDef,
   setPlaceRadius,
   setProfileGeofence,
+  setSourceUrls,
+  sourceUrls,
   syncSourceWithStatus,
   updatePlaceLocation,
 } from './config'
 import type { StatusDoc } from './status-types'
+
+// URL 管理 helper 用の最小 server SourceDef。
+function serverSrc(urls: string[], url?: string): SourceDef {
+  return { id: 's', kind: 'server', label: 'x', urls, ...(url ? { url } : {}) }
+}
 
 // 表示モデル Phase1 用の最小 StatusDoc ビルダ (g2 group の segment を渡す)。
 function g2Doc(segIds: string[]): StatusDoc {
@@ -568,4 +578,32 @@ test('migrate: 旧 mac group は system へ rename 後に category が付く (se
   expect(sys.segments.find((x) => x.id === 'battery')?.category).toBe('battery')
   expect(sys.segments.find((x) => x.id === 'disk')?.category).toBe('disk_free')
   expect(migrated.groups[s.id].mac).toBeUndefined() // 旧 group は消える
+})
+
+test('setSourceUrls: dedupe + legacy url を先頭に同期 + 空で url を落とす', () => {
+  const s = serverSrc(['a', 'a', 'b'], 'a')
+  setSourceUrls(s, ['b', 'b', 'c'])
+  expect(s.urls).toEqual(['b', 'c'])
+  expect(s.url).toBe('b') // legacy url は常に先頭経路に一致
+  setSourceUrls(s, [])
+  expect(s.urls).toEqual([])
+  expect(s.url).toBeUndefined()
+})
+
+test('removeSourceUrl: legacy url を畳んで削除し stale な経路が再出現しない', () => {
+  const s = serverSrc(['local'], 'lan') // url(lan) は urls に無い = sourceUrls() では末尾に畳まれる
+  expect(sourceUrls(s)).toEqual(['local', 'lan'])
+  removeSourceUrl(s, 'lan')
+  expect(sourceUrls(s)).toEqual(['local']) // lan が url 経由で蘇らない
+  expect(s.url).toBe('local')
+})
+
+test('promoteSourceUrl: 主経路へ昇格 / 存在しない経路は no-op', () => {
+  const s = serverSrc(['ip', 'local'])
+  promoteSourceUrl(s, 'local')
+  expect(s.urls).toEqual(['local', 'ip'])
+  expect(s.url).toBe('local')
+  const before = [...s.urls]
+  promoteSourceUrl(s, 'nope')
+  expect(s.urls).toEqual(before)
 })

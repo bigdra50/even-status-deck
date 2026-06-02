@@ -324,6 +324,30 @@ export function sourceUrls(s: SourceDef): string[] {
   return list
 }
 
+// 経路リストを正規化して書き戻す (URL 管理 UI 用)。dedupe し urls を正とし、
+// legacy url を先頭に同期する (url を残すと sourceUrls() が削除済み経路を再追加してしまう)。
+export function setSourceUrls(s: SourceDef, urls: string[]): void {
+  const deduped: string[] = []
+  for (const u of urls) if (u && !deduped.includes(u)) deduped.push(u)
+  s.urls = deduped
+  s.url = deduped[0] // 空なら undefined。legacy url は常に先頭経路に一致させる
+}
+
+// 経路を 1 つ削除する。legacy url を畳んだ正リストから除き、stale な再出現を防ぐ。
+export function removeSourceUrl(s: SourceDef, url: string): void {
+  setSourceUrls(
+    s,
+    sourceUrls(s).filter((u) => u !== url),
+  )
+}
+
+// 経路を主経路 (先頭 = 到達順の最優先) に昇格する。存在しなければ no-op。
+export function promoteSourceUrl(s: SourceDef, url: string): void {
+  const all = sourceUrls(s)
+  if (!all.includes(url)) return
+  setSourceUrls(s, [url, ...all.filter((u) => u !== url)])
+}
+
 function emptyProfileView(): ProfileView {
   return { groups: {}, groupOrder: [] }
 }

@@ -31,11 +31,13 @@ import {
   type OptionValues,
   type Place,
   type Profile,
+  promoteSourceUrl,
   RIGHT_DIVIDER,
   reconcileSourceMachine,
   removePlace,
   removeProfile,
   removeSource,
+  removeSourceUrl,
   renamePlace,
   renameProfile,
   type SegMeta,
@@ -47,6 +49,7 @@ import {
   setSourceEnabled,
   sourceById,
   sourceUrl,
+  sourceUrls,
   syncSourceWithStatus,
 } from './config'
 import { fetchMachineFrom, type MachineInfo } from './data'
@@ -1031,6 +1034,29 @@ function renderTestStatus(): string {
   return '<div class="cmp-sub">Test the connection to load items.</div>'
 }
 
+function renderRouteList(s: SourceDef | undefined): string {
+  const routes = s ? sourceUrls(s) : []
+  if (routes.length === 0) return ''
+  const rows = routes
+    .map((u, i) => {
+      const mark =
+        i === 0
+          ? '<span class="url-primary-mark">Primary</span>'
+          : `<button class="link-btn" data-action="url-primary" data-urlidx="${i}">Make primary</button>`
+      return `<div class="url-row">
+        <span class="url-text mono">${esc(u)}</span>
+        ${mark}
+        <button class="url-del" data-action="url-remove" data-urlidx="${i}" title="Remove route" aria-label="Remove route">${icon('x', { size: 14 })}</button>
+      </div>`
+    })
+    .join('')
+  return `
+    <div class="field"><label>Routes (failover order)</label>
+      <div class="url-list">${rows}</div>
+      <span class="help-link-static">First route is tried first, the rest are failover. Remove old IPs and keep a stable name (e.g. <span class="mono">name.local</span>) so you never edit the IP when moving networks.</span>
+    </div>`
+}
+
 function renderSourceEdit(): string {
   const s = editingSourceId ? sourceById(config, editingSourceId) : undefined
   const url = testUrl || (s ? sourceUrl(s) : undefined) || 'http://127.0.0.1:8723'
@@ -1048,6 +1074,7 @@ function renderSourceEdit(): string {
       <span class="help-link" data-action="help">Set up a local server ${icon('external-link', { size: 13 })}</span>
     </div>
     ${renderTestStatus()}
+    ${renderRouteList(s)}
     <button class="danger-btn" data-action="delete-source">Delete source (all presets)</button>
   `
 }
@@ -1495,6 +1522,30 @@ async function onClick(e: MouseEvent): Promise<void> {
         render()
       }
       break
+    case 'url-remove': {
+      const s = editingSourceId ? sourceById(config, editingSourceId) : undefined
+      const u = s ? sourceUrls(s)[Number(t.dataset.urlidx)] : undefined
+      if (s && u) {
+        removeSourceUrl(s, u)
+        testUrl = '' // 入力欄を新しい主経路に追従させる
+        void saveConfig(config)
+        setSourcesFromConfig(config)
+        render()
+      }
+      break
+    }
+    case 'url-primary': {
+      const s = editingSourceId ? sourceById(config, editingSourceId) : undefined
+      const u = s ? sourceUrls(s)[Number(t.dataset.urlidx)] : undefined
+      if (s && u) {
+        promoteSourceUrl(s, u)
+        testUrl = '' // 入力欄を新しい主経路に追従させる
+        void saveConfig(config)
+        setSourcesFromConfig(config)
+        render()
+      }
+      break
+    }
     case 'expand': {
       const ref = parseKey(t.dataset.key ?? '')
       const vg = activeView(config).groups[ref.sourceId]?.[ref.groupId]
