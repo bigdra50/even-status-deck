@@ -1,4 +1,3 @@
-import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
 import Sortable from 'sortablejs'
 import { localStatus } from './builtins'
 import {
@@ -134,12 +133,6 @@ const DBG_MAX = 500 // 保持する最大行数 (古いものから捨てる)
 let dbgOpen = false // 既定は折りたたみ
 let dbgFilter = ''
 let dbgHooked = false
-// User プローブ (bridge.getUserInfo) 用。bridge 接続後に main.ts から注入される。
-let probeBridge: EvenAppBridge | null = null
-
-export function setCompanionBridge(b: EvenAppBridge): void {
-  probeBridge = b
-}
 
 // builtin (clock/g2) は config の format/widthChars を反映した live 値で上書きする
 // (store の builtin は config 非依存の既定値なので、プレビュー/Items を選択に追従させる)。
@@ -1759,15 +1752,6 @@ async function onClick(e: MouseEvent): Promise<void> {
       updateDbgListDom()
       updateDbgCount()
       break
-    case 'probe-userinfo':
-      await probeUserInfo()
-      break
-    case 'probe-geo':
-      probeGeo()
-      break
-    case 'probe-ip':
-      await probeIp()
-      break
     default:
       break
   }
@@ -2314,23 +2298,6 @@ function dbgTime(t: number): string {
 }
 
 const MAX_DBG_LINE = 2000 // 1 ログ行の最大文字数 (巨大オブジェクト/長文での DOM・stringify 肥大を防ぐ)
-// token/secret 等を含むキーを伏せる (プローブが生レスポンスを UI に出すため redaction する)。
-const SENSITIVE_KEY =
-  /token|secret|password|passwd|api[-_]?key|authorization|auth|cookie|session|credential/i
-
-// オブジェクトを浅くクローンしつつ、機微なキーの値を伏せる。ログ前の生レスポンスに適用する。
-function redact(value: unknown, depth = 0): unknown {
-  if (depth > 4) return '«depth»'
-  if (Array.isArray(value)) return value.map((v) => redact(v, depth + 1))
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = SENSITIVE_KEY.test(k) ? '«redacted»' : redact(v, depth + 1)
-    }
-    return out
-  }
-  return value
-}
 
 // console.* の可変長引数を 1 行テキストにする。Error は stack、オブジェクトは JSON。1 行上限で truncate。
 function dbgFormat(args: unknown[]): string {
@@ -2474,9 +2441,6 @@ function renderDbgConsole(): string {
   const caret = icon(dbgOpen ? 'chevron-down' : 'chevron-right', { size: 16 })
   const actions = dbgOpen
     ? `<span class="cmp-actions">
-        <button class="link-btn" data-action="probe-userinfo" title="bridge.getUserInfo()">User</button>
-        <button class="link-btn" data-action="probe-geo" title="navigator.geolocation">Geo</button>
-        <button class="link-btn" data-action="probe-ip" title="IP ジオロケーション">IP</button>
         <button class="link-btn" data-action="console-copy" title="表示中のログをコピー">Copy</button>
         <button class="link-btn" data-action="console-clear">Clear</button>
       </span>`
@@ -2523,69 +2487,6 @@ function hookConsole(): void {
   window.addEventListener('unhandledrejection', (ev) =>
     dbgPush('error', `[unhandledrejection] ${dbgFormat([ev.reason])}`),
   )
-}
-
-// ── 検証プローブ (結果は console.* 経由でパネルへ) ──
-async function probeUserInfo(): Promise<void> {
-  if (!probeBridge) {
-    console.warn('[probe] bridge 未接続 — Even App / simulator 上で実行してください')
-    return
-  }
-  try {
-    const u = await probeBridge.getUserInfo()
-    console.log('[probe] getUserInfo →', redact(u.toJson())) // PII を含むため機微キーは伏せる
-  } catch (err) {
-    console.error('[probe] getUserInfo 失敗', err)
-  }
-}
-
-function probeGeo(): void {
-  if (!('geolocation' in navigator)) {
-    console.warn('[probe] navigator.geolocation が無い')
-    return
-  }
-  console.log('[probe] geolocation 要求中 (許可ダイアログが出る場合あり)…')
-  navigator.geolocation.getCurrentPosition(
-    (pos) =>
-      console.log('[probe] geolocation →', {
-        lat: pos.coords.latitude,
-        lon: pos.coords.longitude,
-        accuracyM: pos.coords.accuracy,
-      }),
-    (err) => console.error(`[probe] geolocation 失敗 code=${err.code} ${err.message}`),
-    { enableHighAccuracy: false, timeout: 10_000, maximumAge: 0 },
-  )
-}
-
-async function probeIp(): Promise<void> {
-  // 外部サービスへ IP を送るため、クリック時に明示同意を取る (プライバシー)。
-  if (
-    !window.confirm(
-      'IP ジオロケーション検証のため、外部サービス(ipapi.co 等)にあなたの IP を送信します。続行しますか？',
-    )
-  ) {
-    console.log('[probe] IP geo: キャンセル')
-    return
-  }
-  // キー不要の IP ジオロケーションを順に試す (CORS 許可のあるもの優先)。
-  // credentials 無し・referrer 無しで最小限の送信に留める。
-  const endpoints = [
-    'https://ipapi.co/json/',
-    'https://ipwho.is/',
-    'https://get.geojs.io/v1/ip/geo.json',
-  ]
-  for (const url of endpoints) {
-    try {
-      console.log('[probe] IP geo fetch:', url)
-      const res = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer' })
-      const json = (await res.json()) as unknown
-      console.log('[probe] IP geo →', redact(json)) // 機微キーは伏せる
-      return
-    } catch (err) {
-      console.warn(`[probe] IP geo 失敗 ${url}:`, err instanceof Error ? err.message : err)
-    }
-  }
-  console.error('[probe] IP geo: すべての候補が失敗')
 }
 
 // フィルタ入力 (live)。リストだけ差し替えて入力 focus を保つ。
