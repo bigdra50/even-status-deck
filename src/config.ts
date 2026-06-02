@@ -383,6 +383,7 @@ function ensureBuiltin(cfg: Config): void {
       p.enabledSourceIds.unshift(BUILTIN_SOURCE_ID)
   }
   migrateBuiltinGroups(cfg)
+  ensureBuiltinSegments(cfg)
 }
 
 // 統合 client source "Location" (現在地ベース)。SDK に GPS が無いため位置は companion WebView の
@@ -553,6 +554,41 @@ function migrateBuiltinGroups(cfg: Config): void {
   ]
   if (idx >= 0) view.groupOrder.splice(idx, 0, ...refs)
   else view.groupOrder.unshift(...refs)
+}
+
+// builtin (clock/g2) は code 所有の固定 capability。data 駆動の sync を待たず素材メタへ静的 seed する。
+// これにより companion Items が放電データ未蓄積でも rate/eta を発見・トグル・配置・条件設定でき、
+// glass は live status に存在する segment だけを描く責務分離を保つ (StatusDoc は実データのみ)。
+// idempotent: 既存 segment/順序は温存し、不足分のみ canonical 順で補う。category は sync と同じ
+// defaultCategory で seed (g2|level=battery / g2|rate=power_rate / g2|eta=duration)。
+const BUILTIN_SEG_SEED: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ['clock', ['datetime']],
+  ['g2', ['level', 'rate', 'eta']],
+]
+function ensureBuiltinSegments(cfg: Config): void {
+  const groups = cfg.groups[BUILTIN_SOURCE_ID]
+  if (!groups) return
+  const view = activeView(cfg)
+  view.groups[BUILTIN_SOURCE_ID] ??= {}
+  const vgroups = view.groups[BUILTIN_SOURCE_ID]
+  const missing: GroupRef[] = []
+  for (const [gid, segIds] of BUILTIN_SEG_SEED) {
+    let gm = groups[gid]
+    if (!gm) {
+      gm = { segments: [] }
+      groups[gid] = gm
+    }
+    for (const sid of segIds) {
+      if (!gm.segments.some((s) => s.id === sid)) {
+        gm.segments.push({ id: sid, category: defaultCategory(gid, sid) })
+      }
+    }
+    vgroups[gid] ??= { enabled: true, showDefaultLabel: defaultShowGroupLabel(gid), segments: {} }
+    if (!view.groupOrder.some((r) => r.sourceId === BUILTIN_SOURCE_ID && r.groupId === gid)) {
+      missing.push({ sourceId: BUILTIN_SOURCE_ID, groupId: gid })
+    }
+  }
+  if (missing.length) view.groupOrder.unshift(...missing) // builtin は先頭。clock→g2 の順を維持
 }
 
 export function emptyConfig(): Config {

@@ -418,6 +418,11 @@ textarea {
   font-size: var(--fs-sm);
   color: var(--text-dim);
 }
+/* live status 未取得の segment (Items に素材として出すが値はまだ無い: 例 充電中/データ不足の rate/eta) */
+.metric.missing .mval {
+  opacity: 0.5;
+  font-style: italic;
+}
 
 /* toggle */
 .tg {

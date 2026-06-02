@@ -397,8 +397,11 @@ function groupRow(ref: GroupRef): string {
   const metrics = vg.expanded
     ? `${srcOpts}<div class="src-metrics" data-key="${key}">${meta.segments
         .map((sm) => {
-          const seg = segById.get(sm.id)
-          if (!seg) return ''
+          // Items は設定面なので、live status に未出現の segment も meta にあれば行を描く
+          // (placeholder 値 '—')。トグル/並べ替え/配置/表示条件を事前設定できる。値は status のみ。
+          const live = segById.get(sm.id)
+          const seg: Segment = live ?? { id: sm.id, label: sm.displayLabel ?? '', value: '—' }
+          const missing = !live
           const enabled = vg.segments[sm.id] ?? true
           // segment 単位の表示オプション (#36)。clock の Time/Date/順序 もこの schema 経由で描く。
           const segFields = segmentOptionSchema(ref.sourceId, ref.groupId, sm.id)
@@ -411,7 +414,7 @@ function groupRow(ref: GroupRef): string {
                 resolveSegmentOptions(config, ref.sourceId, ref.groupId, sm.id),
               )
             : ''
-          return `<div class="metric"><div class="metric-row"><span class="mgrip">${icon('grip', { size: 16 })}</span>
+          return `<div class="metric${missing ? ' missing' : ''}"><div class="metric-row"><span class="mgrip">${icon('grip', { size: 16 })}</span>
               <span class="mname">${esc(isBuiltin ? (BUILTIN_SEG_LABELS[seg.id] ?? seg.id) : seg.label || seg.id)}</span>
               <span class="mval">${esc(seg.value)}</span>
               <button class="tg sm ${enabled ? 'on' : ''}" data-action="toggle-seg" data-key="${key}" data-seg="${esc(sm.id)}"></button></div>

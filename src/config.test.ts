@@ -468,6 +468,37 @@ test('migrate(v4 same): 不正な places を sanitize する', () => {
   expect(cfg.places?.map((p) => p.id)).toEqual(['ok'])
 })
 
+// ── builtin segment の静的 seed (companion Items が放電データ未蓄積でも rate/eta を設定可能に) ──
+
+test('ensureBuiltin: g2 に level/rate/eta を静的 seed する', () => {
+  const cfg = emptyConfig()
+  const segs = cfg.groups[BUILTIN_SOURCE_ID].g2.segments
+  expect(segs.map((s) => s.id)).toEqual(['level', 'rate', 'eta'])
+  expect(segs.find((s) => s.id === 'rate')?.category).toBe('power_rate')
+  expect(segs.find((s) => s.id === 'eta')?.category).toBe('duration')
+  // builtin 2 group (clock/g2) が groupOrder 先頭に並ぶ
+  const order = activeProfile(cfg).view.groupOrder.filter((r) => r.sourceId === BUILTIN_SOURCE_ID)
+  expect(order.map((r) => r.groupId)).toEqual(['clock', 'g2'])
+})
+
+test('ensureBuiltin: seed は idempotent (migrate 再実行で重複しない)', () => {
+  const cfg = migrate(JSON.parse(JSON.stringify(emptyConfig())) as Record<string, unknown>)
+  const ids = cfg.groups[BUILTIN_SOURCE_ID].g2.segments.map((s) => s.id)
+  expect(ids).toEqual(['level', 'rate', 'eta'])
+})
+
+test('ensureBuiltin: 既存 g2(level のみ)に rate/eta を後方補充する', () => {
+  const cfg = emptyConfig()
+  // 旧 sync 由来で level しか無い状態を再現
+  cfg.groups[BUILTIN_SOURCE_ID].g2.segments = [{ id: 'level', category: 'battery' }]
+  const migrated = migrate(JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>)
+  expect(migrated.groups[BUILTIN_SOURCE_ID].g2.segments.map((s) => s.id)).toEqual([
+    'level',
+    'rate',
+    'eta',
+  ])
+})
+
 // ── 表示モデル Phase1: category seed / displayOwner / tags sanitize (tasks/display-model-spec.md) ──
 
 test('syncSourceWithStatus: 新規 segment に category を seed する', () => {

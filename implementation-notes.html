@@ -3,166 +3,157 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Status Deck — Location source 統合 実装ノート</title>
+    <title>実装ノート — G2 Battery rate/eta を Items に出す</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <style>
       :root {
-        --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --ink: #e6e8ee; --dim: #9aa3b2;
-        --line: #2a2f3a; --accent: #6ea8fe; --ok: #4ade80; --dev: #fbbf24; --trade: #c084fc;
-        --open: #fb7185; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+        --bg: #0f1115; --panel: #171a21; --border: #2a2f3a; --text: #e6e9ef;
+        --dim: #9aa3b2; --decided: #3fb950; --deviation: #d29922; --open: #58a6ff;
+        --tradeoff: #bc8cff; --code: #1d2230;
       }
       * { box-sizing: border-box; }
-      body { margin: 0; background: var(--bg); color: var(--ink);
-        font: 15px/1.65 system-ui, "Hiragino Sans", sans-serif; }
-      .wrap { max-width: 980px; margin: 0 auto; padding: 32px 20px 80px; }
-      h1 { font-size: 24px; margin: 0 0 4px; }
-      h2 { font-size: 18px; margin: 36px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
-      .meta { color: var(--dim); font-size: 13px; margin-bottom: 8px; }
-      .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
-      .badge { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
-        border: 1px solid; letter-spacing: .02em; }
-      .b-decided { color: var(--ok); border-color: var(--ok); }
-      .b-deviation { color: var(--dev); border-color: var(--dev); }
-      .b-tradeoff { color: var(--trade); border-color: var(--trade); }
-      .b-open { color: var(--open); border-color: var(--open); }
-      .b-done { color: var(--ok); border-color: var(--ok); background: rgba(74,222,128,.1); }
-      .b-pending { color: var(--dim); border-color: var(--line); }
-      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-        padding: 14px 16px; margin: 10px 0; }
-      .card h3 { margin: 0 0 6px; font-size: 15px; display: flex; gap: 8px; align-items: center; }
-      .card p { margin: 6px 0; }
-      .card .why { color: var(--dim); font-size: 13.5px; }
-      pre { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
-        padding: 12px 14px; overflow-x: auto; font: 12.5px/1.5 var(--mono); color: #cdd3df; }
-      code { font-family: var(--mono); background: var(--panel2); padding: 1px 5px; border-radius: 4px;
-        font-size: 13px; }
-      table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13.5px; }
-      th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-      th { color: var(--dim); font-weight: 600; }
-      .phases { display: flex; flex-wrap: wrap; gap: 8px; }
-      .phase { flex: 1 1 180px; background: var(--panel); border: 1px solid var(--line);
-        border-radius: 8px; padding: 10px 12px; }
-      .phase b { display: block; margin-bottom: 4px; }
-      .dim { color: var(--dim); }
-      a { color: var(--accent); }
+      body { margin: 0; background: var(--bg); color: var(--text);
+        font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      header { padding: 24px 32px; border-bottom: 1px solid var(--border);
+        position: sticky; top: 0; background: rgba(15,17,21,.92); backdrop-filter: blur(6px); z-index: 5; }
+      h1 { margin: 0 0 4px; font-size: 20px; }
+      .upd { color: var(--dim); font-size: 13px; }
+      nav { padding: 8px 32px; border-bottom: 1px solid var(--border); font-size: 13px; }
+      nav a { color: var(--open); text-decoration: none; margin-right: 16px; }
+      main { padding: 24px 32px; max-width: 1000px; }
+      section { margin-bottom: 28px; }
+      h2 { font-size: 16px; border-left: 3px solid var(--open); padding-left: 10px; }
+      .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px;
+        border-radius: 999px; margin-right: 6px; vertical-align: middle; }
+      .b-decided { background: rgba(63,185,80,.15); color: var(--decided); border: 1px solid var(--decided); }
+      .b-deviation { background: rgba(210,153,34,.15); color: var(--deviation); border: 1px solid var(--deviation); }
+      .b-open { background: rgba(88,166,255,.15); color: var(--open); border: 1px solid var(--open); }
+      .b-tradeoff { background: rgba(188,140,255,.15); color: var(--tradeoff); border: 1px solid var(--tradeoff); }
+      .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; margin: 12px 0; }
+      code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 13px;
+        font-family: "SF Mono", Menlo, monospace; }
+      pre { background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; }
+      table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; }
+      th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+      th { background: #1b1f28; }
+      details { margin: 8px 0; }
+      summary { cursor: pointer; color: var(--open); }
+      .mermaid { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+      .file { color: var(--decided); font-family: "SF Mono", Menlo, monospace; font-size: 13px; }
     </style>
   </head>
   <body>
-    <div class="wrap">
-      <h1>Location source 統合 — 実装ノート</h1>
-      <div class="meta">最終更新 2026-06-01 ・ Location 統合は main マージ済(PR #65) ・ 追記: 距離/方位ナビ(#42)撤廃(下記・実装済/未コミット)</div>
-      <div class="legend">
-        <span class="badge b-decided">decided</span>
-        <span class="badge b-deviation">deviation</span>
-        <span class="badge b-tradeoff">tradeoff</span>
-        <span class="badge b-open">open question</span>
-      </div>
-      <p class="dim">位置情報由来の client source が 5 つ(weather/geoinfo/airquality/geocode/places)に分裂していた違和感を解消するため、1 つの opt-in <code>client.location</code> source に畳み、内部 group も 2 つ(Weather/Place)に集約する。設計は codex(GPT-5.5) と 3 往復で確定、いずれもユーザー指摘(よりフラットに)を支持。</p>
+    <header>
+      <h1>実装ノート — G2 Battery の rate/eta を companion Items に出せるようにする</h1>
+      <div class="upd">最終更新: 2026-06-02 / status: 実装完了・実機未検証 / config version bump: なし</div>
+    </header>
+    <nav>
+      <a href="#problem">問題</a><a href="#decision">設計判断</a><a href="#changes">変更</a>
+      <a href="#flow">フロー</a><a href="#deviation">逸脱/範囲</a><a href="#tradeoff">トレードオフ</a><a href="#open">確認事項</a>
+    </nav>
+    <main>
+      <section id="problem">
+        <h2>問題</h2>
+        <div class="panel">
+          companion の Items の G2 group に <code>rate</code>(消耗レート ↓N%/h) と <code>eta</code>(残り時間)
+          が出てこない。原因は二重ゲート:
+          <ol>
+            <li>素材メタ(<code>GroupMeta.segments</code>)は <code>syncSourceWithStatus</code> が live status から拾った時しか追加されない(add-only)。<code>ensureBuiltin</code> は静的 seed しない。</li>
+            <li>Items 描画は <code>meta.segments ∩ 現在の live status</code> しか描かない(<span class="file">companion.ts</span> の <code>if (!seg) return ''</code>)。</li>
+          </ol>
+          rate/eta は <code>getBatteryDrainRate()</code> が非 null の時だけ emit され、これは「非充電で実際に
+          バッテリーが 60 秒以上のスパンで 2 点以上減った観測」が必要。よって充電中・短時間テスト・
+          WebView 終了では meta にも入らず Items にも出ず、<b>事前にトグル/配置/表示条件を設定できない</b>。
+        </div>
+      </section>
 
-      <h2>追記: 距離/方位ナビ(#42)撤廃 — place 表示を全廃・geofence は温存</h2>
-      <p class="dim">ユーザー判断「保存地点までの距離は使わない」。撤廃範囲は <b>place 表示(距離ナビ pl_xxxx + presence "At")を全廃、geofence(#43: preset 自動切替/提案・inPlace 表示条件)は温存</b>(3 択中 Option B)。設計は codex(GPT-5.5)1 往復でレビュー・3 点とも提示案を支持。実装済・全ゲート green(unit 172 / e2e 29)・未コミット。</p>
-      <div class="card">
-        <h3><span class="badge b-decided">decided</span> <code>places.ts</code> の役割転換: nav producer → geofence 位置/圏内モジュール</h3>
-        <p><code>placesStatus</code>(表示 doc を返す)を <code>refreshGeofencePosition(signal): Promise&lt;void&gt;</code> に痩せさせた。<code>lastPos</code> 更新 + backoff のみ行い、表示 segment は一切返さない。<code>location.ts</code> が Promise.all 内で副作用として await(place group は geocode+geoinfo のみ)。</p>
-        <p class="why">Why: 圏内判定(<code>getInsidePlaceIds</code>/<code>getCurrentPlaceId</code>)は <code>lastPos</code> に依存し、それは producer 実行時のみ更新される。表示を消しても位置追跡は要る。codex 助言で「保存地点ゼロなら getPosition しない」「reject は内部で握り locationStatus を巻き込まない」を反映。</p>
-      </div>
-      <div class="card">
-        <h3><span class="badge b-decided">decided</span> orphan 掃除 migration <code>migrateDropPlaceNav</code></h3>
-        <p>既存 config の place group に焼かれた nav 動的 segment(<code>id.startsWith('pl_')</code> / 保存地点 id)と presence(<code>id==='here'</code>)を、素材・全 profile の view・glassLayout から除去。<b>温存</b>: <code>config.places</code> / <code>profile.geofence</code> / 他 segment の inPlace 条件。冪等・全 migrate 経路・CONFIG_VERSION 据え置き。</p>
-        <p class="why">Why: <code>pruneOrphans</code> は source 単位のみ、<code>syncSourceWithStatus</code> は segment 追加のみ(消えた segment を削らない)→ 放置すると layout editor に stale chip が残る。<code>removePlace</code> の掃除を「全 nav + here、ただし geofence は温存」へ一般化。</p>
-      </div>
-      <div class="card">
-        <h3><span class="badge b-tradeoff">tradeoff</span> geofence 位置追跡は Location source の poll に連動(parity 維持)</h3>
-        <p class="why">Location を無効化すると <code>lastPos</code> が更新されず geofence が黙って止まる。統合前(places も opt-in client)から同じ挙動なので parity 維持を選択。source-enabled から独立させる案は scope 拡大として見送り(codex も privacy 一貫性から parity 支持)。将来 <code>PositionProvider</code> 共通化は follow-up。</p>
-      </div>
-      <div class="card">
-        <h3><span class="badge b-open">open</span> 「geofence は Location 有効時のみ動く」混乱</h3>
-        <p class="why">place 表示を消したつもりで geofence 自動切替も止まる点が混乱しやすい(codex 指摘)。暫定対応: 保存地点管理 + Add-source の文言で「Requires the Location source enabled」を明示。profile ごとに Location が無効だと geofence 更新が止まるケースは要実機確認。</p>
-      </div>
+      <section id="decision">
+        <h2>設計判断 <span class="badge b-decided">decided</span></h2>
+        <div class="panel">
+          GPT-5.5(Codex)レビューで合意した A 案 = 概念的には
+          <b>「Capability(設定面が見せる固定能力)」と「Status snapshot(実データ)」の責務分離</b>。
+          <ul>
+            <li>builtin g2 は code 所有の固定 capability なので、素材メタに <code>{level, rate, eta}</code> を静的 seed する。</li>
+            <li>Items(設定面)は meta を表示ソースにし、live 値が無くても行を描く(値は <code>—</code> プレースホルダ、トグル/並べ替え/配置/条件は操作可)。</li>
+            <li>glass(実描画)は現状維持: live status にある segment だけ描く。<code>StatusDoc は実データのみ</code>を保つ。</li>
+          </ul>
+          <details>
+            <summary>却下案</summary>
+            <table>
+              <tr><th>案</th><th>判定</th><th>理由</th></tr>
+              <tr><td>B: localStatus が空 sentinel を常時 emit + glass 側 skip</td><td>非推奨</td><td>StatusDoc の意味が汚染され、条件評価/並べ替え/同期に漏れる</td></tr>
+              <tr><td>C: ドキュメント化のみ</td><td>不十分</td><td>設定不能は実害</td></tr>
+            </table>
+          </details>
+        </div>
+      </section>
 
-      <h2>フェーズ進捗</h2>
-      <div class="phases">
-        <div class="phase"><b>Phase 0 <span class="badge b-done">done</span></b><span class="dim">表示モデル基盤を 3 コミットに確定(provider / companion IA / release)。</span></div>
-        <div class="phase"><b>Phase 1 <span class="badge b-done">done</span></b><span class="dim">データ層: 統合 producer・store dispatch・config 移行・taxonomy・options・glass。172 tests green。実機 migration 確認済(0.1.17, Location>Weather/Place)。</span></div>
-        <div class="phase"><b>Phase 2 <span class="badge b-done">done</span></b><span class="dim">companion UI: Add-source は 1 source 化が自動達成。Source Detail の 2 group 表示は実機で確認。</span></div>
-        <div class="phase"><b>Phase 3 <span class="badge b-done">done</span></b><span class="dim">Home を provenance セクション化(Included/Connected)。dev で構造確認(Included→Device, Connected→Local)。capability は行の dot+note が担い、見出しは出自のみ(過度なバッジ無し)。</span></div>
-      </div>
+      <section id="changes">
+        <h2>変更ファイル</h2>
+        <table>
+          <tr><th>ファイル</th><th>変更</th></tr>
+          <tr><td class="file">src/config.ts</td><td><code>ensureBuiltinSegments()</code> を追加し <code>ensureBuiltin</code> から呼ぶ。clock<code>{datetime}</code>/g2<code>{level,rate,eta}</code> を素材メタ＋activeView＋groupOrder(先頭)へ idempotent に seed。category は <code>defaultCategory</code> 由来(battery/power_rate/duration)。</td></tr>
+          <tr><td class="file">src/companion.ts</td><td>Items の segment 描画で live 欠落時に <code>return ''</code> をやめ、<code>{id, label, value:'—'}</code> プレースホルダを生成。<code>missing</code> クラス付与。</td></tr>
+          <tr><td class="file">src/styles.css</td><td><code>.metric.missing .mval</code> を淡色＋斜体に。</td></tr>
+          <tr><td class="file">src/config.test.ts</td><td>seed の存在/順序/category・idempotent・後方補充の 3 テスト追加。</td></tr>
+        </table>
+        <div class="panel">
+          検証: <code>test:unit</code> 178 pass / <code>tsc</code> OK / <code>biome</code> error 0 / <code>knip</code> clean /
+          <code>depcruise</code> clean / <code>build</code> OK / <code>test:e2e</code> 29 pass。
+        </div>
+      </section>
 
-      <h2>データモデルの変化</h2>
-      <pre>before                                  after
-client.weather   - weather(16)           client.location  (opt-in, origin=app_bundled)
-client.airquality- airquality(4)   --+    +- group "Weather"  = 旧 weather + 旧 air
-client.geocode   - geocode(4)      --+--> +- group "Place"    = 旧 geocode + geoinfo + nav
-client.geoinfo   - geoinfo(3)      --+
-client.places    - nav(here+保存地点)     health: 各 segment.state(per-host) / group.state は派生(primary 最悪)</pre>
+      <section id="flow">
+        <h2>フロー(変更後)</h2>
+        <div class="mermaid">
+flowchart TD
+  A["ensureBuiltin (load 毎)"] --> S["ensureBuiltinSegments<br/>g2 meta = level/rate/eta を静的 seed"]
+  S --> M["GroupMeta.segments<br/>(level, rate, eta 常駐)"]
+  L["localStatus()<br/>level 常時 / rate,eta は DrainRate 算出時のみ"] --> ST["live StatusDoc"]
+  M --> ITEMS{"companion Items<br/>meta を回す"}
+  ST --> ITEMS
+  ITEMS -->|live あり| V["値を表示 (例 down 12 percent/h)"]
+  ITEMS -->|live なし| P["プレースホルダ dash<br/>トグル/配置/条件は可"]
+  M --> GLASS{"glass-render"}
+  ST --> GLASS
+  GLASS -->|live あり かつ enabled かつ 表示条件| DRAW["描画"]
+  GLASS -->|live なし| SKIP["skip (クリーン維持)"]
+        </div>
+      </section>
 
-      <h2>主要な設計判断</h2>
+      <section id="deviation">
+        <h2>意図的な範囲限定 <span class="badge b-deviation">deviation</span></h2>
+        <div class="panel">
+          ユーザー選択は「全 source 統一」。segment 単位の placeholder 化は共有描画パスなので全 source に一律適用される
+          (server source も一度観測した segment が live 欠落しても Items に残る)。
+          一方 <b>group 単位</b>の存在ゲート(<span class="file">companion.ts</span> <code>visibleRefs()</code> /
+          <code>groupRow</code> の <code>if (!g) return ''</code>)は<b>変更していない</b>。
+          group ごと live 非存在(offline server / 電池無し)の時はその group 自体を Items に出さない。
+          理由: offline/未接続 source の group を全部 dash で並べるとノイズが増えるため。
+          ユーザーの実機は電池ありで g2 group は live 存在するので、本件は segment 単位の修正で解決する。
+        </div>
+      </section>
 
-      <div class="card">
-        <h3><span class="badge b-decided">decided</span> source 5 → 1 (<code>client.location</code>)</h3>
-        <p>位置という 1 つの許可・1 つの現在地から派生する 5 系統を、local server が claude/codex/system を束ねるのと同型に 1 source へ。</p>
-        <p class="why">Why: 同じ許可・現在地・失敗原因を 5 回見せていた。source = フェッチ境界ではなく「producer / 許可 / UX 単位」と再定義(codex)。</p>
-      </div>
+      <section id="tradeoff">
+        <h2>トレードオフ <span class="badge b-tradeoff">tradeoff</span></h2>
+        <ul>
+          <li>placeholder の表示条件エディタは <code>seg.percent</code> 不在で threshold 候補を出さない(onChange のみ)。builtin で live 欠落するのは rate/eta のみ=元々 onChange 専用なので実害なし。level は電池ありなら常時 live。既存 threshold 条件は <code>leafRow</code> の <code>allowThreshold = hasPct || leaf.kind==='threshold'</code> で温存。</li>
+          <li>seed は CONFIG_VERSION を bump せず、<code>ensureBuiltin</code>(全 load 経路)で additive・idempotent に補充。既存 v4 config も次回 load で rate/eta が後方補充される。</li>
+        </ul>
+      </section>
 
-      <div class="card">
-        <h3><span class="badge b-deviation">deviation</span> group は 5 維持 → 4 → <b>2(Weather/Place)</b></h3>
-        <p>当初計画は 5 group 維持。ユーザーの「細分化されすぎ」指摘で 4 group(Weather/Place/Air/Nearby)を経て、最終的に 2 group(Weather=気象+大気質 / Place=地名+標高/TZ+保存地点ナビ)。</p>
-        <p class="why">Why: <code>Segment.state</code> が per-segment health を持つので「per-group freshness のため group を分ける」必然が消えた。group は純粋に「トグル/glass 行/UI セクションの粗さ」最適化に。codex は当初 2 group に反対(4 推奨)→ display-IA 分離・既定OFF・segment.state を踏まえ撤回し 2 group を支持。</p>
-      </div>
-
-      <div class="card">
-        <h3><span class="badge b-decided">decided</span> built-in 常時ON 化は否 / opt-in 単一 source</h3>
-        <p class="why">Why: 位置は許可必須・通信あり・プライバシー敏感で、builtin Device(無許可・ネット不要・常時on・無効化不可)の契約と非両立。<code>origin: 'app_bundled'</code> で「同梱」性だけ表す。</p>
-      </div>
-
-      <div class="card">
-        <h3><span class="badge b-decided">decided</span> health は <code>segment.state</code>、<code>group.state</code> は派生</h3>
-        <p>各 producer の group.state を、その group 由来の全 segment の <code>Segment.state</code> へ焼く。group.state は「primary(defaultEnabled)segment の最悪状態」で派生。</p>
-        <p class="why">Why: open-meteo は生きてるが bigdatacloud が死ぬ等を segment 単位で表現。既定OFF の air/nav の error で Weather/Place group 全体が赤くならないよう primary 基準。</p>
-      </div>
-
-      <div class="card">
-        <h3><span class="badge b-decided">decided</span> provenance は view 限定の階層(データに tier 実体を足さない)</h3>
-        <p>Home を Included(builtin + app_bundled client) / Connected(server) でセクション分け。判定は <code>kind</code> + <code>origin</code>。</p>
-        <p class="why">Why: YAGNI。kind/origin は既存属性。ラベルは "Built-in" でなく "Included"(常時ON 含意を避ける)。Phase 3 で実装。</p>
-      </div>
-
-      <h2>トレードオフ</h2>
-      <div class="card">
-        <h3><span class="badge b-tradeoff">tradeoff</span> producer 深いリファクタを避け、orchestrator で再編</h3>
-        <p><code>src/location.ts</code> が既存 5 producer をそのまま呼び、結果の segment を 2 group に再編。各 producer は独立に <code>getPosition</code> を呼ぶ。</p>
-        <p class="why">採用理由: テスト済みの整形ロジックを温存し低リスク。<code>maximumAge</code> で OS が位置をキャッシュするため許可ダイアログは実質 1 回。代償: 厳密な「1 回だけ取得」ではない(将来最適化余地)。</p>
-      </div>
-      <div class="card">
-        <h3><span class="badge b-tradeoff">tradeoff</span> Place group が静的(地名/標高)+ 動的(保存地点)混在</h3>
-        <p class="why">代償: Place を OFF にすると地名も保存地点ナビも一緒に消える。保存地点距離だけ失敗した時 group が粗く見え得る → primary 基準の group.state で吸収。許容(codex 確認)。</p>
-      </div>
-
-      <h2>確認してほしい点 (open questions)</h2>
-      <div class="card">
-        <h3><span class="badge b-open">open</span> 実機 migration 確認 (最優先)</h3>
-        <p>実機の既存 config(5 source)が <code>client.location</code>(2 group)へ正しく畳まれるか。enabled だった分だけ表示が残り、disabled 由来は復活しないか。glass/Source Detail の描画。</p>
-      </div>
-      <div class="card">
-        <h3><span class="badge b-open">open</span> 命名: source "Location" / group "Weather"・"Place"</h3>
-        <p class="why">codex 推奨。Conditions(抽象的)/Here(標高・保存地点に狭い)は不採用。日本語 UI なら別案も可。</p>
-      </div>
-      <div class="card">
-        <h3><span class="badge b-open">open</span> 既定ON segment と primary/advanced</h3>
-        <p class="why">codex 指摘: weather 16 segment を glass 1 行に流す設計は別問題。primary(temp/cond/rain) と detail/overflow の分離は Display-IA として後段で。現状は各 producer の <code>defaultEnabled</code> を踏襲(air/保存地点ナビは既定OFF)。</p>
-      </div>
-
-      <h2>触ったファイル(Phase 1)</h2>
-      <table>
-        <tr><th>file</th><th>変更</th></tr>
-        <tr><td><code>src/location.ts</code> (新規)</td><td>統合 producer。5 producer → 2 group 再編 + segment へ state 焼き + group.state 派生。</td></tr>
-        <tr><td><code>src/config.ts</code></td><td><code>LOCATION_SOURCE_ID</code>/group 定数・<code>SourceDef.origin</code>・<code>ensureClientLocation</code>・<code>migrateLocationSourcesMerge</code>・places ヘルパの key 更新。</td></tr>
-        <tr><td><code>src/store.ts</code></td><td>client dispatch を <code>locationStatus</code> 1 本に。</td></tr>
-        <tr><td><code>src/taxonomy.ts</code></td><td>category キーを <code>weather|*</code>/<code>place|*</code> へ。</td></tr>
-        <tr><td><code>src/options.ts</code></td><td><code>sourceOptionSchema(location)</code> = 4 系統の union。</td></tr>
-        <tr><td><code>src/glass.ts</code></td><td>suncountdown 再計算が <code>client.location</code> を参照。</td></tr>
-        <tr><td><code>src/companion.ts</code></td><td>places 再取得が <code>LOCATION_SOURCE_ID</code> を参照。</td></tr>
-        <tr><td colspan="2" class="dim"><code>*.test.ts</code>: 移行(畳み込み/enabled 落とし込み/remap+dedupe/冪等) + orchestrator 契約 + taxonomy/options 更新。172 pass。</td></tr>
-      </table>
-    </div>
+      <section id="open">
+        <h2>確認事項 <span class="badge b-open">open question</span></h2>
+        <div class="panel">
+          <ol>
+            <li><b>実機検証が必要</b>。companion preview(ブラウザ)は bridge 無し=電池無しで g2 group が live 非存在のため、Items に g2 が出ない。確認は phone(単一 SPA + bridge)で行う必要がある。手順: <code>app.json</code> version bump → <code>npm run pack</code> → Even Hub upload → 実機で companion の G2 group に Rate / Estimated time left が dash で並ぶか確認。</li>
+            <li>group 単位ゲートも緩めるか(電池未接続でも g2 を Items に出すか)は今回見送り。必要なら follow-up。</li>
+          </ol>
+        </div>
+      </section>
+    </main>
+    <script>
+      mermaid.initialize({ startOnLoad: true, theme: "dark" });
+    </script>
   </body>
 </html>
