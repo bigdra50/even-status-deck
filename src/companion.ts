@@ -1913,6 +1913,17 @@ function onStoreUpdate(): void {
 // 永続データは通常エディタと同じ glassLayout.rows + @right を共有する (新フォーマット無し)。
 let fsRoot: HTMLElement | null = null
 let fsDrag: { key: string; ghost: HTMLElement } | null = null
+// 長押し arm 用の保留状態(arm 前)。codex 助言: arm 前はネイティブスクロール優先(tray を探せる)、
+// しきい値超え移動で arm キャンセル、静止して timer 発火で初めて drag(ghost 生成 + preventDefault)へ。
+let fsPending: {
+  key: string
+  chip: HTMLElement
+  x: number
+  y: number
+  timer: ReturnType<typeof setTimeout>
+} | null = null
+const FS_LONGPRESS_MS = 220
+const FS_MOVE_CANCEL_PX = 10
 
 // チップの表示文字列 (実機の値。custom ラベルは本文)。
 function fsChipText(key: string): string {
@@ -1981,8 +1992,10 @@ function renderFsBodyHtml(): string {
     ? tray.map((k) => fsChip(k, showsGroupLabel(k), false)).join('')
     : '<span class="fs-empty">Nothing unplaced</span>'
   // .fs-canvas が利用可能領域を埋め、.fs-glass がその中で 2:1 にコンテイン (container query)。
+  // tray は多数 chip で溢れたら内部スクロール (max-height で plateau)。件数を出して全体量を可視化。
+  const trayLabel = tray.length ? `Unplaced (${tray.length})` : 'Unplaced'
   return `<div class="fs-canvas"><div class="fs-glass">${rows.join('')}</div></div>
-    <div class="fs-tray" data-zone="tray"><span class="fs-tray-label">Unplaced</span>${trayHtml}</div>`
+    <div class="fs-tray" data-zone="tray"><span class="fs-tray-label">${trayLabel}</span>${trayHtml}</div>`
 }
 
 function renderFsShell(): string {
@@ -2043,20 +2056,71 @@ function fsPositionGhost(e: PointerEvent): void {
 }
 
 function onFsPointerDown(e: PointerEvent): void {
+  if (fsDrag || fsPending) return
   const target = e.target as HTMLElement
   if (target.closest('.fs-x') || target.closest('.fs-done')) return // 削除/閉じるは click で処理
   const chip = target.closest('.fs-chip') as HTMLElement | null
   const key = chip?.dataset.segkey
-  if (!key) return
-  e.preventDefault()
+  if (!chip || !key) return
+  // arm 前は preventDefault しない(tray のネイティブスクロールで chip を探せる)。静止して
+  // FS_LONGPRESS_MS 経過 → drag arm。しきい値超え移動 → スクロール意図とみなし arm キャンセル。
+  fsPending = {
+    key,
+    chip,
+    x: e.clientX,
+    y: e.clientY,
+    timer: setTimeout(armFsDrag, FS_LONGPRESS_MS),
+  }
+  window.addEventListener('pointermove', onFsPendingMove)
+  window.addEventListener('pointerup', clearFsPending)
+  window.addEventListener('pointercancel', clearFsPending)
+}
+
+function clearFsPending(): void {
+  if (!fsPending) return
+  clearTimeout(fsPending.timer)
+  fsPending = null
+  window.removeEventListener('pointermove', onFsPendingMove)
+  window.removeEventListener('pointerup', clearFsPending)
+  window.removeEventListener('pointercancel', clearFsPending)
+}
+
+function onFsPendingMove(e: PointerEvent): void {
+  if (!fsPending) return
+  if (Math.hypot(e.clientX - fsPending.x, e.clientY - fsPending.y) <= FS_MOVE_CANCEL_PX) return
+  // しきい値超え。tray chip はスクロール先(tray)があるので移動=スクロール意図 → drag しない。
+  // preview chip はスクロール先が無いので移動=ドラッグ意図 → 即 arm(長押し待ちにしない)。
+  if (fsPending.chip.closest('.fs-tray')) clearFsPending()
+  else armFsDrag()
+}
+
+// 長押し成立: ここで初めて ghost を生成し drag 優先へ移行する(以降は preventDefault でスクロール抑止)。
+function armFsDrag(): void {
+  if (!fsPending) return
+  const { key, chip, x, y } = fsPending
+  clearFsPending()
   const ghost = chip.cloneNode(true) as HTMLElement
   ghost.classList.add('fs-ghost')
   if (window.matchMedia('(orientation: portrait)').matches) ghost.classList.add('fs-ghost-rot')
+  ghost.style.left = `${x}px`
+  ghost.style.top = `${y}px`
   document.body.appendChild(ghost)
   fsDrag = { key, ghost }
-  fsPositionGhost(e)
+  chip.classList.add('fs-chip-armed') // 元 chip を薄く(移動中の出所表示)。refreshFsBody で復帰。
   window.addEventListener('pointermove', onFsPointerMove)
   window.addEventListener('pointerup', onFsPointerUp)
+  window.addEventListener('pointercancel', onFsDragAbort)
+}
+
+// drag 中の中断(pointercancel)。配置は変えずに後始末する。
+function onFsDragAbort(): void {
+  window.removeEventListener('pointermove', onFsPointerMove)
+  window.removeEventListener('pointerup', onFsPointerUp)
+  window.removeEventListener('pointercancel', onFsDragAbort)
+  fsDrag?.ghost.remove()
+  fsDrag = null
+  fsClearHot()
+  refreshFsBody()
 }
 
 function onFsPointerMove(e: PointerEvent): void {
@@ -2070,6 +2134,7 @@ function onFsPointerMove(e: PointerEvent): void {
 function onFsPointerUp(e: PointerEvent): void {
   window.removeEventListener('pointermove', onFsPointerMove)
   window.removeEventListener('pointerup', onFsPointerUp)
+  window.removeEventListener('pointercancel', onFsDragAbort)
   const drag = fsDrag
   fsDrag = null
   drag?.ghost.remove()
@@ -2113,20 +2178,24 @@ function openFsEditor(): void {
   fsRoot.className = 'fs-root'
   fsRoot.innerHTML = renderFsShell()
   document.body.appendChild(fsRoot)
+  document.body.style.overflow = 'hidden' // 背面(companion)スクロールをロック(tray pan が body へ漏れない保険)
   fsRoot.addEventListener('pointerdown', onFsPointerDown)
   fsRoot.addEventListener('click', onFsClick)
 }
 
 function closeFsEditor(): void {
   if (!fsRoot) return
+  clearFsPending()
   fsRoot.removeEventListener('pointerdown', onFsPointerDown)
   fsRoot.removeEventListener('click', onFsClick)
   window.removeEventListener('pointermove', onFsPointerMove)
   window.removeEventListener('pointerup', onFsPointerUp)
+  window.removeEventListener('pointercancel', onFsDragAbort)
   fsDrag?.ghost.remove()
   fsDrag = null
   fsRoot.remove()
   fsRoot = null
+  document.body.style.overflow = '' // 背面スクロールロックを解除
   render() // 通常画面のプレビューを最新化
 }
 

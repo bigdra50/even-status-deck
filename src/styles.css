@@ -1066,8 +1066,17 @@ button.owner-badge:hover {
   white-space: nowrap;
   cursor: grab;
   user-select: none;
-  touch-action: none;
+  touch-action: none; /* 既定(preview chip/ghost): 即ドラッグ。背面スクロールを誘発させない。 */
   flex: 0 0 auto;
+}
+/* tray の chip だけ arm 前のネイティブスクロール(tray を探せる)を許可。arm 後は JS が preventDefault。
+   スクロール先は tray 自身(overflow)。背面はロック済(openFsEditor)。 */
+.fs-tray .fs-chip {
+  touch-action: pan-x pan-y;
+}
+/* 長押し arm 中の元 chip(ghost が指に追従、出所を薄く表示)。drop/abort 後の refreshFsBody で復帰。 */
+.fs-chip-armed {
+  opacity: 0.4;
 }
 /* キャンバス内チップは glass サイズに追従 (cqh)。端末/回転に依らず行に収まる。 */
 .fs-glass .fs-chip {
@@ -1116,12 +1125,19 @@ button.owner-badge:hover {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  align-content: flex-start; /* 折返し行を上詰め(下に余白を残す) */
   gap: 6px;
   padding: 8px 10px;
   background: var(--surface);
   border: 1px dashed var(--border);
   border-radius: 8px;
   min-height: 44px;
+  flex: 0 0 auto; /* canvas(プレビュー)を潰さない */
+  max-height: 38%; /* 多数 chip でもプレビュー領域(>=約60%)を確保。溢れは内部スクロール */
+  overflow-y: auto;
+  /* arm 前のネイティブスクロールを許可(portrait 回転で軸が変わるため両方向)。root の none を上書き。 */
+  touch-action: pan-x pan-y;
+  overscroll-behavior: contain;
 }
 .fs-tray-label {
   font-size: var(--fs-sm);
