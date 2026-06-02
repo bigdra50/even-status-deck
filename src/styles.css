@@ -986,18 +986,21 @@ button.owner-badge:hover {
   font-weight: 600;
   cursor: pointer;
 }
+/* D': 2 ペイン (左=プレビュー 60% / 右=未配置 list 40%)。stage は portrait で 90° 回転するため、
+   row は両 orientation で「横並び」になる(回転時は画面上は上下に見える)。 */
 .fs-body {
   flex: 1;
   display: flex;
-  flex-direction: column;
-  gap: 10px;
+  flex-direction: row;
+  gap: 12px;
   padding: 0 16px 16px;
   min-height: 0;
 }
-/* キャンバス領域。利用可能な中央スペースを埋め、その中で .fs-glass を 2:1 にコンテインする。
+/* キャンバス領域(左ペイン)。利用可能スペースを埋め、その中で .fs-glass を 2:1 にコンテインする。
    container-type:size により .fs-glass の幅を cqw/cqh で算出する (端末非依存のオートフィット)。 */
 .fs-canvas {
-  flex: 1;
+  flex: 1 1 60%;
+  min-width: 0;
   min-height: 0;
   display: flex;
   align-items: center;
@@ -1121,34 +1124,82 @@ button.owner-badge:hover {
   display: inline-flex;
   align-items: center;
 }
+/* 右ペイン: 未配置の source 別折りたたみ list(縦スクロール)。list へ drop で unplace(data-zone=tray)。 */
 .fs-tray {
+  flex: 0 0 40%;
+  min-width: 0;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  align-content: flex-start; /* 折返し行を上詰め(下に余白を残す) */
-  gap: 6px;
-  padding: 8px 10px;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px;
   background: var(--surface);
   border: 1px dashed var(--border);
   border-radius: 8px;
-  min-height: 44px;
-  flex: 0 0 auto; /* canvas(プレビュー)を潰さない */
-  max-height: 38%; /* 多数 chip でもプレビュー領域(>=約60%)を確保。溢れは内部スクロール */
   overflow-y: auto;
   /* arm 前のネイティブスクロールを許可(portrait 回転で軸が変わるため両方向)。root の none を上書き。 */
   touch-action: pan-x pan-y;
   overscroll-behavior: contain;
 }
-.fs-tray-label {
+.fs-list-title {
   font-size: var(--fs-sm);
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  margin-right: 4px;
+  padding: 2px 4px 4px;
+}
+/* source セクション見出し(折りたたみトグル)。 */
+.fs-li-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  margin-top: 2px;
+  padding: 5px 4px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  touch-action: pan-x pan-y; /* header swipe で list をスクロールできるよう明示(WKWebView 差異対策) */
+}
+.fs-li-head svg {
+  flex: 0 0 auto;
+}
+.fs-li-head-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fs-li-count {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  opacity: 0.7;
+}
+/* 未配置 list の 1 行(全幅・ドラッグ可能)。セクション内インデント。 */
+.fs-tray .fs-chip.fs-li {
+  align-self: stretch;
+  justify-content: flex-start;
+  margin-left: 10px;
+  border-radius: 6px;
+  padding: 6px 9px;
+}
+.fs-li .fs-grp {
+  flex: 0 0 auto;
+}
+.fs-li .fs-txt {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .fs-empty {
   color: var(--text-dim);
   font-size: var(--fs-sm);
+  padding: 4px;
 }
 /* ドラッグ中の追従ゴースト (指/カーソル位置に固定。回転下では 90° 回して正立させる)。 */
 .fs-ghost {
@@ -1157,6 +1208,9 @@ button.owner-badge:hover {
   pointer-events: none;
   opacity: 0.92;
   transform: translate(-50%, -50%);
+  max-width: 220px; /* list 行(長文の server label 等)の clone が巨大化しないよう抑える */
+  overflow: hidden;
+  white-space: nowrap;
 }
 .fs-ghost-rot {
   transform: translate(-50%, -50%) rotate(90deg);

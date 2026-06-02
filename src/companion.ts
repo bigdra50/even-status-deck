@@ -1924,6 +1924,8 @@ let fsPending: {
 } | null = null
 const FS_LONGPRESS_MS = 220
 const FS_MOVE_CANCEL_PX = 10
+const FS_CUSTOM_SECTION = '__labels__' // 未配置 list で custom ラベルをまとめる擬似 source
+const fsCollapsedSources = new Set<string>() // 折りたたみ中の source(editor open ごとに clear)
 
 // チップの表示文字列 (実機の値。custom ラベルは本文)。
 function fsChipText(key: string): string {
@@ -1970,7 +1972,14 @@ function renderFsCluster(keys: string[], rightSide: boolean): string {
     .join('')
 }
 
-// プレビュー本体 (10 行 × 左/右ゾーン) + Unplaced トレイの HTML。
+// 未配置 list の 1 行(全幅・ドラッグ可能)。× は不要(未配置なので)。drag は .fs-chip で拾う。
+function fsListItem(key: string): string {
+  const { group } = segLabelParts(key)
+  const grp = !isCustomLabelKey(key) && group ? `<span class="fs-grp">${esc(group)}</span>` : ''
+  return `<span class="fs-chip fs-li" data-segkey="${esc(key)}">${grp}<span class="fs-txt">${esc(fsChipText(key))}</span></span>`
+}
+
+// プレビュー本体 (10 行 × 左/右ゾーン) + 右ペインの未配置 list(source 別折りたたみ) の HTML。
 function renderFsBodyHtml(): string {
   const lay = activeView(config).glassLayout
   if (!lay) return ''
@@ -1987,15 +1996,31 @@ function renderFsBodyHtml(): string {
   }
   const placed = new Set(lay.rows.flat().filter((k) => !isRightDivider(k)))
   const tray = allPlaceableKeys().filter((k) => !placed.has(k))
-  // トレイは run の文脈が無いので各チップ単独でグループ名を出す (dedup なし)。
-  const trayHtml = tray.length
-    ? tray.map((k) => fsChip(k, showsGroupLabel(k), false)).join('')
-    : '<span class="fs-empty">Nothing unplaced</span>'
+  // 未配置を source 別にグルーピング(出現順保持)。custom ラベルは末尾の擬似 source。
+  const bySource = new Map<string, string[]>()
+  for (const k of tray) {
+    const sid = isCustomLabelKey(k) ? FS_CUSTOM_SECTION : (k.split('|')[0] ?? '?')
+    const arr = bySource.get(sid)
+    if (arr) arr.push(k)
+    else bySource.set(sid, [k])
+  }
+  const sections = [...bySource.entries()]
+    .map(([sid, keys]) => {
+      const collapsed = fsCollapsedSources.has(sid)
+      const label = sid === FS_CUSTOM_SECTION ? 'Labels' : (sourceById(config, sid)?.label ?? sid)
+      const head =
+        `<button class="fs-li-head" data-action="fs-toggle-source" data-src="${esc(sid)}">` +
+        `${icon(collapsed ? 'chevron-right' : 'chevron-down', { size: 14 })}` +
+        `<span class="fs-li-head-label">${esc(label)}</span><span class="fs-li-count">${keys.length}</span></button>`
+      return head + (collapsed ? '' : keys.map(fsListItem).join(''))
+    })
+    .join('')
+  const listBody = tray.length ? sections : '<span class="fs-empty">Nothing unplaced</span>'
+  const listTitle = tray.length ? `Unplaced (${tray.length})` : 'Unplaced'
   // .fs-canvas が利用可能領域を埋め、.fs-glass がその中で 2:1 にコンテイン (container query)。
-  // tray は多数 chip で溢れたら内部スクロール (max-height で plateau)。件数を出して全体量を可視化。
-  const trayLabel = tray.length ? `Unplaced (${tray.length})` : 'Unplaced'
+  // 右ペイン .fs-tray は未配置の source 別折りたたみ list(縦スクロール)。list へ drop で unplace。
   return `<div class="fs-canvas"><div class="fs-glass">${rows.join('')}</div></div>
-    <div class="fs-tray" data-zone="tray"><span class="fs-tray-label">${trayLabel}</span>${trayHtml}</div>`
+    <div class="fs-tray" data-zone="tray"><div class="fs-list-title">${listTitle}</div>${listBody}</div>`
 }
 
 function renderFsShell(): string {
@@ -2131,6 +2156,11 @@ function onFsPointerMove(e: PointerEvent): void {
   fsZoneAt(e)?.classList.add('fs-hot')
 }
 
+// unplace 後、その key の source セクションを開く(折りたたみ中だと list 上で消えたように見えるため)。
+function fsExpandSourceOf(key: string): void {
+  fsCollapsedSources.delete(isCustomLabelKey(key) ? FS_CUSTOM_SECTION : (key.split('|')[0] ?? '?'))
+}
+
 function onFsPointerUp(e: PointerEvent): void {
   window.removeEventListener('pointermove', onFsPointerMove)
   window.removeEventListener('pointerup', onFsPointerUp)
@@ -2144,6 +2174,7 @@ function onFsPointerUp(e: PointerEvent): void {
   if (!zone) return
   if (zone.classList.contains('fs-tray')) {
     removeFsKey(drag.key)
+    fsExpandSourceOf(drag.key) // 折りたたみ中の source へ戻すと消えて見えるので開く
     normalizeFsRows()
   } else {
     const row = Number(zone.dataset.row)
@@ -2161,10 +2192,20 @@ function onFsClick(e: MouseEvent): void {
     closeFsEditor()
     return
   }
+  if (t.dataset.action === 'fs-toggle-source') {
+    const sid = t.dataset.src
+    if (sid) {
+      if (fsCollapsedSources.has(sid)) fsCollapsedSources.delete(sid)
+      else fsCollapsedSources.add(sid)
+      refreshFsBody()
+    }
+    return
+  }
   if (t.dataset.action === 'fs-unplace') {
     const key = t.dataset.segkey
     if (key && activeView(config).glassLayout) {
       removeFsKey(key)
+      fsExpandSourceOf(key) // 折りたたみ中の source へ戻すと消えて見えるので開く
       normalizeFsRows()
       void saveConfig(config)
       refreshFsBody()
@@ -2174,6 +2215,7 @@ function onFsClick(e: MouseEvent): void {
 
 function openFsEditor(): void {
   if (fsRoot) return
+  fsCollapsedSources.clear() // open ごとに全 source 展開で開始
   fsRoot = document.createElement('div')
   fsRoot.className = 'fs-root'
   fsRoot.innerHTML = renderFsShell()
