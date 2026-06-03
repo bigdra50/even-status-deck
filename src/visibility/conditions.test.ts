@@ -168,3 +168,51 @@ test('self threshold (seg 省略) は従来どおり自身の percent を見る'
   expect(visOf('level', cond, [seg('level', '10%', 10)]).v).toBe(true)
   expect(visOf('level', cond, [seg('level', '90%', 90)]).v).toBe(false)
 })
+
+// ── truthMap (発火用 strict tri-state) と display 排他 ──
+function truthOf(hostId: string, cond: VisibilityCond, liveSegs: Segment[]) {
+  const { cfg, statuses } = setupMulti(hostId, cond, liveSegs)
+  const r = computeVisibleMap(cfg, statuses, new Map(), 0, null)
+  return {
+    truth: r.truthMap.get(segKey(SID, GID, hostId)),
+    inline: r.map.get(segKey(SID, GID, hostId)),
+  }
+}
+
+test('truthMap: threshold は確定 true/false、percent 欠落は unknown (fail-open しない)', () => {
+  const c: VisibilityCond = {
+    combinator: 'and',
+    conditions: [{ kind: 'threshold', op: 'lte', value: 20 }],
+  }
+  expect(truthOf('level', c, [seg('level', '10%', 10)]).truth).toBe(true)
+  expect(truthOf('level', c, [seg('level', '90%', 90)]).truth).toBe(false)
+  expect(truthOf('level', c, [seg('level', 'n/a')]).truth).toBe('unknown') // percent 無し=unknown(発火しない)
+})
+
+test('truthMap: AND は false 優先、OR は true 優先、残り unknown', () => {
+  // level percent欠落(unknown) と present(rate 値あり=true) の複合
+  const live = [seg('eta', '2h'), seg('rate', '12%/h'), seg('level', 'n/a')]
+  const andC: VisibilityCond = {
+    combinator: 'and',
+    conditions: [
+      { kind: 'threshold', op: 'lte', value: 20, seg: 'level' },
+      { kind: 'present', seg: 'rate' },
+    ],
+  }
+  // and: present=true, threshold=unknown → false なし・unknown あり → unknown
+  expect(truthOf('eta', andC, live).truth).toBe('unknown')
+  const orC: VisibilityCond = { ...andC, combinator: 'or' }
+  // or: present=true → true 優先
+  expect(truthOf('eta', orC, live).truth).toBe(true)
+})
+
+test('inline 排他: display 指定 segment は inline map=false (truthMap には truth が残る)', () => {
+  const c: VisibilityCond = {
+    combinator: 'and',
+    conditions: [{ kind: 'threshold', op: 'lte', value: 20 }],
+    display: { ui: 'toast' },
+  }
+  const r = truthOf('level', c, [seg('level', '10%', 10)])
+  expect(r.truth).toBe(true) // 発火判定は true
+  expect(r.inline).toBe(false) // inline は出さない (排他)
+})

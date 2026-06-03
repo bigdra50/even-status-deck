@@ -92,7 +92,7 @@ import {
   subscribe,
 } from './store'
 import { type ProfileSuggestion, suggestProfile, suggestProfileByGeofence } from './suggest'
-import { computeVisible, segKey, type VisibilityLeaf } from './visibility'
+import { createVisibilityRuntime, type DisplayUi, segKey, type VisibilityLeaf } from './visibility'
 
 // 1 segment が持てる条件 leaf の上限 (UI が破綻しない緩い上限)。
 const MAX_CONDS = 4
@@ -220,8 +220,12 @@ function applyGroupDisplayNames(): boolean {
 // ── プレビュー ──
 // custom (glassLayout あり): 固定行を絶対位置で描画 (空行も保持。上詰め/下詰めは無い)。
 // auto (未カスタマイズ): 従来の group=1行 + top/bottom 詰め。glass には操作ヒントを出さない。
+// preview 専用の visibility runtime。glass と state/timer を分離する (edge 取りこぼし防止)。
+// wake=false: preview は store 更新で再評価されるので窓終了タイマーは張らない (二重 poke 回避)。
+const previewVisibility = createVisibilityRuntime({ wake: false })
+
 function glassPreviewHtml(): string {
-  const visible = computeVisible(config, getRenderableStatuses())
+  const visible = previewVisibility.compute(config, getRenderableStatuses()).map
   const d = glassData()
   const grow = (l: string) => `<span class="grow">${l ? esc(l) : '&nbsp;'}</span>`
   if (activeView(config).glassLayout) {
@@ -391,8 +395,23 @@ function segVisEditor(key: string, sm: SegMeta): string {
     conditions.length < MAX_CONDS
       ? `<button class="vis-add" data-action="seg-vis-add" ${seg2}>${icon('plus', { size: 13 })} Add condition</button>`
       : ''
+  // 提示先。条件があるときのみ。Inline=現状の常時表示 / それ以外は成立時に選んだ overlay UI で提示 (排他)。
+  const display = sm.visibility?.display
+  const displayRow =
+    conditions.length === 0
+      ? ''
+      : `<div class="vis-row" ${seg2}><span class="vis-label">Present</span>
+          <select class="vis-select" data-action="seg-vis-display-ui" ${seg2}>
+            <option value="" ${!display ? 'selected' : ''}>Inline (persistent)</option>
+            <option value="toast" ${display?.ui === 'toast' ? 'selected' : ''}>Toast</option>
+            <option value="banner" ${display?.ui === 'banner' ? 'selected' : ''}>Banner</option>
+            <option value="notification" ${display?.ui === 'notification' ? 'selected' : ''}>Notification</option>
+            <option value="dialog" ${display?.ui === 'dialog' ? 'selected' : ''}>Dialog</option>
+          </select>
+          ${display ? `<input class="vis-text" type="text" maxlength="80" placeholder="auto: label value" data-action="seg-vis-display-text" ${seg2} value="${esc(display.text ?? '')}" />` : ''}
+        </div>`
   return `<div class="vis-row" ${seg2}><span class="vis-label">Show</span>${head}</div>
-    <div class="vis-conds">${rows}${add}</div>`
+    <div class="vis-conds">${rows}${add}</div>${displayRow}`
 }
 
 // 表示オプションの汎用レンダラ (#36)。schema (OptionField[]) を select / toggle / number で描く。
@@ -1942,6 +1961,17 @@ function onSegVisChange(e: Event): void {
   const val = t.value
   if (action === 'seg-vis-combinator') {
     vis.combinator = val === 'or' ? 'or' : 'and'
+  } else if (action === 'seg-vis-display-ui') {
+    // 提示先: Inline(空) = display 削除 / それ以外 = ui 設定 (text は保持)。
+    const uis: ReadonlySet<string> = new Set(['toast', 'banner', 'notification', 'dialog'])
+    if (uis.has(val)) vis.display = { ...vis.display, ui: val as DisplayUi }
+    else delete vis.display
+  } else if (action === 'seg-vis-display-text') {
+    if (vis.display) {
+      const text = val.trim().slice(0, 80)
+      if (text) vis.display.text = text
+      else delete vis.display.text
+    }
   } else {
     const idx = Number(t.dataset.idx)
     const leaf = vis.conditions[idx]

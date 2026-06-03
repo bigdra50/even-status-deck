@@ -39,7 +39,14 @@ import {
   refreshAll as storeRefresh,
   subscribe,
 } from './store'
-import { computeVisible, resetVisibility, type VisibleMap } from './visibility'
+import {
+  type ConditionDisplayRuntime,
+  createConditionDisplayRuntime,
+  createVisibilityRuntime,
+  type DisplayResult,
+  type VisibilityRuntime,
+  type VisibleMap,
+} from './visibility'
 import { recomputeSunCountdown } from './weather'
 
 // glass (G2 576×288) の描画。複数ソースの status は共有 store が保持し、glass は購読して
@@ -68,7 +75,12 @@ let lastContent: string | null = null // 直近送信した content (single topo
 let lastTopo: string | null = null // 直近のコンテナ構成キー。変わると rebuildPageContainer する
 let glassClock: ReturnType<typeof setTimeout> | null = null // 分境界の時刻更新 (store.notify を介さない)
 let overlayTimer: ReturnType<typeof setTimeout> | null = null // toast の自動消去タイマー
-const overlay = createOverlayManager() // notification / toast / dialog / banner (再利用可能・休眠)
+// banner tap dismiss → 条件 banner を known-false まで抑止する。
+const overlay = createOverlayManager({ onBannerDismiss: () => displayRuntime.dismissBanner() })
+// glass 専用の visibility runtime (companion preview と state を共有しない = edge 取りこぼし防止)。
+const glassVisibility: VisibilityRuntime = createVisibilityRuntime({ wake: true })
+// 条件成立 → overlay UI 提示 (edge/level)。glass のみ。
+const displayRuntime: ConditionDisplayRuntime = createConditionDisplayRuntime()
 
 // 全面 1 text container (page1 / linear)。従来の単一コンテナと同一。
 function singleContainer(content: string): TextContainerProperty {
@@ -282,7 +294,8 @@ function cleanup(): void {
     window.removeEventListener('beforeunload', cleanup)
   }
   if (gbridge) void stopImu(gbridge)
-  resetVisibility() // transient 状態 + wake タイマーを破棄
+  glassVisibility.reset() // transient 状態 + wake タイマーを破棄
+  displayRuntime.reset() // edge/banner 状態を破棄
   deactivateKeepAlive()
   // exit 後に onStoreUpdate/onConfigChanged/refresh が bridge 書込を復活させないよう無効化。
   gbridge = null
@@ -390,11 +403,57 @@ function syncAll(): void {
   }
 }
 
+// 提示先 segment の文言を live status から解決する。custom text 優先、無ければ "label value" 自動合成。
+function resolveDisplayText(f: {
+  sourceId: string
+  groupId: string
+  segId: string
+  text?: string
+}): {
+  label: string
+  value: string
+  text: string
+} {
+  const seg = data.statuses[f.sourceId]?.groups
+    .find((g) => g.id === f.groupId)
+    ?.segments.find((s) => s.id === f.segId)
+  const label = seg?.label || f.segId
+  const value = seg?.value ?? ''
+  return { label, value, text: f.text ?? `${label} ${value}`.trim() }
+}
+
+function sourceLabelOf(sourceId: string, groupId: string): string {
+  const src = data.config.sources.find((s) => s.id === sourceId)?.label
+  if (src) return src
+  return data.statuses[sourceId]?.groups.find((g) => g.id === groupId)?.label || sourceId
+}
+
+// 条件成立の提示を overlay へ反映する。edge fire は toast/notification/dialog、banner は level。
+// refresh は呼び出し側 (onStoreUpdate 等) が行う。overlay.key() の content-hash が無駄な再描画を防ぐ。
+function applyDisplay(dr: DisplayResult): void {
+  for (const f of dr.fires) {
+    const { label, value, text } = resolveDisplayText(f)
+    if (f.ui === 'toast') overlay.toast(text)
+    else if (f.ui === 'notification') {
+      overlay.notify({
+        app: sourceLabelOf(f.sourceId, f.groupId),
+        sender: label,
+        body: f.text ?? value,
+      })
+    } else overlay.dialog(label, f.text ?? value, ['OK']) // dialog は ack-only (onResult なし)
+  }
+  if (dr.banner.kind === 'set') overlay.setBanner(resolveDisplayText(dr.banner).text)
+  else if (dr.banner.kind === 'clear') overlay.clearBanner()
+  // 'none' は banner スロットに触れない (server 由来 banner を温存)
+}
+
 function onStoreUpdate(): void {
   data.statuses = getRenderableStatuses() // offline の server source は除外 (古い値=嘘を出さない)
   data.statuses[BUILTIN_SOURCE_ID] = localStatus(data.config) // poll/電池 notify 時も時刻を最新に保つ
   syncAll()
-  visible = computeVisible(data.config, data.statuses)
+  const r = glassVisibility.compute(data.config, data.statuses)
+  visible = r.map
+  applyDisplay(displayRuntime.observe(data.config, r.truthMap)) // 世界の変化のみ発火
   views = buildViews(data, visible)
   if (idx >= views.length) idx = 0
   refresh()
@@ -402,7 +461,9 @@ function onStoreUpdate(): void {
 
 async function onConfigChanged(): Promise<void> {
   data.config = await loadConfig()
-  visible = computeVisible(data.config, data.statuses)
+  const r = glassVisibility.compute(data.config, data.statuses)
+  visible = r.map
+  applyDisplay(displayRuntime.seed(data.config, r.truthMap)) // config 編集では発火させない (seed)
   views = buildViews(data, visible)
   if (idx >= views.length) idx = 0
   await applyImuConfig() // IMU トグル/設定変更を反映
@@ -422,7 +483,9 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   data.statuses = getRenderableStatuses() // store が既に取得済みなら反映 (offline は除外)
   data.statuses[BUILTIN_SOURCE_ID] = localStatus(data.config) // 時刻 HUD を初期表示
   syncAll()
-  visible = computeVisible(data.config, data.statuses)
+  const r = glassVisibility.compute(data.config, data.statuses)
+  visible = r.map
+  applyDisplay(displayRuntime.seed(data.config, r.truthMap)) // init は seed (listener 未配線・発火させない)
   views = buildViews(data, visible)
   idx = 0
 

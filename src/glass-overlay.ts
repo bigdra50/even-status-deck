@@ -39,6 +39,15 @@ type Dialog = {
 const NOTIF_MAX = 4 // ドット px 列が box 内に収まる範囲
 const DOT_CX = 40 // ドット中心 x (box 左辺 x48 のすぐ左)
 const DEFAULT_TOAST_MS = 3000
+const TOAST_MAX = 4 // toast キュー上限 (条件発火の連続でも無限に溜めない)
+const DIALOG_MAX = 4 // dialog キュー上限 (ack-only の条件 dialog が溜まり過ぎないように)
+
+// 簡易 content hash (djb2)。key() を文字数でなく内容で作り、同長別内容 (banner の値更新等) でも再描画させる。
+function hashStr(s: string): number {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
+  return h
+}
 
 // 全面 1 text container (現在ビュー / toast の下地)。isEventCapture=1 で入力を受ける。
 function fullContainer(content: string): TextContainerProperty {
@@ -140,16 +149,17 @@ function toastContainers(baseLines: string[], t: Toast): TextContainerProperty[]
   return [base, row]
 }
 
-export function createOverlayManager() {
+// onBannerDismiss: banner を tap で消したときに呼ぶ (条件 banner の dismiss-until-false 用)。
+export function createOverlayManager(opts: { onBannerDismiss?: () => void } = {}) {
   let notifStack: Notif[] = []
   let notifIdx = 0
   let toasts: Toast[] = []
-  let dialog: Dialog | null = null
+  let dialogs: Dialog[] = [] // dialog キュー (新規発火が表示中を上書きしないよう FIFO)
   let banner: string | null = null
 
   // 優先度 dialog > notification > toast で 1 つを active に。banner は別 (上行合成)。
   function activeKind(): 'dialog' | 'notification' | 'toast' | null {
-    if (dialog) return 'dialog'
+    if (dialogs.length) return 'dialog'
     if (notifStack.length) return 'notification'
     if (toasts.length) return 'toast'
     return null
@@ -166,21 +176,23 @@ export function createOverlayManager() {
         body: sanitizeGlyphs(n.body),
       })
     },
-    toast(text: string, opts: ToastOpts = {}): void {
+    toast(text: string, topts: ToastOpts = {}): void {
+      if (toasts.length >= TOAST_MAX) toasts.splice(1, 1) // 上限: 表示中の head を残し最古の pending を捨てる
       toasts.push({
         text: sanitizeGlyphs(text),
-        durationMs: opts.durationMs ?? DEFAULT_TOAST_MS,
+        durationMs: topts.durationMs ?? DEFAULT_TOAST_MS,
         expiresAt: null,
       })
     },
-    dialog(title: string, message: string, actions: string[], opts: DialogOpts = {}): void {
-      dialog = {
+    dialog(title: string, message: string, actions: string[], dopts: DialogOpts = {}): void {
+      if (dialogs.length >= DIALOG_MAX) dialogs.splice(1, 1) // 上限: 表示中の head を残し最古の pending を捨てる
+      dialogs.push({
         title: sanitizeGlyphs(title),
         message: sanitizeGlyphs(message),
         actions: (actions.length ? actions : ['OK']).map(sanitizeGlyphs),
         sel: 0,
-        onResult: opts.onResult,
-      }
+        onResult: dopts.onResult,
+      })
     },
     setBanner(text: string): void {
       banner = sanitizeGlyphs(text)
@@ -192,7 +204,7 @@ export function createOverlayManager() {
       notifStack = []
       notifIdx = 0
       toasts = []
-      dialog = null
+      dialogs = []
       banner = null
     },
 
@@ -200,13 +212,15 @@ export function createOverlayManager() {
       return activeKind() !== null || banner !== null
     },
 
-    // 描画キー。種類 + 内容 + 選択/cursor + banner で構成。変わると glass が rebuild する。
+    // 描画キー。種類 + 内容 hash + 選択/cursor + banner hash で構成。変わると glass が rebuild する。
+    // 文字数でなく content hash を使う (同長別内容の banner/toast 値更新でも再描画させる)。
     key(): string {
-      const b = banner ? `|b:${banner.length}` : ''
+      const b = banner ? `|b:${hashStr(banner)}` : ''
       const k = activeKind()
-      if (k === 'dialog' && dialog) return `dlg:${dialog.sel}/${dialog.actions.length}${b}`
+      const dlg = dialogs[0]
+      if (k === 'dialog' && dlg) return `dlg:${dialogs.length}:${dlg.sel}/${dlg.actions.length}${b}`
       if (k === 'notification') return `ntf:${notifStack.length}:${notifIdx}${b}`
-      if (k === 'toast' && toasts[0]) return `tst:${toasts.length}:${toasts[0].text.length}${b}`
+      if (k === 'toast' && toasts[0]) return `tst:${toasts.length}:${hashStr(toasts[0].text)}${b}`
       return `banner${b}`
     },
 
@@ -230,8 +244,9 @@ export function createOverlayManager() {
     // overlay が scroll を消費したら true (false ならビュー巡回へ)。
     handleScroll(dir: number): boolean {
       const k = activeKind()
-      if (k === 'dialog' && dialog) {
-        dialog.sel = Math.max(0, Math.min(dialog.sel + dir, dialog.actions.length - 1))
+      const dlg = dialogs[0]
+      if (k === 'dialog' && dlg) {
+        dlg.sel = Math.max(0, Math.min(dlg.sel + dir, dlg.actions.length - 1))
         return true
       }
       if (k === 'notification') {
@@ -244,10 +259,9 @@ export function createOverlayManager() {
     // overlay が tap を消費したら true。dialog=確定 / notification=既読→次 / toast=action or dismiss。
     handleTap(): boolean {
       const k = activeKind()
-      if (k === 'dialog' && dialog) {
-        const d = dialog
-        dialog = null
-        d.onResult?.(d.sel)
+      if (k === 'dialog' && dialogs[0]) {
+        const d = dialogs.shift()
+        d?.onResult?.(d.sel)
         return true
       }
       if (k === 'notification') {
@@ -258,6 +272,7 @@ export function createOverlayManager() {
       // toast は入力非消費 (自動消去のみ。誤タップで消えない)。
       if (banner !== null) {
         banner = null // banner は tap で消せる
+        opts.onBannerDismiss?.() // 条件 banner の dismiss-until-false 通知
         return true
       }
       return false
@@ -278,7 +293,7 @@ export function createOverlayManager() {
         const bottom2 = lines.slice(bStart).join('\n')
         return notificationContainers(top2, bottom2, notifStack, notifIdx)
       }
-      if (k === 'dialog' && dialog) return dialogContainers(lines[0] ?? '', bottom, dialog)
+      if (k === 'dialog' && dialogs[0]) return dialogContainers(lines[0] ?? '', bottom, dialogs[0])
       if (k === 'toast' && toasts[0]) {
         const bl = showBanner ? [top, ...lines.slice(1)] : lines
         return toastContainers(bl, toasts[0])

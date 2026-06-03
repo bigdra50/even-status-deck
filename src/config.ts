@@ -3,7 +3,13 @@ import { MAX_ROWS } from './glass-types'
 import { defaultImuConfig, type ImuConfig } from './imu'
 import type { StatusDoc } from './status-types'
 import { defaultCategory } from './taxonomy'
-import { segKey, type VisibilityCond, type VisibilityLeaf } from './visibility/keys'
+import {
+  type CondDisplay,
+  type DisplayUi,
+  segKey,
+  type VisibilityCond,
+  type VisibilityLeaf,
+} from './visibility/keys'
 
 // 設定 (v4): 素材 (sources / groups) とレシピ (profiles) の 2 層構成。
 // 素材 = 接続先と metric の素性 (存在・format・閾値条件) を状況に依らず 1 つだけ持つ。
@@ -1125,15 +1131,36 @@ function sanitizeLeaf(x: unknown): VisibilityLeaf | null {
   return null
 }
 
+const DISPLAY_UIS: ReadonlySet<string> = new Set(['toast', 'banner', 'notification', 'dialog'])
+const MAX_DISPLAY_TEXT_LEN = 80
+
+// 提示先 (display) を sanitize する。ui が既知でなければ undefined (= inline persistent に戻る)。
+// text は trim + 上限。空 text は省略 (glass の自動合成に委ねる)。
+function sanitizeCondDisplay(x: unknown): CondDisplay | undefined {
+  if (!x || typeof x !== 'object') return undefined
+  const o = x as Record<string, unknown>
+  if (typeof o.ui !== 'string' || !DISPLAY_UIS.has(o.ui)) return undefined
+  const out: CondDisplay = { ui: o.ui as DisplayUi }
+  if (typeof o.text === 'string') {
+    const t = o.text.trim().slice(0, MAX_DISPLAY_TEXT_LEN)
+    if (t) out.text = t
+  }
+  return out
+}
+
 // segment の visibility を複合形式へ正規化する。新形式は leaf を sanitize、空なら undefined。
 // 旧 single-cond ({kind:'always'|'threshold'|'onChange'}) は複合形式へ移行 (always=undefined)。
+// display は additive。条件が空のとき display は無意味なので落とす (= inline persistent)。
 function normalizeVisibility(v: unknown): VisibilityCond | undefined {
   if (!v || typeof v !== 'object') return undefined
   const o = v as Record<string, unknown>
   if (Array.isArray(o.conditions)) {
     const conditions = o.conditions.map(sanitizeLeaf).filter((l): l is VisibilityLeaf => l !== null)
     if (conditions.length === 0) return undefined
-    return { combinator: o.combinator === 'or' ? 'or' : 'and', conditions }
+    const out: VisibilityCond = { combinator: o.combinator === 'or' ? 'or' : 'and', conditions }
+    const display = sanitizeCondDisplay(o.display)
+    if (display) out.display = display
+    return out
   }
   if (o.kind === 'always') return undefined
   const leaf = sanitizeLeaf(o)

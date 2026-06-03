@@ -594,6 +594,17 @@ button.owner-badge:hover {
   font-family: var(--font-mono);
   padding: var(--space-1) var(--space-2);
 }
+/* 提示先のカスタム文言入力 (display=toast/banner 等のとき)。 */
+.vis-text {
+  flex: 1 1 auto;
+  min-width: 80px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  padding: var(--space-1) var(--space-2);
+}
 .vis-del {
   flex: 0 0 auto;
   display: inline-flex;

@@ -3,14 +3,25 @@
 // 構成:
 //   conditions.ts  純粋コア   VisibilityLeaf/VisibilityCond/VisibleMap/VisStates、
 //                             computeVisibleMap/isVisible/segKey/defaultVisibilityCond
-//   runtime.ts     Shell      computeVisible (transient 状態 + 窓終了タイマー保持) / resetVisibility
+//   runtime.ts     Shell      createVisibilityRuntime (instance ごとに transient 状態 + 窓終了タイマー)
+//   display.ts     Shell      条件成立 → overlay UI 提示 (edge/level)。glass のみが使う
 //
-// shell(glass.ts / companion.ts) が computeVisible(config, statuses) で visibleMap(segment 粒度) を算出し、
-// pure render(glass-render.ts) へ引数で渡す。条件は segment 単位
+// shell(glass.ts / companion.ts) が runtime.compute(config, statuses) で visibleMap(segment 粒度) を
+// 算出し、pure render(glass-render.ts) へ引数で渡す。条件は segment 単位
 // config.groups[*][*].segments[*].visibility に永続 (leaf の AND/OR 複合)。
 
 export { computeVisibleMap, defaultVisibilityCond, isVisible } from './conditions'
+export {
+  type ConditionDisplayRuntime,
+  createConditionDisplayRuntime,
+  type DisplayFire,
+  type DisplayResult,
+} from './display'
 export type {
+  CondDisplay,
+  ConditionTruth,
+  ConditionTruthMap,
+  DisplayUi,
   OnChangeState,
   VisibilityCond,
   VisibilityLeaf,
@@ -18,4 +29,4 @@ export type {
   VisStates,
 } from './keys'
 export { segKey } from './keys'
-export { computeVisible, resetVisibility } from './runtime'
+export { createVisibilityRuntime, type VisibilityRuntime } from './runtime'

@@ -3,19 +3,16 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>実装ノート — 同一 group 内の peer segment を参照する表示条件</title>
+    <title>実装ノート — 条件成立時の overlay UI 提示</title>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <style>
       :root {
         --bg: #0f1115; --panel: #171a21; --border: #2a2f3a; --text: #e6e9ef;
-        --dim: #9aa3b2; --decided: #3fb950; --deviation: #d29922; --open: #58a6ff;
-        --tradeoff: #bc8cff; --code: #1d2230;
+        --dim: #9aa3b2; --decided: #3fb950; --deviation: #d29922; --open: #58a6ff; --tradeoff: #bc8cff; --code: #1d2230;
       }
       * { box-sizing: border-box; }
-      body { margin: 0; background: var(--bg); color: var(--text);
-        font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      header { padding: 24px 32px; border-bottom: 1px solid var(--border);
-        position: sticky; top: 0; background: rgba(15,17,21,.92); backdrop-filter: blur(6px); z-index: 5; }
+      body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      header { padding: 24px 32px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: rgba(15,17,21,.92); backdrop-filter: blur(6px); z-index: 5; }
       h1 { margin: 0 0 4px; font-size: 20px; }
       .upd { color: var(--dim); font-size: 13px; }
       nav { padding: 8px 32px; border-bottom: 1px solid var(--border); font-size: 13px; }
@@ -23,101 +20,63 @@
       main { padding: 24px 32px; max-width: 1000px; }
       section { margin-bottom: 28px; }
       h2 { font-size: 16px; border-left: 3px solid var(--open); padding-left: 10px; }
-      .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px;
-        border-radius: 999px; margin-right: 6px; vertical-align: middle; }
+      .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; margin-right: 6px; }
       .b-decided { background: rgba(63,185,80,.15); color: var(--decided); border: 1px solid var(--decided); }
       .b-deviation { background: rgba(210,153,34,.15); color: var(--deviation); border: 1px solid var(--deviation); }
       .b-open { background: rgba(88,166,255,.15); color: var(--open); border: 1px solid var(--open); }
-      .b-tradeoff { background: rgba(188,140,255,.15); color: var(--tradeoff); border: 1px solid var(--tradeoff); }
       .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; margin: 12px 0; }
-      code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 13px;
-        font-family: "SF Mono", Menlo, monospace; }
+      code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 13px; font-family: "SF Mono", Menlo, monospace; }
       pre { background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 13px; }
       table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; }
       th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
       th { background: #1b1f28; }
-      details { margin: 8px 0; }
-      summary { cursor: pointer; color: var(--open); }
-      .mermaid { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
       .file { color: var(--decided); font-family: "SF Mono", Menlo, monospace; font-size: 13px; }
+      .mermaid { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
     </style>
   </head>
   <body>
     <header>
-      <h1>実装ノート — 同一 group 内の peer segment を参照する表示条件</h1>
+      <h1>実装ノート — 条件成立時に overlay UI で提示する</h1>
       <div class="upd">最終更新: 2026-06-03 / status: 実装完了・実機未検証 / config version bump: なし(additive)</div>
     </header>
     <nav>
-      <a href="#problem">背景</a><a href="#decision">設計判断</a><a href="#model">モデル</a>
-      <a href="#eval">評価意味論</a><a href="#changes">変更</a><a href="#flow">フロー</a>
-      <a href="#codex">codex レビュー</a><a href="#open">確認事項</a>
+      <a href="#what">概要</a><a href="#decided">確定事項</a><a href="#model">モデル</a><a href="#flow">フロー</a>
+      <a href="#files">変更</a><a href="#correctness">正しさ</a><a href="#deferred">v1 範囲外</a><a href="#open">確認事項</a>
     </nav>
     <main>
-      <section id="problem">
-        <h2>背景</h2>
+      <section id="what">
+        <h2>概要</h2>
         <div class="panel">
-          従来の表示条件 (<code>SegMeta.visibility</code>) は leaf が常に self (その segment 自身) を評価対象にしていた。
-          <code>threshold</code> は self の <code>percent</code>、<code>onChange</code> は self の <code>value</code> 変化。
-          「同一 group の別 segment B がある条件を満たしたら A を表示する」という相互参照が表現できなかった。
-          例: G2 group で battery <code>level</code> ≤ 20% のときだけ <code>eta</code> を表示。
+          segment の visibility 条件成立時に、inline 常時表示の代わりに実装済み overlay UI
+          (toast / banner / notification / dialog) のいずれかを選んで提示できるようにした。
+          提示先は Persistent(既定=現状 inline) を含む単一選択。基盤(overlay 描画)は既存を再利用し、
+          新規は「条件 → いつ撃つか」の trigger 層。
         </div>
       </section>
 
-      <section id="decision">
-        <h2>設計判断 <span class="badge b-decided">decided</span></h2>
-        <div class="panel">
-          ユーザー承認: peer テストを 3 種すべて実装 (しきい値 / 存在 / 変化)。スコープは同一 group 内。
-          モデルは <b>P 案 + present 新 kind</b> (codex GPT-5.5 が支持):
-          <ul>
-            <li><code>threshold</code> / <code>onChange</code> に optional <code>seg?: string</code> を足す。省略=self (後方互換・移行不要)、指定=同 group の兄弟 segment。</li>
-            <li>存在判定は self では自明なので peer 専用の新 kind <code>{ kind:'present'; seg; absent? }</code> を足す。</li>
-            <li><code>targetRef</code> オブジェクト化等の汎用化は今回過剰として却下 (YAGNI)。</li>
-          </ul>
-        </div>
+      <section id="decided">
+        <h2>確定事項 <span class="badge b-decided">decided</span> (codex GPT-5.5)</h2>
+        <table>
+          <tr><th>論点</th><th>確定</th></tr>
+          <tr><td>kind</td><td>4 種すべて。dialog は ack-only (固定 OK・onResult なし・tap で閉じる)</td></tr>
+          <tr><td>banner 競合</td><td>active view 順で先勝ち (候補を毎回再計算)</td></tr>
+          <tr><td>排他性</td><td>display 指定 = inline を出さない (VisibleMap=false)。提示は 1 つに集約</td></tr>
+          <tr><td>tri-state</td><td>computeVisibleMap が 1 パスで truthMap も返す。inline=combineVisible(fail-open) / 発火=combineTruth(AND false 優先・OR true 優先・他 unknown)</td></tr>
+          <tr><td>runtime</td><td>createVisibilityRuntime() で instance 化。glass / companion preview を分離 (edge 取りこぼし防止)</td></tr>
+          <tr><td>throttle</td><td>edge cooldown 30s (toast/notif/dialog のみ) / fires-per-observe 4 / toast queue 上限 4</td></tr>
+        </table>
       </section>
 
       <section id="model">
         <h2>モデル <span class="badge b-decided">decided</span></h2>
-        <pre>type VisibilityLeaf =
-  | { kind:'threshold'; op:'lte'|'gte'; value:number; seg?:string }  // seg省略=self / 指定=兄弟のpercent
-  | { kind:'onChange';  holdMs:number;               seg?:string }  // seg省略=self / 指定=兄弟のvalue変化
-  | { kind:'inPlace';   placeId:string; outside?:boolean }
-  | { kind:'present';   seg:string; absent?:boolean }               // 兄弟が値を持つか(absent=空か)</pre>
+        <pre>// keys.ts (additive, CONFIG_VERSION bump なし)
+type DisplayUi = 'toast' | 'banner' | 'notification' | 'dialog'
+type CondDisplay = { ui: DisplayUi; text?: string }   // text 省略=自動合成 "label value"
+type VisibilityCond = { combinator; conditions; display?: CondDisplay }  // display 省略=inline persistent
+type ConditionTruth = boolean | 'unknown'             // 発火用 strict tri-state</pre>
         <div class="panel">
-          循環参照は起きない。条件は live status の値だけを見て相手の可視“結果”を見ない。
-          B が profile 上 hidden でも B の live 値で A を制御できる (むしろ望ましい挙動)。
-        </div>
-      </section>
-
-      <section id="eval">
-        <h2>評価意味論 (tri-state) <span class="badge b-decided">decided</span></h2>
-        <table>
-          <tr><th>leaf</th><th>対象</th><th>不在時</th><th>備考</th></tr>
-          <tr><td>threshold (self)</td><td>self.percent</td><td>—</td><td>self は必ず存在。percent 欠落=<code>'na'</code> (従来どおり)</td></tr>
-          <tr><td>threshold (peer)</td><td>兄弟.percent</td><td><b><code>false</code></b></td><td>peer 不在を <code>'na'</code> にすると単独条件で fail-open 常時表示になり矛盾。peer あり percent 欠落は <code>'na'</code></td></tr>
-          <tr><td>onChange (self/peer)</td><td>対象.value</td><td><code>false</code></td><td>不在=変化観測不能。状態キーに対象 id を含め切替直後の誤発火を防ぐ</td></tr>
-          <tr><td>present</td><td>兄弟.value</td><td><code>false</code></td><td>常に bool (不在検出が目的)。<code>value.trim()!==''</code> を has とし absent で反転</td></tr>
-        </table>
-        <div class="panel">
-          onChange の状態キー: <code>${segKey}#${i}:${leaf.seg ?? self.id}</code>。host 基準に対象 id を付与し、
-          self→B / B→C と対象を切替えた直後に前の対象の <code>prevValue</code> と比較される誤発火を防ぐ。
-        </div>
-      </section>
-
-      <section id="changes">
-        <h2>変更ファイル</h2>
-        <table>
-          <tr><th>ファイル</th><th>変更</th></tr>
-          <tr><td class="file">src/visibility/keys.ts</td><td><code>VisibilityLeaf</code> に <code>seg?</code>(threshold/onChange) と新 kind <code>present</code> を追加。</td></tr>
-          <tr><td class="file">src/visibility/conditions.ts</td><td>対象 = <code>leaf.seg ? 兄弟 : self</code> に解決。present 評価を追加。threshold peer 不在=false / onChange キーに対象 id。</td></tr>
-          <tr><td class="file">src/config.ts</td><td><code>sanitizeLeaf</code> が <code>seg</code> を保持し <code>present</code> を受理 (永続データの検証)。</td></tr>
-          <tr><td class="file">src/companion.ts</td><td>対象 select (self+兄弟)、present 用 UI、kind 既定値ヘルパ <code>newLeafOfKind</code>、<code>seg-vis-leaf-seg</code>/<code>seg-vis-leaf-absent</code> ハンドラ。threshold 候補は同 group に percent がある時のみ。self 選択で <code>seg</code> 削除。</td></tr>
-          <tr><td class="file">src/visibility/conditions.test.ts</td><td>peer threshold / 不在=false / percent 欠落=na / present(has,empty,absent) / onChange peer / self 後方互換 の 6 テスト。</td></tr>
-        </table>
-        <div class="panel">
-          検証: <code>biome</code> clean / <code>tsc</code> OK / <code>build</code> OK / <code>knip</code> clean /
-          <code>depcruise</code> clean / <code>test:unit</code> 184 pass / <code>test:e2e</code> 29 pass。
-          glass-render は不変 (可視 map を <code>isVisible</code> で読むだけ)。
+          発火モデル: <b>edge</b>(toast/notification/dialog) = truth が known-false → known-true の瞬間に 1 回。
+          <b>level</b>(banner) = known-true の候補を view 順で先勝ち表示、解消で clear。
         </div>
       </section>
 
@@ -125,43 +84,67 @@
         <h2>フロー</h2>
         <div class="mermaid">
 flowchart TD
-  L["leaf"] --> K{"kind"}
-  K -->|threshold/onChange| T{"leaf.seg ?"}
-  T -->|あり| P["兄弟 segment を解決"]
-  T -->|なし| S["self"]
-  K -->|present| PR["兄弟 segment を解決"]
-  P --> EV["値で評価"]
-  S --> EV
-  PR --> EVP["value 非空 = has (absentで反転)"]
-  EV -->|threshold peer不在| F["false"]
-  EV -->|percent欠落| NA["na (中立)"]
-  EV -->|比較/変化| R["true/false"]
-  EVP --> R2["true/false"]
-  R --> C["combine (and/or, na除外, 残0=fail-open)"]
-  F --> C
-  NA --> C
-  R2 --> C
+  S["store 更新 (onStoreUpdate)"] --> C["glassVisibility.compute()<br/>map(inline) + truthMap(strict)"]
+  C --> V["visible=map → buildViews → refresh (inline)"]
+  C --> D["displayRuntime.observe(truthMap)<br/>edge 検出 + banner level"]
+  D --> A["applyDisplay: glass が文言解決し overlay へ"]
+  A --> O["overlay.toast/notify/dialog/setBanner → refresh"]
+  CFG["init / config 変更"] --> SEED["displayRuntime.seed()<br/>edge 発火させず state 投入 (banner は表示可)"]
+  PRV["companion preview"] --> PR["previewVisibility.compute()<br/>別 instance = 発火しない"]
         </div>
       </section>
 
-      <section id="codex">
-        <h2>codex (GPT-5.5) レビュー反映 <span class="badge b-tradeoff">tradeoff</span></h2>
+      <section id="files">
+        <h2>変更ファイル</h2>
+        <table>
+          <tr><th>ファイル</th><th>変更</th></tr>
+          <tr><td class="file">src/visibility/keys.ts</td><td>DisplayUi/CondDisplay/ConditionTruth(Map)、VisibilityCond.display 追加</td></tr>
+          <tr><td class="file">src/visibility/conditions.ts</td><td>combineVisible/combineTruth 分離、truthMap 返却、display 指定で inline=false</td></tr>
+          <tr><td class="file">src/visibility/runtime.ts</td><td>createVisibilityRuntime() instance 化 (state/timer を分離、wake オプション)</td></tr>
+          <tr><td class="file">src/visibility/display.ts (新)</td><td>collectDisplayCandidates + createConditionDisplayRuntime (seed/observe/dismissBanner/reset)。edge/level/cooldown/unknown 温存</td></tr>
+          <tr><td class="file">src/config.ts</td><td>sanitizeCondDisplay + normalizeVisibility で display carry (空条件で除去、text trim/80)</td></tr>
+          <tr><td class="file">src/glass-overlay.ts</td><td>key() content-hash、toast 上限、dialog queue、onBannerDismiss コールバック</td></tr>
+          <tr><td class="file">src/glass.ts</td><td>glassVisibility + displayRuntime 生成、observe(store)/seed(init,config)、文言解決、applyDisplay、cleanup reset</td></tr>
+          <tr><td class="file">src/companion.ts</td><td>previewVisibility 別 instance、Present セレクタ(Persistent/4 UI)+カスタム文言、ハンドラ</td></tr>
+          <tr><td class="file">テスト</td><td>conditions.test(truthMap/排他) + display.test(新 14 件: edge/seed/cooldown/unknown/offline/banner 競合・dismiss)</td></tr>
+        </table>
         <div class="panel">
-          <ul>
-            <li><b>High</b>: threshold peer 不在を <code>'na'</code> でなく <code>false</code> に (fail-open 矛盾の回避)。採用。</li>
-            <li><b>Medium</b>: onChange 状態キーに対象 id を含める。採用。</li>
-            <li><b>Medium</b>: threshold 可否を self でなく group の percent で判定、保存済み対象は live 消失でも select に残す。採用。</li>
-            <li>self 選択時は <code>delete leaf.seg</code> で省略形へ戻し config churn を回避。採用。</li>
-          </ul>
+          検証: biome clean / tsc OK / build OK / knip clean / depcruise clean / test:unit 200 pass / test:e2e 29 pass。
         </div>
+      </section>
+
+      <section id="correctness">
+        <h2>正しさの要点 <span class="badge b-decided">decided</span></h2>
+        <ul>
+          <li><b>tri-state 発火</b>: inline は fail-open(na→出す) だが、通知は known-false→known-true のみ。<code>na</code>(位置不明/percent 欠落)では撃たない。</li>
+          <li><b>runtime instance 分離</b>: main.ts が実機で companion と glass を両 mount → singleton 共有だと preview が edge を消費。glass/preview で分離。</li>
+          <li><b>seed vs observe</b>: init/config 変更は seed(発火させない=起動ストーム/編集中誤発火を防ぐ)。発火は store 更新のみ。banner は level なので seed でも表示。</li>
+          <li><b>unknown 温存</b>: offline で source が statuses から消える→key 欠落→unknown。edgeState を温存し再接続で誤再発火しない。banner は一旦 clear し再接続 known-true で再表示。</li>
+          <li><b>cooldown</b>: per-key 30s。onChange leaf + display は構造上「変化ごと」なので必須。fires-per-observe と toast queue を上限化。</li>
+          <li><b>不変条件</b>: 発火は <code>computeVisible</code> の外 (glass shell)。companion preview は別 instance で発火しない。</li>
+          <li><b>overlay.key() を content-hash 化</b>: 旧実装は文字数比較で、同長別内容の banner/toast 値更新が再描画されなかった (codex 指摘) のを修正。</li>
+        </ul>
+      </section>
+
+      <section id="deferred">
+        <h2>v1 範囲外 (additive に拡張可) <span class="badge b-deviation">deferred</span></h2>
+        <ul>
+          <li>per-condition duration / dialog の action 束縛 (preset 切替等)。dialog は ack-only。</li>
+          <li>enqueue TTL・同一 key coalesce は cooldown(30s)+queue 上限で実用上カバー。必要なら追加。</li>
+          <li>condition banner と server 由来 banner は 1 スロット共有。条件 banner が占有中は毎 observe で再 set されるため server banner より優先される (none のときは server を温存)。</li>
+          <li>reload 跨ぎの edge 取りこぼしは許容 (seed-only)。</li>
+          <li><b>strict arm</b>: 起動/接続直後に既に条件が true でも発火しない (一度 false を観測してから true で発火)。
+            cold-start storm を避けるための意図的トレードオフ (codex の seed-only 設計)。レビュー指摘 C1 を storm 回避優先で strict 維持。
+            「既に true なら起動時に一度出す」が必要なら warmup 追跡を足す additive 拡張で対応可。</li>
+        </ul>
       </section>
 
       <section id="open">
         <h2>確認事項 <span class="badge b-open">open question</span></h2>
         <div class="panel">
           <ol>
-            <li><b>実機検証が必要</b>。companion preview(ブラウザ)は bridge 無しで g2 group が live 非存在のため、g2 の peer 編集 UI が出ない。確認は phone で行う。手順: <code>app.json</code> bump → <code>npm run pack</code> → Even Hub upload → 実機で eta の visibility に「When level ≤ 20%」を設定し、充電/放電で表示が切り替わるか確認。</li>
-            <li>scope は同一 group 内に限定 (cross-group 参照は未対応)。必要なら follow-up。</li>
+            <li><b>実機検証が必要</b>。companion preview(ブラウザ)は bridge 無しで overlay が出ない。確認は phone で行う。手順: <code>app.json</code> bump → <code>npm run pack</code> → Even Hub upload → 実機で eta 等の Present を Toast/Banner にし、条件成立で出るか確認。</li>
+            <li>banner/server banner の 1 スロット共有の挙動が実機で不自然なら、別スロット化を follow-up。</li>
           </ol>
         </div>
       </section>

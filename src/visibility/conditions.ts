@@ -7,6 +7,8 @@
 import { activeView, type Config } from '../config'
 import type { Segment, StatusDoc } from '../status-types'
 import {
+  type ConditionTruth,
+  type ConditionTruthMap,
   segKey,
   type VisibilityCond,
   type VisibilityLeaf,
@@ -30,12 +32,27 @@ function evalThreshold(
   return leaf.op === 'lte' ? seg.percent <= leaf.value : seg.percent >= leaf.value
 }
 
-// tri-state 列を結合する。'na' を除外し、残り 0 個は fail-open(true)。
-// それ以外は and=全 true / or=いずれか true。
-function combine(results: LeafResult[], combinator: 'and' | 'or'): boolean {
+// inline 表示用 (fail-open)。'na' を除外し、残り 0 個は fail-open(true)。and=全 / or=いずれか。
+// 「迷ったら出す」= 常時表示寄り。通知発火には使わない (combineTruth を使う)。
+function combineVisible(results: LeafResult[], combinator: 'and' | 'or'): boolean {
   const evaluable = results.filter((r): r is boolean => r !== 'na')
   if (evaluable.length === 0) return true
   return combinator === 'and' ? evaluable.every(Boolean) : evaluable.some(Boolean)
+}
+
+// 通知発火用 (strict tri-state)。'na'=unknown とし、確定のみで判定する。
+//   and: 1つでも false → false / それ以外 unknown あり → unknown / 全 true → true (false 優先)
+//   or : 1つでも true  → true  / それ以外 unknown あり → unknown / 全 false → false (true 優先)
+// 条件 0 個は unknown (条件が無ければ発火対象でない)。fail-open しない。
+function combineTruth(results: LeafResult[], combinator: 'and' | 'or'): ConditionTruth {
+  if (results.length === 0) return 'unknown'
+  const hasUnknown = results.some((r) => r === 'na')
+  if (combinator === 'and') {
+    if (results.some((r) => r === false)) return false
+    return hasUnknown ? 'unknown' : true
+  }
+  if (results.some((r) => r === true)) return true
+  return hasUnknown ? 'unknown' : false
 }
 
 // 全 segment の可視マップを算出する (pure・状態受け渡し)。prev (onChange leaf の前回値/活性期限) を読み、
@@ -44,15 +61,17 @@ function combine(results: LeafResult[], combinator: 'and' | 'or'): boolean {
 //   threshold leaf: seg.percent を op 比較 (percent 無し=na)
 //   onChange leaf : seg.value が prev と変われば activeUntil=now+holdMs。初回観測 (prev 無し) は
 //                   activeUntil=0 (非表示、フラッシュ防止)。leaf 結果 = now < activeUntil。
-//   結合: combine(leaf 結果列, combinator)
+//   結合: inline=combineVisible(fail-open) / 発火=combineTruth(strict tri-state)
+//   display 指定 segment は inline を出さない (map に false) = 排他。truthMap で発火判定する。
 export function computeVisibleMap(
   config: Config,
   statuses: Record<string, StatusDoc | null>,
   prev: VisStates,
   now: number,
   insidePlaceIds: Set<string> | null = null, // #43 現在ジオフェンス圏内の地点 id 集合。null=位置不明(na)
-): { map: VisibleMap; states: VisStates; wakeAt: number | null } {
+): { map: VisibleMap; truthMap: ConditionTruthMap; states: VisStates; wakeAt: number | null } {
   const map: VisibleMap = new Map()
+  const truthMap: ConditionTruthMap = new Map() // 条件付き segment の strict 評価 (発火判定用)
   const states: VisStates = new Map() // onChange leaf のみ。毎回再構築 → stale キーは自然消滅
   let wakeAt: number | null = null
   const view = activeView(config)
@@ -97,10 +116,12 @@ export function computeVisibleMap(
         if (activeUntil > now) wakeAt = wakeAt == null ? activeUntil : Math.min(wakeAt, activeUntil)
         return now < activeUntil
       })
-      map.set(key, combine(results, cond.combinator))
+      truthMap.set(key, combineTruth(results, cond.combinator)) // 発火判定 (strict)
+      // display 指定 = inline を出さず選んだ UI で提示 (排他)。それ以外は fail-open で inline 表示。
+      map.set(key, cond.display ? false : combineVisible(results, cond.combinator))
     }
   }
-  return { map, states, wakeAt }
+  return { map, truthMap, states, wakeAt }
 }
 
 // render 側ヘルパ。未指定 map / 未登録 key は全可視 (後方互換)。

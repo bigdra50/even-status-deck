@@ -12,10 +12,24 @@ export type VisibilityLeaf =
   | { kind: 'inPlace'; placeId: string; outside?: boolean }
   | { kind: 'present'; seg: string; absent?: boolean }
 
+// 提示先 UI。条件成立時に inline 常時表示でなく、選んだ overlay UI で出す (display 指定時)。
+//   toast/notification/dialog = edge(成立の瞬間に 1 回) / banner = level(成立中ずっと上行表示)
+export type DisplayUi = 'toast' | 'banner' | 'notification' | 'dialog'
+// text 省略 = glass が live status から自動合成 ("label value")。指定 = カスタム文言。
+export type CondDisplay = { ui: DisplayUi; text?: string }
+
 // 複合条件: leaf 列を単一 combinator(and/or) で結合。conditions 空 = 常時表示。
-export type VisibilityCond = { combinator: 'and' | 'or'; conditions: VisibilityLeaf[] }
+// display 指定時は inline を出さず (排他)、成立を選んだ UI で提示する。
+export type VisibilityCond = {
+  combinator: 'and' | 'or'
+  conditions: VisibilityLeaf[]
+  display?: CondDisplay
+}
 
 export type VisibleMap = Map<string, boolean> // key = "sourceId|groupId|segId"
+// 通知発火用の確定真偽。fail-open(inline 表示)とは別: na は unknown とし発火させない。
+export type ConditionTruth = boolean | 'unknown'
+export type ConditionTruthMap = Map<string, ConditionTruth> // 条件付き segment の strict 評価結果
 export type OnChangeState = { prevValue: string; activeUntil: number }
 export type VisStates = Map<string, OnChangeState> // key = `${segKey}#${leafIndex}`。onChange leaf のみ保持
 
