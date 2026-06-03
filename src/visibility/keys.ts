@@ -4,10 +4,13 @@
 
 // leaf = 条件の最小単位。threshold は seg.percent を比較、onChange は seg.value 変化で holdMs 表示。
 // inPlace(#43) は現在地が保存地点(placeId)のジオフェンス圏内か(outside=圏外か)で判定。位置不明は na。
+// threshold/onChange の seg? = 評価対象 (同 group 内の兄弟 segment id)。省略時は self (後方互換)。
+// present は同 group 内の別 segment が値を持つか(absent=空か)。peer 専用 (self 存在は自明)。
 export type VisibilityLeaf =
-  | { kind: 'threshold'; op: 'lte' | 'gte'; value: number }
-  | { kind: 'onChange'; holdMs: number }
+  | { kind: 'threshold'; op: 'lte' | 'gte'; value: number; seg?: string }
+  | { kind: 'onChange'; holdMs: number; seg?: string }
   | { kind: 'inPlace'; placeId: string; outside?: boolean }
+  | { kind: 'present'; seg: string; absent?: boolean }
 
 // 複合条件: leaf 列を単一 combinator(and/or) で結合。conditions 空 = 常時表示。
 export type VisibilityCond = { combinator: 'and' | 'or'; conditions: VisibilityLeaf[] }

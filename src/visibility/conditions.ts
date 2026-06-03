@@ -1,7 +1,9 @@
 // 表示タイミング条件の純粋コア。segment 単位で「条件を満たすときだけ表示」を判定する。
-// 条件は leaf(threshold/onChange) の AND/OR 複合。metric は常に self (その segment 自身)。
-// threshold は percent 比較、onChange は value 変化で holdMs だけ表示。transient(onChange) の状態は
-// 呼び出し側 (runtime shell) が保持し、ここは pure に受け渡す。config / status-types は型のみ参照。
+// 条件は leaf(threshold/onChange/present/inPlace) の AND/OR 複合。
+// threshold/onChange の対象は leaf.seg (同 group 内の兄弟 segment) を指定でき、省略時は self。
+// present は別 segment が値を持つか(absent=空か)。threshold は percent 比較、onChange は value 変化で
+// holdMs だけ表示。transient(onChange) の状態は呼び出し側 (runtime shell) が保持し、ここは pure に
+// 受け渡す。config / status-types は型のみ参照。
 import { activeView, type Config } from '../config'
 import type { Segment, StatusDoc } from '../status-types'
 import {
@@ -66,15 +68,28 @@ export function computeVisibleMap(
       if (!seg) continue
       const key = segKey(ref.sourceId, ref.groupId, sm.id)
       const results: LeafResult[] = cond.conditions.map((leaf, i) => {
-        if (leaf.kind === 'threshold') return evalThreshold(leaf, seg)
         if (leaf.kind === 'inPlace') {
           if (insidePlaceIds === null) return 'na' // 位置不明 → 中立(fail-open)
           const inside = insidePlaceIds.has(leaf.placeId)
           return leaf.outside ? !inside : inside
         }
-        // onChange: leaf 単位で transient 状態を保持
-        const lkey = `${key}#${i}`
-        const cur = seg.value
+        if (leaf.kind === 'present') {
+          // 同 group 内の対象 segment が live で値を持つか。不在検出が目的なので常に bool(na にしない)。
+          const t = group.segments.find((s) => s.id === leaf.seg)
+          const has = !!t && t.value.trim() !== ''
+          return leaf.absent ? !has : has
+        }
+        // threshold / onChange: 対象 = peer(leaf.seg 指定時) or self。明示 peer の不在は false
+        // (na にすると単独条件で fail-open し「B が満たしたら A」と矛盾する)。
+        const target = leaf.seg ? group.segments.find((s) => s.id === leaf.seg) : seg
+        if (leaf.kind === 'threshold') {
+          if (!target) return false
+          return evalThreshold(leaf, target) // percent 欠落は 'na'(self/peer 共通)
+        }
+        // onChange: 対象不在は変化観測不能 → false。状態キーに対象 id を含め、対象切替直後の誤発火を防ぐ。
+        if (!target) return false
+        const lkey = `${key}#${i}:${leaf.seg ?? seg.id}`
+        const cur = target.value
         const before = prev.get(lkey)
         let activeUntil = before?.activeUntil ?? 0
         if (before && before.prevValue !== cur) activeUntil = now + leaf.holdMs

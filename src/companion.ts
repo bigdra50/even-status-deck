@@ -278,37 +278,105 @@ function leafInPlaceParams(a: string, leaf: Extract<VisibilityLeaf, { kind: 'inP
     </select>`
 }
 
-// 1 leaf 行 (kind select + params + 削除ボタン)。threshold は percent を持つ segment のみ候補。
-// 既存 threshold leaf は percent が無くても候補に残す (data 移行後の編集を壊さない)。inPlace(#43) は保存地点がある時。
-function leafRow(seg2: string, leaf: VisibilityLeaf, i: number, hasPct: boolean): string {
+// 表示条件の対象 segment 候補 (同 group 内)。label は表示用、hasPct は live で percent を持つか
+// (threshold 候補の判定に使う)。母集合は素材 (meta.segments)、percent は live status から補う。
+type SegChoice = { id: string; label: string; hasPct: boolean }
+function segChoicesFor(ref: GroupRef): SegChoice[] {
+  const metaSegs = config.groups[ref.sourceId]?.[ref.groupId]?.segments ?? []
+  const liveG = statusGroup(ref.sourceId, ref.groupId)
+  const isB = ref.sourceId === BUILTIN_SOURCE_ID
+  return metaSegs.map((s) => {
+    const live = liveG?.segments.find((x) => x.id === s.id)
+    const label = isB ? (BUILTIN_SEG_LABELS[s.id] ?? s.id) : live?.label || s.id
+    return { id: s.id, label, hasPct: typeof live?.percent === 'number' }
+  })
+}
+
+// 対象 segment select。選択中 id が候補に無くても (live 消失等) option を補い選択を保持する。
+// selfId 指定時はその option に "(this)" を付す (self を選ぶと保存側は seg を省略する)。
+function targetSelect(a: string, choices: SegChoice[], selected: string, selfId?: string): string {
+  const list = choices.some((c) => c.id === selected)
+    ? choices
+    : [...choices, { id: selected, label: selected || '?', hasPct: false }]
+  const opts = list
+    .map(
+      (c) =>
+        `<option value="${esc(c.id)}" ${c.id === selected ? 'selected' : ''}>${esc(c.label)}${selfId && c.id === selfId ? ' (this)' : ''}</option>`,
+    )
+    .join('')
+  return `<select class="vis-select" data-action="seg-vis-leaf-seg" ${a}>${opts}</select>`
+}
+
+// leaf の params (kind 別)。threshold/onChange は対象 (self/兄弟) を選べる。present は兄弟必須。
+function leafParams(
+  a: string,
+  leaf: VisibilityLeaf,
+  choices: SegChoice[],
+  sibs: SegChoice[],
+  selfId: string,
+): string {
+  if (leaf.kind === 'inPlace') return leafInPlaceParams(a, leaf)
+  if (leaf.kind === 'present') {
+    const opts = sibs.length ? sibs : choices.filter((c) => c.id === leaf.seg)
+    return `${targetSelect(a, opts, leaf.seg)}
+      <select class="vis-select" data-action="seg-vis-leaf-absent" ${a}>
+        <option value="present" ${leaf.absent ? '' : 'selected'}>has value</option>
+        <option value="absent" ${leaf.absent ? 'selected' : ''}>is empty</option>
+      </select>`
+  }
+  if (leaf.kind === 'threshold') {
+    // 対象候補は percent を持つ segment (self/兄弟)。保存済み対象は targetSelect が補完する。
+    const pctChoices = choices.filter((c) => c.hasPct)
+    const tsel =
+      pctChoices.length >= 2 || leaf.seg
+        ? targetSelect(a, pctChoices, leaf.seg ?? selfId, selfId)
+        : ''
+    return `${tsel}<select class="vis-select" data-action="seg-vis-leaf-op" ${a}>
+        <option value="gte" ${leaf.op === 'gte' ? 'selected' : ''}>≥</option>
+        <option value="lte" ${leaf.op === 'lte' ? 'selected' : ''}>≤</option>
+      </select>
+      <input class="vis-num" type="number" min="0" max="100" data-action="seg-vis-leaf-value" ${a} value="${leaf.value}" />%`
+  }
+  // onChange: 兄弟があれば対象 select を出す (省略=self)。
+  const tsel = choices.length >= 2 ? targetSelect(a, choices, leaf.seg ?? selfId, selfId) : ''
+  return `${tsel}<input class="vis-num" type="number" min="1" max="60" data-action="seg-vis-leaf-hold" ${a} value="${Math.round(leaf.holdMs / 1000)}" />s`
+}
+
+// 1 leaf 行 (kind select + 対象/params + 削除ボタン)。threshold は同 group に percent を持つ segment が
+// ある時のみ候補。present は対象に別 segment が要るので兄弟がある時のみ。既存 leaf は条件を満たさなくても
+// 自分の kind を候補に残す (data 移行後の編集を壊さない)。inPlace(#43) は保存地点がある時。
+function leafRow(
+  seg2: string,
+  leaf: VisibilityLeaf,
+  i: number,
+  choices: SegChoice[],
+  selfId: string,
+  groupHasPct: boolean,
+): string {
   const a = `${seg2} data-idx="${i}"`
-  const allowThreshold = hasPct || leaf.kind === 'threshold'
+  const sibs = choices.filter((c) => c.id !== selfId)
+  const allowThreshold = groupHasPct || leaf.kind === 'threshold'
   const allowInPlace = (config.places?.length ?? 0) > 0 || leaf.kind === 'inPlace'
+  const allowPresent = sibs.length > 0 || leaf.kind === 'present'
   const kindSel = `<select class="vis-select" data-action="seg-vis-leaf-kind" ${a}>
     ${allowThreshold ? `<option value="threshold" ${leaf.kind === 'threshold' ? 'selected' : ''}>When…</option>` : ''}
     <option value="onChange" ${leaf.kind === 'onChange' ? 'selected' : ''}>On update</option>
+    ${allowPresent ? `<option value="present" ${leaf.kind === 'present' ? 'selected' : ''}>Has value</option>` : ''}
     ${allowInPlace ? `<option value="inPlace" ${leaf.kind === 'inPlace' ? 'selected' : ''}>At place</option>` : ''}
   </select>`
-  const params =
-    leaf.kind === 'threshold'
-      ? `<select class="vis-select" data-action="seg-vis-leaf-op" ${a}>
-          <option value="gte" ${leaf.op === 'gte' ? 'selected' : ''}>≥</option>
-          <option value="lte" ${leaf.op === 'lte' ? 'selected' : ''}>≤</option>
-        </select>
-        <input class="vis-num" type="number" min="0" max="100" data-action="seg-vis-leaf-value" ${a} value="${leaf.value}" />%`
-      : leaf.kind === 'inPlace'
-        ? leafInPlaceParams(a, leaf)
-        : `<input class="vis-num" type="number" min="1" max="60" data-action="seg-vis-leaf-hold" ${a} value="${Math.round(leaf.holdMs / 1000)}" />s`
+  const params = leafParams(a, leaf, choices, sibs, selfId)
   const del = `<button class="vis-del" data-action="seg-vis-remove" ${a} title="Remove" aria-label="Remove">${icon('x', { size: 14 })}</button>`
   return `<div class="vis-cond-row">${kindSel}${params}${del}</div>`
 }
 
-// segment 単位の表示タイミング条件エディタ (metric 行のサブ行)。metric は self (その segment 自身)。
+// segment 単位の表示タイミング条件エディタ (metric 行のサブ行)。対象は self または同 group 内の兄弟。
 // 条件は素材 (SegMeta.visibility。profile 非依存) を読み書きする。
 // leaf を AND/OR で複合。conditions 空 = 常時表示。2 件以上で combinator(All of/Any of) を出す。
-function segVisEditor(key: string, sm: SegMeta, seg: Segment): string {
+function segVisEditor(key: string, sm: SegMeta): string {
   const seg2 = `data-key="${key}" data-seg="${esc(sm.id)}"`
-  const hasPct = typeof seg.percent === 'number'
+  const ref = parseKey(key)
+  const choices = segChoicesFor(ref)
+  const groupHasPct = choices.some((c) => c.hasPct)
   const conditions = sm.visibility?.conditions ?? []
   const combinator = sm.visibility?.combinator ?? 'and'
   const head =
@@ -318,7 +386,7 @@ function segVisEditor(key: string, sm: SegMeta, seg: Segment): string {
           <option value="or" ${combinator === 'or' ? 'selected' : ''}>Any of</option>
         </select>`
       : `<span class="vis-always">${conditions.length === 0 ? 'always' : 'when'}</span>`
-  const rows = conditions.map((l, i) => leafRow(seg2, l, i, hasPct)).join('')
+  const rows = conditions.map((l, i) => leafRow(seg2, l, i, choices, sm.id, groupHasPct)).join('')
   const add =
     conditions.length < MAX_CONDS
       ? `<button class="vis-add" data-action="seg-vis-add" ${seg2}>${icon('plus', { size: 13 })} Add condition</button>`
@@ -412,7 +480,7 @@ function groupRow(ref: GroupRef): string {
               <span class="mval">${esc(seg.value)}</span>
               <button class="tg sm ${enabled ? 'on' : ''}" data-action="toggle-seg" data-key="${key}" data-seg="${esc(sm.id)}"></button></div>
             ${segOpts}
-            ${segVisEditor(key, sm, seg)}</div>`
+            ${segVisEditor(key, sm)}</div>`
         })
         .join('')}</div>`
     : ''
@@ -1838,6 +1906,29 @@ function applyOptionChange(ds: DOMStringMap, rawValue: unknown): void {
   render()
 }
 
+// kind 切替時の新 leaf 既定値。present は兄弟必須なので最初の兄弟を対象にする。
+// threshold は host が percent を持たない場合、同 group の percent を持つ兄弟を既定対象にする
+// (self だと percent 欠落で常に na になり機能しないため)。
+function newLeafOfKind(kind: string, ref: GroupRef, hostId: string): VisibilityLeaf {
+  if (kind === 'inPlace') return { kind: 'inPlace', placeId: config.places?.[0]?.id ?? '' }
+  if (kind === 'present') {
+    const sib = (config.groups[ref.sourceId]?.[ref.groupId]?.segments ?? [])
+      .map((s) => s.id)
+      .find((id) => id !== hostId)
+    return { kind: 'present', seg: sib ?? '' }
+  }
+  if (kind === 'threshold') {
+    const choices = segChoicesFor(ref)
+    const leaf: VisibilityLeaf = { kind: 'threshold', op: 'gte', value: 80 }
+    if (!choices.find((c) => c.id === hostId)?.hasPct) {
+      const tgt = choices.find((c) => c.hasPct && c.id !== hostId)?.id
+      if (tgt) leaf.seg = tgt
+    }
+    return leaf
+  }
+  return { kind: 'onChange', holdMs: 5000 }
+}
+
 function onSegVisChange(e: Event): void {
   const t = e.target as HTMLInputElement | HTMLSelectElement
   const action = t.dataset.action
@@ -1857,12 +1948,7 @@ function onSegVisChange(e: Event): void {
     if (!leaf) return
     switch (action) {
       case 'seg-vis-leaf-kind':
-        vis.conditions[idx] =
-          val === 'threshold'
-            ? { kind: 'threshold', op: 'gte', value: 80 }
-            : val === 'inPlace'
-              ? { kind: 'inPlace', placeId: config.places?.[0]?.id ?? '' }
-              : { kind: 'onChange', holdMs: 5000 }
+        vis.conditions[idx] = newLeafOfKind(val, ref, segId)
         break
       case 'seg-vis-leaf-op':
         if (leaf.kind === 'threshold') leaf.op = val === 'lte' ? 'lte' : 'gte'
@@ -1872,6 +1958,17 @@ function onSegVisChange(e: Event): void {
         break
       case 'seg-vis-leaf-hold':
         if (leaf.kind === 'onChange') leaf.holdMs = clamp(Number(val), 1, 60) * 1000
+        break
+      case 'seg-vis-leaf-seg':
+        // 対象 segment を切替。self を選んだら省略形に戻す (後方互換・config churn 回避)。
+        if (leaf.kind === 'present') leaf.seg = val
+        else if (leaf.kind === 'threshold' || leaf.kind === 'onChange') {
+          if (val === segId) delete leaf.seg
+          else leaf.seg = val
+        }
+        break
+      case 'seg-vis-leaf-absent':
+        if (leaf.kind === 'present') leaf.absent = val === 'absent'
         break
       case 'seg-vis-leaf-place':
         if (leaf.kind === 'inPlace') leaf.placeId = val

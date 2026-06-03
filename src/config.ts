@@ -1103,14 +1103,23 @@ function sanitizeLeaf(x: unknown): VisibilityLeaf | null {
   if (!x || typeof x !== 'object') return null
   const o = x as Record<string, unknown>
   if (o.kind === 'threshold' && (o.op === 'lte' || o.op === 'gte') && typeof o.value === 'number') {
-    return { kind: 'threshold', op: o.op, value: o.value }
+    const leaf: VisibilityLeaf = { kind: 'threshold', op: o.op, value: o.value }
+    if (typeof o.seg === 'string' && o.seg !== '') leaf.seg = o.seg // 対象 = 同 group 内の兄弟。空=self
+    return leaf
   }
   if (o.kind === 'onChange' && typeof o.holdMs === 'number') {
-    return { kind: 'onChange', holdMs: o.holdMs }
+    const leaf: VisibilityLeaf = { kind: 'onChange', holdMs: o.holdMs }
+    if (typeof o.seg === 'string' && o.seg !== '') leaf.seg = o.seg
+    return leaf
   }
   if (o.kind === 'inPlace' && typeof o.placeId === 'string' && o.placeId !== '') {
     const leaf: VisibilityLeaf = { kind: 'inPlace', placeId: o.placeId }
     if (o.outside === true) leaf.outside = true
+    return leaf
+  }
+  if (o.kind === 'present' && typeof o.seg === 'string' && o.seg !== '') {
+    const leaf: VisibilityLeaf = { kind: 'present', seg: o.seg }
+    if (o.absent === true) leaf.absent = true
     return leaf
   }
   return null
