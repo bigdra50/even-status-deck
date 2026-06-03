@@ -55,6 +55,7 @@ const DISPLAY_W = GLASS_WIDTH
 const DISPLAY_H = GLASS_HEIGHT
 const CONTAINER_ID = 1
 const CONTAINER_NAME = 'toolbar'
+const DEFAULT_DISPLAY_MS = 5000 // 条件提示 (toast/notification) の既定 自動非表示 ms (companion の既定秒数と一致)
 
 let gbridge: EvenAppBridge | null = null
 const data: GlassData = {
@@ -75,8 +76,7 @@ let lastContent: string | null = null // 直近送信した content (single topo
 let lastTopo: string | null = null // 直近のコンテナ構成キー。変わると rebuildPageContainer する
 let glassClock: ReturnType<typeof setTimeout> | null = null // 分境界の時刻更新 (store.notify を介さない)
 let overlayTimer: ReturnType<typeof setTimeout> | null = null // toast の自動消去タイマー
-// banner tap dismiss → 条件 banner を known-false まで抑止する。
-const overlay = createOverlayManager({ onBannerDismiss: () => displayRuntime.dismissBanner() })
+const overlay = createOverlayManager() // notification / toast / dialog / banner (server イベント用も含む)
 // glass 専用の visibility runtime (companion preview と state を共有しない = edge 取りこぼし防止)。
 const glassVisibility: VisibilityRuntime = createVisibilityRuntime({ wake: true })
 // 条件成立 → overlay UI 提示 (edge/level)。glass のみ。
@@ -209,7 +209,7 @@ function scheduleOverlayWake(): void {
 // 外部トリガ: window 'toolbar:overlay' イベントで overlay を出す (通知ソースが決まったら繋ぐ)。
 // detail.kind で notification(既定) / toast / dialog / banner を振り分ける。
 type OverlayEvent =
-  | ({ kind?: 'notification' } & Notif)
+  | ({ kind?: 'notification'; durationMs?: number } & Notif)
   | { kind: 'toast'; text: string; durationMs?: number }
   | {
       kind: 'dialog'
@@ -236,7 +236,7 @@ function onOverlayEvent(e: Event): void {
         : undefined
     overlay.dialog(d.title, d.message, actions, { onResult })
   } else if (d.kind === 'banner') overlay.setBanner(d.text)
-  else overlay.notify(d)
+  else overlay.notify(d, { durationMs: d.durationMs }) // durationMs 指定の host 通知は自動消去 (未指定=手動)
   refresh()
 }
 
@@ -433,18 +433,17 @@ function sourceLabelOf(sourceId: string, groupId: string): string {
 function applyDisplay(dr: DisplayResult): void {
   for (const f of dr.fires) {
     const { label, value, text } = resolveDisplayText(f)
-    if (f.ui === 'toast') overlay.toast(text)
-    else if (f.ui === 'notification') {
-      overlay.notify({
-        app: sourceLabelOf(f.sourceId, f.groupId),
-        sender: label,
-        body: f.text ?? value,
-      })
-    } else overlay.dialog(label, f.text ?? value, ['OK']) // dialog は ack-only (onResult なし)
+    // 既定 5s。toast/notification とも自動消去させる (durationMs 未設定の config でも notification が
+    // 手動のまま残らないように。companion の既定秒数表示とも一致)。
+    const durationMs = f.durationMs ?? DEFAULT_DISPLAY_MS
+    if (f.ui === 'toast') overlay.toast(text, { durationMs })
+    else {
+      overlay.notify(
+        { app: sourceLabelOf(f.sourceId, f.groupId), sender: label, body: f.text ?? value },
+        { durationMs },
+      )
+    }
   }
-  if (dr.banner.kind === 'set') overlay.setBanner(resolveDisplayText(dr.banner).text)
-  else if (dr.banner.kind === 'clear') overlay.clearBanner()
-  // 'none' は banner スロットに触れない (server 由来 banner を温存)
 }
 
 function onStoreUpdate(): void {

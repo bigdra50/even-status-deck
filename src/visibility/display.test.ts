@@ -1,5 +1,5 @@
 // 条件成立 → overlay UI 提示ランタイム (display.ts) のテスト。
-// edge(toast/notification/dialog) と level(banner) の発火・seed・cooldown・unknown 温存・banner 競合/dismiss。
+// toast/notification の edge 発火・seed・cooldown・unknown 温存・durationMs 伝播・enabled。
 // 実行: bun test src/visibility/display.test.ts
 import { expect, test } from 'bun:test'
 import { activeView, BUILTIN_SOURCE_ID, type Config, emptyConfig } from '../config'
@@ -10,7 +10,7 @@ const B = BUILTIN_SOURCE_ID
 const GID = 'g'
 
 // display 指定 segment を持つ最小 config。条件内容は runtime が見ない (truthMap で truth を渡す) ので任意。
-function cfg(segs: { id: string; ui: DisplayUi; text?: string }[]): Config {
+function cfg(segs: { id: string; ui: DisplayUi; text?: string; durationMs?: number }[]): Config {
   const c = emptyConfig()
   c.groups[B] = {
     [GID]: {
@@ -19,7 +19,11 @@ function cfg(segs: { id: string; ui: DisplayUi; text?: string }[]): Config {
         visibility: {
           combinator: 'and' as const,
           conditions: [{ kind: 'present' as const, seg: 'x' }],
-          display: s.text ? { ui: s.ui, text: s.text } : { ui: s.ui },
+          display: {
+            ui: s.ui,
+            ...(s.text ? { text: s.text } : {}),
+            ...(s.durationMs ? { durationMs: s.durationMs } : {}),
+          },
         },
       })),
     },
@@ -48,9 +52,23 @@ test('edge: known-false → known-true で 1 回発火 (toast)', () => {
   expect(r.fires[0]?.segId).toBe('a')
 })
 
+test('edge: notification も同様に edge 発火する', () => {
+  const c = cfg([{ id: 'a', ui: 'notification' }])
+  const rt = createConditionDisplayRuntime()
+  rt.seed(c, tm({ a: false }))
+  const r = rt.observe(c, tm({ a: true }), 0)
+  expect(r.fires.length).toBe(1)
+  expect(r.fires[0]?.ui).toBe('notification')
+})
+
+test('durationMs は fire に伝播する', () => {
+  const c = cfg([{ id: 'a', ui: 'toast', durationMs: 8000 }])
+  const rt = createConditionDisplayRuntime()
+  rt.seed(c, tm({ a: false }))
+  expect(rt.observe(c, tm({ a: true }), 0).fires[0]?.durationMs).toBe(8000)
+})
+
 test('edge: 未観測(seed なし)で初回 true は発火しない = strict arm (storm 防止の意図的トレードオフ)', () => {
-  // 起動/接続直後に既に true だった条件は arm のみ。跨いだ瞬間でないので撃たない。
-  // (一度 false を観測してから true で発火する。cold-start storm を避けるための設計判断)
   const c = cfg([{ id: 'a', ui: 'toast' }])
   const rt = createConditionDisplayRuntime()
   expect(rt.observe(c, tm({ a: true }), 0).fires).toEqual([]) // seed 無し・初回 true → arm のみ
@@ -98,46 +116,6 @@ test('edge: offline(key 欠落)→再接続 true で誤再発火しない (前�
   rt.seed(c, tm({ a: true })) // 既に true
   expect(rt.observe(c, tm({}), 1000).fires).toEqual([]) // offline = key 欠落 = unknown
   expect(rt.observe(c, tm({ a: true }), 2000).fires).toEqual([]) // 再接続 true: 立ち上がりでない → 発火せず
-})
-
-test('edge: unknown(na fail-open相当) では発火しない', () => {
-  const c = cfg([{ id: 'a', ui: 'dialog' }])
-  const rt = createConditionDisplayRuntime()
-  rt.seed(c, tm({ a: 'unknown' }))
-  expect(rt.observe(c, tm({ a: 'unknown' }), 1000).fires).toEqual([])
-})
-
-test('banner: seed で known-true なら set、解消で clear', () => {
-  const c = cfg([{ id: 'a', ui: 'banner' }])
-  const rt = createConditionDisplayRuntime()
-  expect(rt.seed(c, tm({ a: true })).banner).toMatchObject({ kind: 'set', segId: 'a' })
-  expect(rt.observe(c, tm({ a: false }), 1000).banner).toEqual({ kind: 'clear' })
-})
-
-test('banner: 条件 banner が無ければ none (server banner を温存)', () => {
-  const c = cfg([{ id: 'a', ui: 'banner' }])
-  const rt = createConditionDisplayRuntime()
-  expect(rt.observe(c, tm({ a: false }), 0).banner).toEqual({ kind: 'none' })
-})
-
-test('banner: 競合は active view 順で先勝ち', () => {
-  const c = cfg([
-    { id: 'a', ui: 'banner' },
-    { id: 'b', ui: 'banner' },
-  ])
-  const rt = createConditionDisplayRuntime()
-  const r = rt.observe(c, tm({ a: true, b: true }), 0)
-  expect(r.banner).toMatchObject({ kind: 'set', segId: 'a' }) // meta 順先頭
-})
-
-test('banner: dismiss は known-false まで抑止し、false 後に再アーム', () => {
-  const c = cfg([{ id: 'a', ui: 'banner' }])
-  const rt = createConditionDisplayRuntime()
-  expect(rt.observe(c, tm({ a: true }), 0).banner).toMatchObject({ kind: 'set', segId: 'a' })
-  rt.dismissBanner() // tap で消した
-  expect(rt.observe(c, tm({ a: true }), 1000).banner).toEqual({ kind: 'clear' }) // 抑止中
-  expect(rt.observe(c, tm({ a: false }), 2000).banner).toEqual({ kind: 'none' }) // false → 再アーム(占有解放済)
-  expect(rt.observe(c, tm({ a: true }), 3000).banner).toMatchObject({ kind: 'set', segId: 'a' }) // 再表示
 })
 
 test('custom text は fire に載る', () => {

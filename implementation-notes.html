@@ -37,7 +37,8 @@
   <body>
     <header>
       <h1>実装ノート — 条件成立時に overlay UI で提示する</h1>
-      <div class="upd">最終更新: 2026-06-03 / status: 実装完了・実機未検証 / config version bump: なし(additive)</div>
+      <div class="upd">最終更新: 2026-06-04 / status: 実装完了・sim 描画確認済 / config version bump: なし(additive)
+        <br/>改訂: banner/dialog を条件提示から撤廃 → Present = Inline/Toast/Notification。両者 durationMs で自動非表示。</div>
     </header>
     <nav>
       <a href="#what">概要</a><a href="#decided">確定事項</a><a href="#model">モデル</a><a href="#flow">フロー</a>
@@ -58,8 +59,8 @@
         <h2>確定事項 <span class="badge b-decided">decided</span> (codex GPT-5.5)</h2>
         <table>
           <tr><th>論点</th><th>確定</th></tr>
-          <tr><td>kind</td><td>4 種すべて。dialog は ack-only (固定 OK・onResult なし・tap で閉じる)</td></tr>
-          <tr><td>banner 競合</td><td>active view 順で先勝ち (候補を毎回再計算)</td></tr>
+          <tr><td>kind</td><td>条件提示は toast / notification のみ (banner=使いにくい / dialog=選択肢自由度の課題 で撤廃)。両者とも edge・自動非表示。overlay の banner/dialog は server イベント用に存続。dialog は将来 選択肢カスタム付きで再導入余地</td></tr>
+          <tr><td>自動非表示</td><td>toast/notification とも durationMs で自動消去。companion に秒数フィールド (既定 5s)。notification は overlay に expiry を追加 (host 通知は durationMs 指定時のみ自動消去)</td></tr>
           <tr><td>排他性</td><td>display 指定 = inline を出さない (VisibleMap=false)。提示は 1 つに集約</td></tr>
           <tr><td>tri-state</td><td>computeVisibleMap が 1 パスで truthMap も返す。inline=combineVisible(fail-open) / 発火=combineTruth(AND false 優先・OR true 優先・他 unknown)</td></tr>
           <tr><td>runtime</td><td>createVisibilityRuntime() で instance 化。glass / companion preview を分離 (edge 取りこぼし防止)</td></tr>
@@ -70,13 +71,13 @@
       <section id="model">
         <h2>モデル <span class="badge b-decided">decided</span></h2>
         <pre>// keys.ts (additive, CONFIG_VERSION bump なし)
-type DisplayUi = 'toast' | 'banner' | 'notification' | 'dialog'
-type CondDisplay = { ui: DisplayUi; text?: string }   // text 省略=自動合成 "label value"
-type VisibilityCond = { combinator; conditions; display?: CondDisplay }  // display 省略=inline persistent
-type ConditionTruth = boolean | 'unknown'             // 発火用 strict tri-state</pre>
+type DisplayUi = 'toast' | 'notification'
+type CondDisplay = { ui: DisplayUi; text?: string; durationMs?: number } // text 省略=自動合成 / durationMs 省略=既定5s
+type VisibilityCond = { combinator; conditions; display?: CondDisplay }   // display 省略=inline persistent
+type ConditionTruth = boolean | 'unknown'              // 発火用 strict tri-state</pre>
         <div class="panel">
-          発火モデル: <b>edge</b>(toast/notification/dialog) = truth が known-false → known-true の瞬間に 1 回。
-          <b>level</b>(banner) = known-true の候補を view 順で先勝ち表示、解消で clear。
+          発火モデル: toast / notification とも <b>edge</b> = truth が known-false → known-true の瞬間に 1 回発火し、
+          overlay 側で durationMs 後に自動非表示。banner(level)/dialog は条件提示では使わない (overlay は server 用に存続)。
         </div>
       </section>
 

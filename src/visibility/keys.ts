@@ -13,10 +13,12 @@ export type VisibilityLeaf =
   | { kind: 'present'; seg: string; absent?: boolean }
 
 // 提示先 UI。条件成立時に inline 常時表示でなく、選んだ overlay UI で出す (display 指定時)。
-//   toast/notification/dialog = edge(成立の瞬間に 1 回) / banner = level(成立中ずっと上行表示)
-export type DisplayUi = 'toast' | 'banner' | 'notification' | 'dialog'
+// いずれも edge(成立の瞬間に 1 回・自動非表示) のみ。banner(level)/dialog(選択肢) は条件提示では使わない
+// (overlay 自体は server イベント用に残す)。dialog は将来 選択肢カスタム付きで追加する余地あり。
+export type DisplayUi = 'toast' | 'notification'
 // text 省略 = glass が live status から自動合成 ("label value")。指定 = カスタム文言。
-export type CondDisplay = { ui: DisplayUi; text?: string }
+// durationMs = 自動非表示までの ms (省略時は glass の既定)。toast/notification とも自動消去する。
+export type CondDisplay = { ui: DisplayUi; text?: string; durationMs?: number }
 
 // 複合条件: leaf 列を単一 combinator(and/or) で結合。conditions 空 = 常時表示。
 // display 指定時は inline を出さず (排他)、成立を選んだ UI で提示する。

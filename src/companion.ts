@@ -96,6 +96,7 @@ import { createVisibilityRuntime, type DisplayUi, segKey, type VisibilityLeaf } 
 
 // 1 segment が持てる条件 leaf の上限 (UI が破綻しない緩い上限)。
 const MAX_CONDS = 4
+const DEFAULT_DISPLAY_SECS = 5 // 提示 (toast/notification) の既定 自動非表示秒数
 
 // companion (スマホ WebView) の Home / Source 編集。複数ソースを横断して設定する。
 // source-detail: 新 IA のドリルダウン先 (その source の group/segment 設定。flat Items を置換)。
@@ -395,8 +396,10 @@ function segVisEditor(key: string, sm: SegMeta): string {
     conditions.length < MAX_CONDS
       ? `<button class="vis-add" data-action="seg-vis-add" ${seg2}>${icon('plus', { size: 13 })} Add condition</button>`
       : ''
-  // 提示先。条件があるときのみ。Inline=現状の常時表示 / それ以外は成立時に選んだ overlay UI で提示 (排他)。
+  // 提示先。条件があるときのみ。Inline=現状の常時表示 / Toast・Notification は成立時に提示し自動非表示 (排他)。
+  // toast/notification とも自動消去するので秒数フィールドを出す (既定 DEFAULT_DISPLAY_SECS)。
   const display = sm.visibility?.display
+  const secs = display?.durationMs ? Math.round(display.durationMs / 1000) : DEFAULT_DISPLAY_SECS
   const displayRow =
     conditions.length === 0
       ? ''
@@ -404,11 +407,14 @@ function segVisEditor(key: string, sm: SegMeta): string {
           <select class="vis-select" data-action="seg-vis-display-ui" ${seg2}>
             <option value="" ${!display ? 'selected' : ''}>Inline (persistent)</option>
             <option value="toast" ${display?.ui === 'toast' ? 'selected' : ''}>Toast</option>
-            <option value="banner" ${display?.ui === 'banner' ? 'selected' : ''}>Banner</option>
             <option value="notification" ${display?.ui === 'notification' ? 'selected' : ''}>Notification</option>
-            <option value="dialog" ${display?.ui === 'dialog' ? 'selected' : ''}>Dialog</option>
           </select>
-          ${display ? `<input class="vis-text" type="text" maxlength="80" placeholder="auto: label value" data-action="seg-vis-display-text" ${seg2} value="${esc(display.text ?? '')}" />` : ''}
+          ${
+            display
+              ? `<input class="vis-num" type="number" min="1" max="60" data-action="seg-vis-display-secs" ${seg2} value="${secs}" title="Auto-hide seconds" />s
+                 <input class="vis-text" type="text" maxlength="80" placeholder="auto: label value" data-action="seg-vis-display-text" ${seg2} value="${esc(display.text ?? '')}" />`
+              : ''
+          }
         </div>`
   return `<div class="vis-row" ${seg2}><span class="vis-label">Show</span>${head}</div>
     <div class="vis-conds">${rows}${add}</div>${displayRow}`
@@ -1962,8 +1968,8 @@ function onSegVisChange(e: Event): void {
   if (action === 'seg-vis-combinator') {
     vis.combinator = val === 'or' ? 'or' : 'and'
   } else if (action === 'seg-vis-display-ui') {
-    // 提示先: Inline(空) = display 削除 / それ以外 = ui 設定 (text は保持)。
-    const uis: ReadonlySet<string> = new Set(['toast', 'banner', 'notification', 'dialog'])
+    // 提示先: Inline(空) = display 削除 / それ以外 = ui 設定 (text/durationMs は保持)。
+    const uis: ReadonlySet<string> = new Set(['toast', 'notification'])
     if (uis.has(val)) vis.display = { ...vis.display, ui: val as DisplayUi }
     else delete vis.display
   } else if (action === 'seg-vis-display-text') {
@@ -1972,6 +1978,8 @@ function onSegVisChange(e: Event): void {
       if (text) vis.display.text = text
       else delete vis.display.text
     }
+  } else if (action === 'seg-vis-display-secs') {
+    if (vis.display) vis.display.durationMs = clamp(Number(val), 1, 60) * 1000
   } else {
     const idx = Number(t.dataset.idx)
     const leaf = vis.conditions[idx]

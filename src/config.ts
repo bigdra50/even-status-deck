@@ -1131,11 +1131,14 @@ function sanitizeLeaf(x: unknown): VisibilityLeaf | null {
   return null
 }
 
-const DISPLAY_UIS: ReadonlySet<string> = new Set(['toast', 'banner', 'notification', 'dialog'])
+const DISPLAY_UIS: ReadonlySet<string> = new Set(['toast', 'notification'])
 const MAX_DISPLAY_TEXT_LEN = 80
+const MIN_DISPLAY_MS = 1000
+const MAX_DISPLAY_MS = 60_000
 
 // 提示先 (display) を sanitize する。ui が既知でなければ undefined (= inline persistent に戻る)。
-// text は trim + 上限。空 text は省略 (glass の自動合成に委ねる)。
+// 旧 banner/dialog は許可リスト外なので落ち、inline に戻る。text は trim + 上限。
+// durationMs は 1..60s に clamp (自動非表示の秒数)。
 function sanitizeCondDisplay(x: unknown): CondDisplay | undefined {
   if (!x || typeof x !== 'object') return undefined
   const o = x as Record<string, unknown>
@@ -1144,6 +1147,9 @@ function sanitizeCondDisplay(x: unknown): CondDisplay | undefined {
   if (typeof o.text === 'string') {
     const t = o.text.trim().slice(0, MAX_DISPLAY_TEXT_LEN)
     if (t) out.text = t
+  }
+  if (typeof o.durationMs === 'number' && Number.isFinite(o.durationMs)) {
+    out.durationMs = Math.max(MIN_DISPLAY_MS, Math.min(Math.round(o.durationMs), MAX_DISPLAY_MS))
   }
   return out
 }

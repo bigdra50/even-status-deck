@@ -25,9 +25,12 @@ import { sanitizeGlyphs } from './glyphs'
 
 export type Notif = { app: string; sender: string; body: string }
 export type ToastOpts = { durationMs?: number }
+export type NotifOpts = { durationMs?: number } // durationMs 指定で自動消去 (省略=手動既読、server 通知向け)
 export type DialogOpts = { onResult?: (index: number) => void }
 
 type Toast = ToastOpts & { text: string; durationMs: number; expiresAt: number | null }
+// 内部保持の notif。durationMs があれば expiresAt を arm して自動消去する (条件発火の notification 向け)。
+type StoredNotif = Notif & { durationMs?: number; expiresAt: number | null }
 type Dialog = {
   title: string
   message: string
@@ -149,9 +152,8 @@ function toastContainers(baseLines: string[], t: Toast): TextContainerProperty[]
   return [base, row]
 }
 
-// onBannerDismiss: banner を tap で消したときに呼ぶ (条件 banner の dismiss-until-false 用)。
-export function createOverlayManager(opts: { onBannerDismiss?: () => void } = {}) {
-  let notifStack: Notif[] = []
+export function createOverlayManager() {
+  let notifStack: StoredNotif[] = []
   let notifIdx = 0
   let toasts: Toast[] = []
   let dialogs: Dialog[] = [] // dialog キュー (新規発火が表示中を上書きしないよう FIFO)
@@ -168,12 +170,14 @@ export function createOverlayManager(opts: { onBannerDismiss?: () => void } = {}
   return {
     // emit 由来テキストに絵文字が混じるため、状態へ入る本文を必ず 1 回 sanitize する
     // (グラスへ渡る前に tofu を除去・置換する。sanitizeGlyphs は冪等)。
-    notify(n: Notif): void {
+    notify(n: Notif, nopts: NotifOpts = {}): void {
       if (notifStack.length >= NOTIF_MAX) return
       notifStack.push({
         app: sanitizeGlyphs(n.app),
         sender: sanitizeGlyphs(n.sender),
         body: sanitizeGlyphs(n.body),
+        durationMs: nopts.durationMs, // 指定時のみ自動消去 (省略=手動既読)
+        expiresAt: null,
       })
     },
     toast(text: string, topts: ToastOpts = {}): void {
@@ -224,21 +228,47 @@ export function createOverlayManager(opts: { onBannerDismiss?: () => void } = {}
       return `banner${b}`
     },
 
-    // 次に tick が必要になる ms (toast の auto-dismiss 用)。無ければ Infinity。
+    // 次に tick が必要になる ms (toast / 自動消去 notification 用)。無ければ Infinity。
     nextWakeMs(now: number): number {
-      if (activeKind() !== 'toast') return Number.POSITIVE_INFINITY
-      const head = toasts[0]
-      if (!head) return Number.POSITIVE_INFINITY
-      return head.expiresAt == null ? 0 : Math.max(0, head.expiresAt - now)
+      const k = activeKind()
+      if (k === 'toast') {
+        const head = toasts[0]
+        if (!head) return Number.POSITIVE_INFINITY
+        return head.expiresAt == null ? 0 : Math.max(0, head.expiresAt - now)
+      }
+      if (k === 'notification') {
+        let min = Number.POSITIVE_INFINITY
+        for (const n of notifStack) {
+          if (n.durationMs == null) continue // 手動 notif は期限なし
+          const t = n.expiresAt == null ? 0 : Math.max(0, n.expiresAt - now)
+          if (t < min) min = t
+        }
+        return min
+      }
+      return Number.POSITIVE_INFINITY
     },
 
-    // toast の expiry を進める (表示開始で期限を設定し、満了でキューから外す)。
+    // toast / notification の expiry を進める (表示開始で期限を設定し、満了で除去)。
     tick(now: number): void {
-      if (activeKind() !== 'toast') return
-      const head = toasts[0]
-      if (!head) return
-      if (head.expiresAt == null) head.expiresAt = now + head.durationMs
-      else if (head.expiresAt <= now) toasts.shift()
+      const k = activeKind()
+      if (k === 'toast') {
+        const head = toasts[0]
+        if (!head) return
+        if (head.expiresAt == null) head.expiresAt = now + head.durationMs
+        else if (head.expiresAt <= now) toasts.shift()
+        return
+      }
+      if (k === 'notification') {
+        // durationMs を持つ notif のみ arm + 満了除去 (手動 notif は残す)。
+        for (const n of notifStack) {
+          if (n.durationMs != null && n.expiresAt == null) n.expiresAt = now + n.durationMs
+        }
+        // 選択中 notif を保持して filter 後も同じものを指す (前方が消えて別 notif にズレるのを防ぐ)。
+        const focused = notifStack[notifIdx]
+        notifStack = notifStack.filter((n) => n.expiresAt == null || n.expiresAt > now)
+        const ni = focused ? notifStack.indexOf(focused) : -1
+        notifIdx = ni >= 0 ? ni : Math.min(notifIdx, Math.max(0, notifStack.length - 1))
+      }
     },
 
     // overlay が scroll を消費したら true (false ならビュー巡回へ)。
@@ -271,8 +301,7 @@ export function createOverlayManager(opts: { onBannerDismiss?: () => void } = {}
       }
       // toast は入力非消費 (自動消去のみ。誤タップで消えない)。
       if (banner !== null) {
-        banner = null // banner は tap で消せる
-        opts.onBannerDismiss?.() // 条件 banner の dismiss-until-false 通知
+        banner = null // banner は tap で消せる (server 由来)
         return true
       }
       return false
