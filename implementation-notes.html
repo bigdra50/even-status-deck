@@ -3,155 +3,195 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>実装ノート — 条件成立時の overlay UI 提示</title>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+    <title>Glass 意図的マルチページ — 実装ノート</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'
+      mermaid.initialize({ startOnLoad: true, theme: 'dark' })
+    </script>
     <style>
-      :root {
-        --bg: #0f1115; --panel: #171a21; --border: #2a2f3a; --text: #e6e9ef;
-        --dim: #9aa3b2; --decided: #3fb950; --deviation: #d29922; --open: #58a6ff; --tradeoff: #bc8cff; --code: #1d2230;
-      }
-      * { box-sizing: border-box; }
-      body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      header { padding: 24px 32px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: rgba(15,17,21,.92); backdrop-filter: blur(6px); z-index: 5; }
-      h1 { margin: 0 0 4px; font-size: 20px; }
-      .upd { color: var(--dim); font-size: 13px; }
-      nav { padding: 8px 32px; border-bottom: 1px solid var(--border); font-size: 13px; }
-      nav a { color: var(--open); text-decoration: none; margin-right: 16px; }
-      main { padding: 24px 32px; max-width: 1000px; }
-      section { margin-bottom: 28px; }
-      h2 { font-size: 16px; border-left: 3px solid var(--open); padding-left: 10px; }
-      .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; margin-right: 6px; }
-      .b-decided { background: rgba(63,185,80,.15); color: var(--decided); border: 1px solid var(--decided); }
-      .b-deviation { background: rgba(210,153,34,.15); color: var(--deviation); border: 1px solid var(--deviation); }
-      .b-open { background: rgba(88,166,255,.15); color: var(--open); border: 1px solid var(--open); }
-      .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; margin: 12px 0; }
-      code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 13px; font-family: "SF Mono", Menlo, monospace; }
-      pre { background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 13px; }
-      table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; }
-      th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
-      th { background: #1b1f28; }
-      .file { color: var(--decided); font-family: "SF Mono", Menlo, monospace; font-size: 13px; }
-      .mermaid { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+      body { background: #0f0f12; color: #e6e6e6; }
+      .badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; font-weight: 600; }
+      .b-decided { background: #163a2b; color: #6ee7b7; }
+      .b-deviation { background: #3a2a10; color: #fcd34d; }
+      .b-tradeoff { background: #16263a; color: #93c5fd; }
+      .b-open { background: #2a2a2a; color: #b5b5b5; }
+      code { background: #1c1c22; padding: 1px 5px; border-radius: 4px; color: #fef991; }
+      details { border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 14px; margin: 8px 0; background: #15151a; }
+      summary { cursor: pointer; font-weight: 600; }
+      h2 { border-bottom: 1px solid #2a2a2a; padding-bottom: 6px; margin-top: 32px; }
+      a { color: #93c5fd; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border: 1px solid #2a2a2a; padding: 6px 10px; text-align: left; font-size: 14px; }
+      th { background: #1c1c22; }
     </style>
   </head>
-  <body>
-    <header>
-      <h1>実装ノート — 条件成立時に overlay UI で提示する</h1>
-      <div class="upd">最終更新: 2026-06-04 / status: 実装完了・sim 描画確認済 / config version bump: なし(additive)
-        <br/>改訂: banner/dialog を条件提示から撤廃 → Present = Inline/Toast/Notification。両者 durationMs で自動非表示。</div>
-    </header>
-    <nav>
-      <a href="#what">概要</a><a href="#decided">確定事項</a><a href="#model">モデル</a><a href="#flow">フロー</a>
-      <a href="#files">変更</a><a href="#correctness">正しさ</a><a href="#deferred">v1 範囲外</a><a href="#open">確認事項</a>
+  <body class="max-w-4xl mx-auto px-5 py-8 leading-relaxed">
+    <h1 class="text-2xl font-bold">Glass 意図的マルチページ (RuntimePage) — 実装ノート</h1>
+    <p class="text-sm text-gray-400">
+      最終更新: 2026-06-04 ／ ブランチ <code>feat/glass-multipage</code> ／ 仕様
+      <code>tasks/glass-multipage-spec.md</code>
+    </p>
+    <p class="mt-2">
+      <span class="badge b-decided">decided</span>
+      <span class="badge b-deviation">deviation</span>
+      <span class="badge b-tradeoff">tradeoff</span>
+      <span class="badge b-open">open question</span>
+    </p>
+
+    <nav class="mt-4 text-sm">
+      <strong>目次:</strong>
+      <a href="#overview">概要</a> ·
+      <a href="#arch">アーキテクチャ</a> ·
+      <a href="#decisions">設計判断</a> ·
+      <a href="#deviations">逸脱</a> ·
+      <a href="#tradeoffs">トレードオフ</a> ·
+      <a href="#open">未解決</a> ·
+      <a href="#files">変更ファイル</a> ·
+      <a href="#tests">テスト</a>
     </nav>
-    <main>
-      <section id="what">
-        <h2>概要</h2>
-        <div class="panel">
-          segment の visibility 条件成立時に、inline 常時表示の代わりに実装済み overlay UI
-          (toast / banner / notification / dialog) のいずれかを選んで提示できるようにした。
-          提示先は Persistent(既定=現状 inline) を含む単一選択。基盤(overlay 描画)は既存を再利用し、
-          新規は「条件 → いつ撃つか」の trigger 層。
-        </div>
-      </section>
 
-      <section id="decided">
-        <h2>確定事項 <span class="badge b-decided">decided</span> (codex GPT-5.5)</h2>
-        <table>
-          <tr><th>論点</th><th>確定</th></tr>
-          <tr><td>kind</td><td>条件提示は toast / notification のみ (banner=使いにくい / dialog=選択肢自由度の課題 で撤廃)。両者とも edge・自動非表示。overlay の banner/dialog は server イベント用に存続。dialog は将来 選択肢カスタム付きで再導入余地</td></tr>
-          <tr><td>自動非表示</td><td>toast/notification とも durationMs で自動消去。companion に秒数フィールド (既定 5s)。notification は overlay に expiry を追加 (host 通知は durationMs 指定時のみ自動消去)</td></tr>
-          <tr><td>排他性</td><td>display 指定 = inline を出さない (VisibleMap=false)。提示は 1 つに集約</td></tr>
-          <tr><td>tri-state</td><td>computeVisibleMap が 1 パスで truthMap も返す。inline=combineVisible(fail-open) / 発火=combineTruth(AND false 優先・OR true 優先・他 unknown)</td></tr>
-          <tr><td>runtime</td><td>createVisibilityRuntime() で instance 化。glass / companion preview を分離 (edge 取りこぼし防止)</td></tr>
-          <tr><td>throttle</td><td>edge cooldown 30s (toast/notif/dialog のみ) / fires-per-observe 4 / toast queue 上限 4</td></tr>
-        </table>
-      </section>
+    <h2 id="overview">概要</h2>
+    <p>
+      グラス (G2 576×288・全面 1 TextContainer・最大 10 行) のナビを
+      「自動生成デッキ (auto)」一本から、ユーザーが明示設計する
+      「意図的マルチページ (explicit デッキ)」へ一般化した。<code>view.pages: GlassPage[]</code>
+      を additive 追加し、scroll でページ巡回する。pages 未設定の profile は従来どおり
+      auto デッキ (summary + group detail) で完全後方互換。
+    </p>
 
-      <section id="model">
-        <h2>モデル <span class="badge b-decided">decided</span></h2>
-        <pre>// keys.ts (additive, CONFIG_VERSION bump なし)
-type DisplayUi = 'toast' | 'notification'
-type CondDisplay = { ui: DisplayUi; text?: string; durationMs?: number } // text 省略=自動合成 / durationMs 省略=既定5s
-type VisibilityCond = { combinator; conditions; display?: CondDisplay }   // display 省略=inline persistent
-type ConditionTruth = boolean | 'unknown'              // 発火用 strict tri-state</pre>
-        <div class="panel">
-          発火モデル: toast / notification とも <b>edge</b> = truth が known-false → known-true の瞬間に 1 回発火し、
-          overlay 側で durationMs 後に自動非表示。banner(level)/dialog は条件提示では使わない (overlay は server 用に存続)。
-        </div>
-      </section>
-
-      <section id="flow">
-        <h2>フロー</h2>
-        <div class="mermaid">
+    <h2 id="arch">アーキテクチャ</h2>
+    <div class="mermaid">
 flowchart TD
-  S["store 更新 (onStoreUpdate)"] --> C["glassVisibility.compute()<br/>map(inline) + truthMap(strict)"]
-  C --> V["visible=map → buildViews → refresh (inline)"]
-  C --> D["displayRuntime.observe(truthMap)<br/>edge 検出 + banner level"]
-  D --> A["applyDisplay: glass が文言解決し overlay へ"]
-  A --> O["overlay.toast/notify/dialog/setBanner → refresh"]
-  CFG["init / config 変更"] --> SEED["displayRuntime.seed()<br/>edge 発火させず state 投入 (banner は表示可)"]
-  PRV["companion preview"] --> PR["previewVisibility.compute()<br/>別 instance = 発火しない"]
-        </div>
-      </section>
+  store[store status] --> build["buildRuntimePages(d, visible)"]
+  cfg["activeView(config)"] --> build
+  build -->|"pages あり"| custom["custom デッキ: pages を空ページ skip"]
+  build -->|"pages なし"| auto["auto デッキ: autoSummary + 描画可能 group の autoDetail"]
+  custom --> deck["RuntimePage[]"]
+  auto --> deck
+  deck --> render["renderDeckPage(pages, idx, d)"]
+  render -->|"explicit かつ 複数"| ind["本文 9 行 + 最終行ドットバー"]
+  render -->|"auto / 単一"| full["本文 10 行 (インジケータ無し)"]
+  ind --> tc["単一 TextContainer content 差し替え (ちらつき無し)"]
+  full --> tc
+    </div>
+    <p class="text-sm text-gray-400">
+      ナビ: scroll↓/↑ = 次/前ページ (wrap) ／ tap = 先頭 ／ double-tap = 終了。
+      coalesce は既存 <code>refreshBusy/refreshPending</code> 直列化を流用 (追加実装なし)。
+    </p>
 
-      <section id="files">
-        <h2>変更ファイル</h2>
-        <table>
-          <tr><th>ファイル</th><th>変更</th></tr>
-          <tr><td class="file">src/visibility/keys.ts</td><td>DisplayUi/CondDisplay/ConditionTruth(Map)、VisibilityCond.display 追加</td></tr>
-          <tr><td class="file">src/visibility/conditions.ts</td><td>combineVisible/combineTruth 分離、truthMap 返却、display 指定で inline=false</td></tr>
-          <tr><td class="file">src/visibility/runtime.ts</td><td>createVisibilityRuntime() instance 化 (state/timer を分離、wake オプション)</td></tr>
-          <tr><td class="file">src/visibility/display.ts (新)</td><td>collectDisplayCandidates + createConditionDisplayRuntime (seed/observe/dismissBanner/reset)。edge/level/cooldown/unknown 温存</td></tr>
-          <tr><td class="file">src/config.ts</td><td>sanitizeCondDisplay + normalizeVisibility で display carry (空条件で除去、text trim/80)</td></tr>
-          <tr><td class="file">src/glass-overlay.ts</td><td>key() content-hash、toast 上限、dialog queue、onBannerDismiss コールバック</td></tr>
-          <tr><td class="file">src/glass.ts</td><td>glassVisibility + displayRuntime 生成、observe(store)/seed(init,config)、文言解決、applyDisplay、cleanup reset</td></tr>
-          <tr><td class="file">src/companion.ts</td><td>previewVisibility 別 instance、Present セレクタ(Persistent/4 UI)+カスタム文言、ハンドラ</td></tr>
-          <tr><td class="file">テスト</td><td>conditions.test(truthMap/排他) + display.test(新 14 件: edge/seed/cooldown/unknown/offline/banner 競合・dismiss)</td></tr>
-        </table>
-        <div class="panel">
-          検証: biome clean / tsc OK / build OK / knip clean / depcruise clean / test:unit 200 pass / test:e2e 29 pass。
-        </div>
-      </section>
+    <h2 id="decisions">設計判断 <span class="badge b-decided">decided</span></h2>
+    <details open>
+      <summary>グローバル <code>glassLayout</code> 参照を「対象ページの layout を引数で受ける」へリファクタ</summary>
+      <p>
+        <code>renderKeys</code> / <code>layoutRowClusters</code> / <code>layoutLines</code> が
+        <code>activeView().glassLayout</code> をグローバル参照していた。ページごとに
+        layout・customLabels が変わるため、<code>customLabels</code> / <code>lay</code> を引数化。
+        これによりページ A の customLabels がページ B に漏れない (unit で固定)。
+      </p>
+    </details>
+    <details>
+      <summary>companion は <code>editingLayout()</code> で「現在編集中ページ」を 1 点に集約</summary>
+      <p>
+        20 箇所超の <code>activeView(config).glassLayout</code> 参照を
+        <code>editingLayout() = activeView(config).pages?.[pageEditingIdx]?.layout</code>
+        に集約。auto デッキ (pages 未設定) は従来 UI、explicit デッキはページ tab + 選択ページ編集。
+      </p>
+    </details>
+    <details>
+      <summary>migration: <code>backfillPages</code> を全 glassLayout remap の「後」・<code>pruneOrphans</code> の「前」に配置</summary>
+      <p>
+        各 migrate 関数で <code>glassLayout</code> を remap するヘルパ群 (location merge / clock 統合 /
+        mac→system) の後に <code>backfillPages</code> を 1 回走らせ、remap 済みの値を
+        <code>pages[0]</code> へ投影する。<code>pages[0].layout</code> は
+        <code>cloneGlassLayout</code> による deep clone で <code>glassLayout</code> と参照を切る
+        (editor が両方を書き換える二重真実を防ぐ)。<code>glassLayout</code> は読込互換で残す
+        (spec §8)。<code>CONFIG_VERSION 4 → 5</code>。
+      </p>
+    </details>
+    <details>
+      <summary>id remap / clock 統合を全 profile + pages へ拡張 (codex レビューで発見)</summary>
+      <p>
+        <code>reKeySource</code> / <code>mergeSourceViewInto</code> は接続テスト (runtime) で走るため、
+        pages の segKey も remap しないと merge / id 安定化で配置が壊れる (e2e
+        <code>source-stability</code> が捕捉)。<code>consolidateClock</code> は active profile
+        のみ remap していたため非 active profile の pages に旧 time/date が残る問題を、全 profile
+        対象に修正。backfill 前のヘルパは壊れた pages (layout=null) に触れるため null ガードを追加。
+      </p>
+    </details>
 
-      <section id="correctness">
-        <h2>正しさの要点 <span class="badge b-decided">decided</span></h2>
-        <ul>
-          <li><b>tri-state 発火</b>: inline は fail-open(na→出す) だが、通知は known-false→known-true のみ。<code>na</code>(位置不明/percent 欠落)では撃たない。</li>
-          <li><b>runtime instance 分離</b>: main.ts が実機で companion と glass を両 mount → singleton 共有だと preview が edge を消費。glass/preview で分離。</li>
-          <li><b>seed vs observe</b>: init/config 変更は seed(発火させない=起動ストーム/編集中誤発火を防ぐ)。発火は store 更新のみ。banner は level なので seed でも表示。</li>
-          <li><b>unknown 温存</b>: offline で source が statuses から消える→key 欠落→unknown。edgeState を温存し再接続で誤再発火しない。banner は一旦 clear し再接続 known-true で再表示。</li>
-          <li><b>cooldown</b>: per-key 30s。onChange leaf + display は構造上「変化ごと」なので必須。fires-per-observe と toast queue を上限化。</li>
-          <li><b>不変条件</b>: 発火は <code>computeVisible</code> の外 (glass shell)。companion preview は別 instance で発火しない。</li>
-          <li><b>overlay.key() を content-hash 化</b>: 旧実装は文字数比較で、同長別内容の banner/toast 値更新が再描画されなかった (codex 指摘) のを修正。</li>
-        </ul>
-      </section>
+    <h2 id="deviations">逸脱 <span class="badge b-deviation">deviation</span></h2>
+    <details open>
+      <summary>ページインジケータ: auto デッキは非表示・explicit デッキのみ表示 (spec §6「一律」から逸脱)</summary>
+      <p>
+        spec §6 は「auto / explicit 一律でドットバー表示」と確定していたが、auto デッキでも
+        group が 1 つあれば summary + detail で 2 枚以上になり、既存 summary が黙って
+        10 → 9 行に減る回帰が出る。<strong>codex (gpt5.5) と議論し</strong>、
+        「既存 auto profile の表示互換を守る方が、auto のページ位置喪失より重要」と一致。
+        explicit デッキ (新機能) のみ 9 行 + ドット、auto と単一ページは 10 行フル。
+        ユーザー承認済み。将来 <code>view.indicator: auto|hidden|dots</code> の opt-in で一律化を選べる余地を残す。
+      </p>
+    </details>
 
-      <section id="deferred">
-        <h2>v1 範囲外 (additive に拡張可) <span class="badge b-deviation">deferred</span></h2>
-        <ul>
-          <li>per-condition duration / dialog の action 束縛 (preset 切替等)。dialog は ack-only。</li>
-          <li>enqueue TTL・同一 key coalesce は cooldown(30s)+queue 上限で実用上カバー。必要なら追加。</li>
-          <li>condition banner と server 由来 banner は 1 スロット共有。条件 banner が占有中は毎 observe で再 set されるため server banner より優先される (none のときは server を温存)。</li>
-          <li>reload 跨ぎの edge 取りこぼしは許容 (seed-only)。</li>
-          <li><b>strict arm</b>: 起動/接続直後に既に条件が true でも発火しない (一度 false を観測してから true で発火)。
-            cold-start storm を避けるための意図的トレードオフ (codex の seed-only 設計)。レビュー指摘 C1 を storm 回避優先で strict 維持。
-            「既に true なら起動時に一度出す」が必要なら warmup 追跡を足す additive 拡張で対応可。</li>
-        </ul>
-      </section>
+    <h2 id="tradeoffs">トレードオフ <span class="badge b-tradeoff">tradeoff</span></h2>
+    <details>
+      <summary>explicit デッキ・複数ページ時、10 行目の chip はインジケータに隠れる</summary>
+      <p>
+        インジケータ表示時は本文予算 9 行。ユーザーが 10 行目に置いた chip は出ない。
+        companion の編集画面に注意文 (「row 10 is hidden behind the page dots」) を表示して緩和。
+      </p>
+    </details>
+    <details>
+      <summary>pages 化で companion を pages 主体に寄せ、<code>glassLayout</code> は legacy 読込専用に</summary>
+      <p>
+        backfill 後は <code>resolvePages</code> 経由で render は pages を見る。<code>glassLayout</code>
+        は当面残すが書き込みは pages へ。次バージョンで削除可否を判断 (spec §8)。
+      </p>
+    </details>
 
-      <section id="open">
-        <h2>確認事項 <span class="badge b-open">open question</span></h2>
-        <div class="panel">
-          <ol>
-            <li><b>実機検証が必要</b>。companion preview(ブラウザ)は bridge 無しで overlay が出ない。確認は phone で行う。手順: <code>app.json</code> bump → <code>npm run pack</code> → Even Hub upload → 実機で eta 等の Present を Toast/Banner にし、条件成立で出るか確認。</li>
-            <li>banner/server banner の 1 スロット共有の挙動が実機で不自然なら、別スロット化を follow-up。</li>
-          </ol>
-        </div>
-      </section>
-    </main>
-    <script>
-      mermaid.initialize({ startOnLoad: true, theme: "dark" });
-    </script>
+    <h2 id="open">未解決・後追い <span class="badge b-open">open question</span></h2>
+    <table>
+      <tr><th>項目</th><th>現状</th><th>方針</th></tr>
+      <tr>
+        <td>tombstone (削除→同 machine 再追加) の pages 配置復元</td>
+        <td>pages 非対応 (glassLayout のみ復元)</td>
+        <td>削除→再追加で pages 配置は失われる。構造変更が大きくレアなので後追い。</td>
+      </tr>
+      <tr>
+        <td>「10 行目だけに chip があるページ」の空ページ判定</td>
+        <td><code>MAX_ROWS</code> で live 判定 (複数デッキでは本文 9 行)</td>
+        <td>複数時に本文空 + ドットのみになりうる。companion 警告で緩和。閾値変更は単一ページ副作用ありで保留。</td>
+      </tr>
+      <tr>
+        <td>auto デッキのインジケータ opt-in</td>
+        <td>非表示固定</td>
+        <td><code>view.indicator</code> 設定で将来選択可能に。</td>
+      </tr>
+      <tr>
+        <td>ドット <code>●</code>/<code>○</code> の実機描画</td>
+        <td>シミュレータ確認・実機未確認</td>
+        <td>tofu なら <code>indicatorLine</code> を <code>i/N</code> / <code>=</code>/<code>-</code> へ。&gt;8 ページは既に <code>i/N</code> fallback。</td>
+      </tr>
+    </table>
+
+    <h2 id="files">変更ファイル</h2>
+    <table>
+      <tr><th>ファイル</th><th>変更</th></tr>
+      <tr><td><code>src/config.ts</code></td><td>GlassPage 型 / pages / CONFIG_VERSION=5 / migrate v5 / backfillPages / resolvePages / cloneGlassLayout / clone・prune・removePlace・discardSource・reKeySource・mergeGlassRows・consolidateClock を pages 対応 / genPageId</td></tr>
+      <tr><td><code>src/glass-render.ts</code></td><td>RuntimePage / buildRuntimePages / renderRuntimePage / renderDeckPage / indicatorLine / renderKeys・layoutLines の引数化 / renderGlass・buildViews・GView 削除</td></tr>
+      <tr><td><code>src/glass.ts</code></td><td>views → RuntimePage[] / renderDeckPage 単一エントリ / cycle・nav・idx clamp</td></tr>
+      <tr><td><code>src/companion.ts</code></td><td>editingLayout() / pageEditingIdx / ページ tab・操作行 / page-* actions / onPageRename / auto↔custom 導線</td></tr>
+      <tr><td><code>src/icons.ts</code></td><td>chevron-left 追加</td></tr>
+      <tr><td><code>src/styles.css</code></td><td>page-tabs / page-ctl スタイル</td></tr>
+      <tr><td>テスト</td><td>新設 <code>src/glass-render.test.ts</code> / <code>src/config.test.ts</code> 追加 / <code>e2e/companion.spec.ts</code> 追加</td></tr>
+    </table>
+
+    <h2 id="tests">検証</h2>
+    <ul class="list-disc ml-6">
+      <li>CI gate: lint / lint:deps / knip / build すべて緑</li>
+      <li>unit: 全体 220 + マルチページ 17 件 (buildRuntimePages・renderDeckPage・indicator・migration・clone・prune) 緑 (location テストは外部 fetch の flaky timeout で稀に揺れる)</li>
+      <li>e2e: 30 件緑 (既存 29 非破壊 + ページ UI 1 件)。merge 後の pages remap 回帰を <code>source-stability</code> が確認</li>
+      <li>残: 実機確認 (ドット描画 / scroll 巡回 / インジケータ)。<code>app.json</code> bump → pack → Even Hub アップロード</li>
+    </ul>
   </body>
 </html>
