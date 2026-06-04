@@ -146,3 +146,27 @@ test.describe('scrollability', () => {
     await expect(page.locator('.gpv-screen')).toBeVisible()
   })
 })
+
+// 意図的マルチページ: Customize で explicit デッキ生成 → ページ tab + [+] → 追加で 2 枚。
+test('glass pages: customize creates page deck, add page appends a tab and saves', async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    ;(window as unknown as { __cfg: number }).__cfg = 0
+    window.addEventListener('toolbar:config-changed', () => {
+      ;(window as unknown as { __cfg: number }).__cfg++
+    })
+  })
+  const customize = page.locator('[data-action="layout-customize"]')
+  await customize.scrollIntoViewIfNeeded()
+  await customize.click()
+  // explicit デッキ: ページ tab 1 枚 + [+]
+  await expect(page.locator('.page-tab[data-action="page-select"]')).toHaveCount(1)
+  // ページ追加 → tab 2 枚
+  await page.locator('[data-action="page-add"]').click()
+  await expect(page.locator('.page-tab[data-action="page-select"]')).toHaveCount(2)
+  // 保存経路 (config-changed) が発火している
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __cfg: number }).__cfg))
+    .toBeGreaterThan(0)
+})

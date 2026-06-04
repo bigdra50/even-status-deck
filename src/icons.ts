@@ -4,6 +4,7 @@ import {
   ArrowUpToLine,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Copy,
   ExternalLink,
@@ -27,6 +28,7 @@ export type IconName =
   | 'settings'
   | 'grip'
   | 'chevron-down'
+  | 'chevron-left'
   | 'chevron-right'
   | 'align-top'
   | 'align-bottom'
@@ -49,6 +51,7 @@ const SVGS: Record<IconName, string> = {
   settings: Settings,
   grip: GripVertical,
   'chevron-down': ChevronDown,
+  'chevron-left': ChevronLeft,
   'chevron-right': ChevronRight,
   'align-top': ArrowUpToLine,
   'align-bottom': ArrowDownToLine,

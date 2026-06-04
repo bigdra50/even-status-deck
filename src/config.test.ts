@@ -9,6 +9,8 @@ import {
   addServer,
   BUILTIN_SOURCE_ID,
   DEFAULT_PLACE_RADIUS_M,
+  DEFAULT_PROFILE_ID,
+  duplicateActiveProfile,
   emptyConfig,
   LOCATION_PLACE_GROUP_ID,
   LOCATION_SOURCE_ID,
@@ -17,7 +19,9 @@ import {
   removePlace,
   removeSourceUrl,
   renamePlace,
+  resolvePages,
   type SourceDef,
+  setActiveProfile,
   setPlaceRadius,
   setProfileGeofence,
   setSourceUrls,
@@ -637,4 +641,109 @@ test('promoteSourceUrl: 主経路へ昇格 / 存在しない経路は no-op', ()
   const before = [...s.urls]
   promoteSourceUrl(s, 'nope')
   expect(s.urls).toEqual(before)
+})
+
+// ── マルチページ (pages) 移行 (CONFIG_VERSION 4→5) ──
+
+test('migrate v4→v5: glassLayout を pages[0] へ投影 (別オブジェクト)', () => {
+  const v4 = emptyConfig()
+  ;(v4 as { version: number }).version = 4
+  const key = `${BUILTIN_SOURCE_ID}|g2|level`
+  const rows = Array.from({ length: 10 }, () => [] as string[])
+  rows[0] = [key]
+  activeProfile(v4).view.glassLayout = { rows, customLabels: {} }
+  const cfg = migrate(v4 as unknown as Record<string, unknown>)
+  expect(cfg.version).toBe(5)
+  const v = activeProfile(cfg).view
+  expect(v.pages?.length).toBe(1)
+  expect(v.pages?.[0]?.id).toBe('page-1')
+  expect(v.pages?.[0]?.layout.rows[0]).toEqual([key])
+  // 別オブジェクト: glassLayout を壊しても pages は無傷
+  const lay = v.glassLayout
+  if (lay) lay.rows[0] = []
+  expect(v.pages?.[0]?.layout.rows[0]).toEqual([key])
+})
+
+test('migrate v5: pages の id/name 補完・壊れ layout 除去・冪等', () => {
+  const cfg = emptyConfig()
+  const key = `${BUILTIN_SOURCE_ID}|g2|level`
+  const okRows = Array.from({ length: 10 }, () => [] as string[])
+  okRows[0] = [key]
+  ;(activeProfile(cfg).view as { pages: unknown }).pages = [
+    { layout: { rows: okRows, customLabels: {} } }, // id/name 欠落 → 補完
+    { id: 'p2', name: 'P2', layout: null }, // 壊れた layout → 除去
+  ]
+  const migrated = migrate(cfg as unknown as Record<string, unknown>)
+  const pages = activeProfile(migrated).view.pages
+  expect(pages?.length).toBe(1)
+  expect(pages?.[0]?.id).toBe('page-1')
+  expect(pages?.[0]?.name).toBe('Page 1')
+  // 冪等: もう一度 migrate しても増減しない
+  const again = migrate(migrated as unknown as Record<string, unknown>)
+  expect(activeProfile(again).view.pages?.length).toBe(1)
+})
+
+test('resolvePages: pages 優先 / glassLayout 1 枚 / 両方無しは空', () => {
+  const rows = Array.from({ length: 10 }, () => [] as string[])
+  expect(resolvePages({ groups: {}, groupOrder: [] })).toEqual([])
+  expect(
+    resolvePages({ groups: {}, groupOrder: [], glassLayout: { rows, customLabels: {} } }),
+  ).toHaveLength(1)
+  const pages = [{ id: 'a', name: 'A', layout: { rows, customLabels: {} } }]
+  expect(resolvePages({ groups: {}, groupOrder: [], pages })).toBe(pages)
+})
+
+test('duplicateActiveProfile: pages を deep copy (複製先編集が元に波及しない)', () => {
+  const cfg = emptyConfig()
+  const key = `${BUILTIN_SOURCE_ID}|g2|level`
+  const rows = Array.from({ length: 10 }, () => [] as string[])
+  rows[0] = [key]
+  activeProfile(cfg).view.pages = [
+    { id: 'p1', name: 'P1', layout: { rows, customLabels: { a: { text: 'X' } } } },
+  ]
+  const def = cfg.profiles[0]
+  const dup = duplicateActiveProfile(cfg)
+  const dpage = dup.view.pages?.[0]
+  if (dpage) {
+    dpage.layout.rows[0] = []
+    dpage.layout.customLabels.a = { text: 'Y' }
+  }
+  expect(def?.view.pages?.[0]?.layout.rows[0]).toEqual([key])
+  expect(def?.view.pages?.[0]?.layout.customLabels.a?.text).toBe('X')
+})
+
+test('migrate: pages[].layout の orphan source chip を掃除', () => {
+  const cfg = emptyConfig()
+  const validKey = `${BUILTIN_SOURCE_ID}|g2|level`
+  const rows = Array.from({ length: 10 }, () => [] as string[])
+  rows[0] = [validKey, 'ghost.source|grp|seg']
+  activeProfile(cfg).view.pages = [{ id: 'p1', name: 'P1', layout: { rows, customLabels: {} } }]
+  const migrated = migrate(cfg as unknown as Record<string, unknown>)
+  expect(activeProfile(migrated).view.pages?.[0]?.layout.rows[0]).toEqual([validKey])
+})
+
+test('removePlace: pages からも place chip を除去', () => {
+  const cfg = emptyConfig()
+  const home = addPlace(cfg, 'Home', 35, 139)
+  const placeKey = `${LOCATION_SOURCE_ID}|${LOCATION_PLACE_GROUP_ID}|${home.id}`
+  const rows = Array.from({ length: 10 }, () => [] as string[])
+  rows[0] = [placeKey]
+  activeProfile(cfg).view.pages = [{ id: 'p1', name: 'P1', layout: { rows, customLabels: {} } }]
+  removePlace(cfg, home.id)
+  expect(activeProfile(cfg).view.pages?.[0]?.layout.rows[0]).toEqual([])
+})
+
+test('migrate: 非 active profile の pages も clock time/date を datetime へ畳む', () => {
+  const cfg = emptyConfig()
+  ;(cfg as { version: number }).version = 4
+  const timeKey = `${BUILTIN_SOURCE_ID}|clock|time`
+  const dtKey = `${BUILTIN_SOURCE_ID}|clock|datetime`
+  const rows = Array.from({ length: 10 }, () => [] as string[])
+  rows[0] = [timeKey]
+  const p2 = addProfile(cfg, 'P2') // addProfile は active を P2 に変える
+  p2.view.pages = [{ id: 'x', name: 'X', layout: { rows, customLabels: {} } }]
+  setActiveProfile(cfg, DEFAULT_PROFILE_ID) // active を Default に戻す (p2 は非 active)
+  const migrated = migrate(cfg as unknown as Record<string, unknown>)
+  const p2m = migrated.profiles.find((p) => p.id === p2.id)
+  expect(p2m?.view.pages?.[0]?.layout.rows[0]).toEqual([dtKey])
 })

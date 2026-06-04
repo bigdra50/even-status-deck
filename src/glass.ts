@@ -23,13 +23,13 @@ import { getGlassBattery, setGlassBattery } from './device-state'
 import { startEvents, stopEvents } from './events'
 import { createOverlayManager, type Notif } from './glass-overlay'
 import {
-  buildViews,
+  buildRuntimePages,
   GLASS_HEIGHT,
   GLASS_PADDING,
   GLASS_WIDTH,
   type GlassData,
-  type GView,
-  renderGlass,
+  type RuntimePage,
+  renderDeckPage,
 } from './glass-render'
 import { feedImuSample, isImuStarted, setImuConfig, startImu, stopImu } from './imu'
 import { activateKeepAlive, deactivateKeepAlive } from './keep-alive'
@@ -62,7 +62,7 @@ const data: GlassData = {
   config: emptyConfig(),
   statuses: {},
 }
-let views: GView[] = ['summary']
+let pages: RuntimePage[] = [{ kind: 'autoSummary' }]
 let visible: VisibleMap = new Map() // 表示タイミング条件の可視マップ (store/config 更新で再計算)
 let idx = 0
 let lastClickAt = 0
@@ -125,9 +125,8 @@ function refresh(): void {
   // 毎分 glassTick の refresh で値が減る。anchors/suncountdown が無ければ no-op。
   const loc = data.statuses[LOCATION_SOURCE_ID]
   if (loc) data.statuses[LOCATION_SOURCE_ID] = recomputeSunCountdown(loc, Date.now())
-  const view = views[idx] ?? 'summary'
   // 絵文字 tofu 対策の sanitize は glass-render(値/ラベル段) と glass-overlay(本文段) が担う。
-  const base = renderGlass(view, data, visible)
+  const base = renderDeckPage(pages, idx, data, visible)
 
   if (overlay.isActive()) {
     // 現在ビューの上に active overlay を重ねる (内容/選択が変われば rebuild)。
@@ -183,8 +182,8 @@ function refresh(): void {
 }
 
 function cycle(dir: number): void {
-  if (views.length === 0) return
-  idx = (idx + dir + views.length) % views.length
+  if (pages.length === 0) return
+  idx = (idx + dir + pages.length) % pages.length
   refresh()
 }
 
@@ -453,8 +452,8 @@ function onStoreUpdate(): void {
   const r = glassVisibility.compute(data.config, data.statuses)
   visible = r.map
   applyDisplay(displayRuntime.observe(data.config, r.truthMap)) // 世界の変化のみ発火
-  views = buildViews(data, visible)
-  if (idx >= views.length) idx = 0
+  pages = buildRuntimePages(data, visible)
+  if (idx >= pages.length) idx = 0
   refresh()
 }
 
@@ -463,8 +462,8 @@ async function onConfigChanged(): Promise<void> {
   const r = glassVisibility.compute(data.config, data.statuses)
   visible = r.map
   applyDisplay(displayRuntime.seed(data.config, r.truthMap)) // config 編集では発火させない (seed)
-  views = buildViews(data, visible)
-  if (idx >= views.length) idx = 0
+  pages = buildRuntimePages(data, visible)
+  if (idx >= pages.length) idx = 0
   await applyImuConfig() // IMU トグル/設定変更を反映
   syncEventSources() // source 追加/削除/URL 変更を overlay イベントループへ反映
   refresh()
@@ -485,11 +484,11 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   const r = glassVisibility.compute(data.config, data.statuses)
   visible = r.map
   applyDisplay(displayRuntime.seed(data.config, r.truthMap)) // init は seed (listener 未配線・発火させない)
-  views = buildViews(data, visible)
+  pages = buildRuntimePages(data, visible)
   idx = 0
 
-  // 起動ページ。summary を単一 'toolbar' container で。
-  const content0 = renderGlass(views[idx] ?? 'summary', data, visible)
+  // 起動ページ。先頭ページを単一 'toolbar' container で。
+  const content0 = renderDeckPage(pages, idx, data, visible)
   lastTopo = 'single'
   lastContent = content0
   await bridge.createStartUpPageContainer(

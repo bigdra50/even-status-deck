@@ -18,9 +18,11 @@ import {
   emptyConfig,
   ensureDefaultServer,
   type GlassLayout,
+  type GlassPage,
   type GroupRef,
   generateGlassLayout,
   genLabelId,
+  genPageId,
   groupDisplayName,
   isCustomLabelKey,
   isRightDivider,
@@ -117,6 +119,8 @@ let testUrl = ''
 
 // glass layout の編集モード (GLASS PREVIEW を WYSIWYG 編集面にする / 普段は view)。
 let layoutEditing = false
+// explicit デッキ編集中の対象ページ index (pages[pageEditingIdx])。profile 跨ぎでリセット。
+let pageEditingIdx = 0
 
 // ── Phase 4: プリセット切替の提案 (接続検出ベース。自動適用はしない) ──
 // このセッション中に却下した提案 profileId。一度 dismiss した profile は同セッションで再提示しない。
@@ -225,18 +229,29 @@ function applyGroupDisplayNames(): boolean {
 // wake=false: preview は store 更新で再評価されるので窓終了タイマーは張らない (二重 poke 回避)。
 const previewVisibility = createVisibilityRuntime({ wake: false })
 
+// 現在編集中ページ (pageEditingIdx) の layout。auto デッキ (pages 未設定) なら undefined。
+function editingLayout(): GlassLayout | undefined {
+  return activeView(config).pages?.[pageEditingIdx]?.layout
+}
+
+// 空の glass layout (新規ページ用。全行空・customLabels なし)。
+function emptyGlassLayout(): GlassLayout {
+  return { rows: Array.from({ length: MAX_ROWS }, () => []), customLabels: {} }
+}
+
 function glassPreviewHtml(): string {
   const visible = previewVisibility.compute(config, getRenderableStatuses()).map
   const d = glassData()
   const grow = (l: string) => `<span class="grow">${l ? esc(l) : '&nbsp;'}</span>`
-  if (activeView(config).glassLayout) {
+  const lay = editingLayout()
+  if (lay) {
     // 各行を左右クラスタで表示。右クラスタがあれば flex space-between で右端へ寄せる
     // (実機の space 近似と違い、プレビューは px 量子化せず正確に左右配置する)。
     const row = ({ left, right }: { left: string; right: string }) =>
       right
         ? `<div class="grow gjust"><span>${left ? esc(left) : ''}</span><span class="gj-r">${esc(right)}</span></div>`
         : grow(left)
-    return `<div class="glass-screen">${layoutRowClusters(d, visible, MAX_ROWS).map(row).join('')}</div>`
+    return `<div class="glass-screen">${layoutRowClusters(lay, d, visible, MAX_ROWS).map(row).join('')}</div>`
   }
   const { top, bottom } = summarySections(d, visible)
   if (top.length + bottom.length === 0) top.push('(no metric)')
@@ -686,7 +701,7 @@ function allPlaceableKeys(): string[] {
     }
   }
   // ユーザー定義の custom ラベル
-  for (const id of Object.keys(view.glassLayout?.customLabels ?? {})) keys.push(customLabelKey(id))
+  for (const id of Object.keys(editingLayout()?.customLabels ?? {})) keys.push(customLabelKey(id))
   return keys
 }
 
@@ -701,7 +716,7 @@ function rowOverflow(items: string[]): boolean {
   let prevGroup: string | null = null
   for (const key of items) {
     if (isCustomLabelKey(key)) {
-      const text = view.glassLayout?.customLabels[customLabelId(key)]?.text ?? ''
+      const text = editingLayout()?.customLabels[customLabelId(key)]?.text ?? ''
       if (!text) continue
       total += text.length
       prevGroup = null
@@ -738,7 +753,7 @@ function wysChip(key: string): string {
   // custom ラベル: × は削除 (customLabels から除去)。値 chip の × は unplace。
   if (isCustomLabelKey(key)) {
     const id = customLabelId(key)
-    const text = activeView(config).glassLayout?.customLabels[id]?.text ?? ''
+    const text = editingLayout()?.customLabels[id]?.text ?? ''
     const del = `<button class="wys-x" data-action="label-delete" data-label-id="${esc(id)}" title="Delete label" aria-label="Delete label">${icon('x', { size: 10 })}</button>`
     return `<span class="wys-chip wys-label-chip wys-custom-chip" data-segkey="${esc(key)}" title="${esc(text)}">${grip}<span class="wys-txt">${esc(text)}</span>${del}</span>`
   }
@@ -827,10 +842,37 @@ function renderGlassAutoOrder(): string {
     <div id="source-list">${refs.map(groupOrderRow).join('')}</div>`
 }
 
-// Glass セクション: プレビュー一本。view は実機同等の連結テキスト、edit は WYSIWYG。
+// ページ tab 列: [Page1][Page2]…[+]。選択中をハイライト。クリックで選択 / + で追加。
+function renderPageTabs(pages: GlassPage[]): string {
+  const tabs = pages
+    .map((p, i) => {
+      const active = i === pageEditingIdx ? ' page-tab-active' : ''
+      return `<button class="page-tab${active}" data-action="page-select" data-page-idx="${i}" title="${esc(p.name)}">${esc(p.name)}</button>`
+    })
+    .join('')
+  const add = `<button class="page-tab page-add" data-action="page-add" title="Add page" aria-label="Add page">${icon('plus', { size: 14 })}</button>`
+  return `<div class="page-tabs">${tabs}${add}</div>`
+}
+
+// 編集中ページ (pageEditingIdx) の操作行: 名前 rename / 左右移動 / 削除。
+function renderPageControls(pages: GlassPage[]): string {
+  const cur = pages[pageEditingIdx]
+  if (!cur) return ''
+  const up = pageEditingIdx === 0 ? 'disabled' : ''
+  const down = pageEditingIdx >= pages.length - 1 ? 'disabled' : ''
+  const del = pages.length <= 1 ? 'disabled' : ''
+  return `<div class="page-ctl">
+      <input class="page-name-input" type="text" maxlength="24" value="${esc(cur.name)}" data-action="page-rename" data-page-idx="${pageEditingIdx}" placeholder="Page name" aria-label="Page name" />
+      <button class="gear-btn" data-action="page-move-up" title="Move left" aria-label="Move left" ${up}>${icon('chevron-left', { size: 14 })}</button>
+      <button class="gear-btn" data-action="page-move-down" title="Move right" aria-label="Move right" ${down}>${icon('chevron-right', { size: 14 })}</button>
+      <button class="gear-btn danger" data-action="page-remove" title="Delete page" aria-label="Delete page" ${del}>${icon('trash', { size: 14 })}</button>
+    </div>`
+}
+
+// Glass セクション: auto デッキ (pages 未設定) は従来 UI、explicit デッキはページ tab + 選択ページ編集。
 function renderGlassSection(): string {
-  const lay = activeView(config).glassLayout
-  if (!lay) {
+  const pages = activeView(config).pages
+  if (!pages?.length) {
     return `<div class="cmp-label cmp-label-row">Glass<span class="cmp-actions">
         <button class="gear-btn" data-action="layout-customize" title="Customize layout" aria-label="Customize layout">${icon('layout', { size: 16 })}</button>
         <button class="gear-btn" data-action="fs-open" title="Fullscreen edit (beta)" aria-label="Fullscreen edit">${icon('maximize', { size: 16 })}</button>
@@ -840,14 +882,21 @@ function renderGlassSection(): string {
       <div class="cmp-sub">One row per group. Customize layout to place items freely on the preview.</div>
       ${renderGlassAutoOrder()}`
   }
+  if (pageEditingIdx >= pages.length) pageEditingIdx = 0
+  const lay = pages[pageEditingIdx]?.layout ?? pages[0].layout
+  const multi = pages.length > 1
   if (layoutEditing) {
-    return `<div class="cmp-label cmp-label-row">Glass layout<button class="gear-btn" data-action="layout-edit-toggle" title="Done" aria-label="Done">${icon('check', { size: 16 })}</button></div>
+    return `<div class="cmp-label cmp-label-row">Glass pages<button class="gear-btn" data-action="layout-edit-toggle" title="Done" aria-label="Done">${icon('check', { size: 16 })}</button></div>
+      ${renderPageTabs(pages)}
+      ${renderPageControls(pages)}
       <div class="cmp-sub">Drag items to rows (1–${MAX_ROWS}) or the Unplaced shelf. Row number = position from top of glass.</div>
+      ${multi ? `<div class="cmp-sub">With multiple pages, row ${MAX_ROWS} is hidden behind the page dots on glass.</div>` : ''}
       ${renderGlassEdit(lay)}`
   }
-  return `<div class="cmp-label cmp-label-row">Glass<span class="cmp-actions"><button class="gear-btn" data-action="layout-edit-toggle" title="Edit layout" aria-label="Edit layout">${icon('layout', { size: 16 })}</button><button class="gear-btn" data-action="fs-open" title="Fullscreen edit" aria-label="Fullscreen edit">${icon('maximize', { size: 16 })}</button></span></div>
-    <div class="gpv"><div class="gpv-cap">G2 576×288</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
-    <div class="cmp-sub">Glass gestures: tap = summary / swipe = switch view / double-tap = exit</div>`
+  return `<div class="cmp-label cmp-label-row">Glass pages<span class="cmp-actions"><button class="gear-btn" data-action="layout-edit-toggle" title="Edit layout" aria-label="Edit layout">${icon('layout', { size: 16 })}</button><button class="gear-btn" data-action="fs-open" title="Fullscreen edit" aria-label="Fullscreen edit">${icon('maximize', { size: 16 })}</button></span></div>
+    ${renderPageTabs(pages)}
+    <div class="gpv"><div class="gpv-cap">G2 576×288${multi ? ` — page ${pageEditingIdx + 1}/${pages.length}` : ''}</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
+    <div class="cmp-sub">Glass gestures: swipe = next/prev page / tap = first page / double-tap = exit</div>`
 }
 
 // ── Phase 4: プリセット切替の提案 (バナー) ──
@@ -1360,8 +1409,8 @@ function attachSortables(): void {
 // 右ゾーンに chip があれば左ゾーンとの間に @right 区切りを挿む (前=左/後=右クラスタ)。
 // 棚 (data-shelf) の chip はどの行にも無い = 未配置 (次の描画で棚に導出される)。
 function recomputeWysFromDom(): void {
-  const view = activeView(config)
-  if (!view.glassLayout) return
+  const lay = editingLayout()
+  if (!lay) return
   const readZone = (i: number, zone: 'left' | 'right'): string[] => {
     const el = document.querySelector<HTMLElement>(
       `.wys-cell[data-row="${i}"][data-zone="${zone}"]`,
@@ -1376,7 +1425,8 @@ function recomputeWysFromDom(): void {
     const right = readZone(i, 'right')
     return right.length ? [...left, RIGHT_DIVIDER, ...right] : left
   })
-  view.glassLayout = { rows, customLabels: view.glassLayout.customLabels }
+  const page = activeView(config).pages?.[pageEditingIdx]
+  if (page) page.layout = { rows, customLabels: lay.customLabels }
   void saveConfig(config)
   render()
 }
@@ -1420,6 +1470,7 @@ function onSegReorder(key: string, oldIndex?: number, newIndex?: number): void {
 //   ここで明示的に active view へ反映してから描画する)。
 function applyProfileChange(): void {
   layoutEditing = false
+  pageEditingIdx = 0
   void saveConfig(config)
   syncAll() // 切替先 view を cached status から補充 (変化あれば内部で保存)
   setSourcesFromConfig(config)
@@ -1769,23 +1820,34 @@ async function onClick(e: MouseEvent): Promise<void> {
       layoutEditing = !layoutEditing
       render()
       break
-    case 'layout-customize':
-      activeView(config).glassLayout = generateGlassLayout(config)
+    case 'layout-customize': {
+      // auto → explicit: 現在の groupOrder から 1 ページ目を生成して編集モードへ。
+      activeView(config).pages = [
+        { id: genPageId(), name: 'Page 1', layout: generateGlassLayout(config) },
+      ]
+      pageEditingIdx = 0
       layoutEditing = true // 生成と同時に編集モードへ
       void saveConfig(config)
       render()
       break
-    case 'layout-reset':
-      activeView(config).glassLayout = undefined
+    }
+    case 'layout-reset': {
+      // explicit → auto: 全ページと legacy glassLayout を破棄して自動デッキへ戻す。
+      const view = activeView(config)
+      view.pages = undefined
+      view.glassLayout = undefined
+      pageEditingIdx = 0
       layoutEditing = false
       void saveConfig(config)
       render()
       break
+    }
     case 'fs-open': {
-      // フルスクリーン WYSIWYG エディタ (実験的)。custom layout 未生成なら生成して開く。
+      // フルスクリーン WYSIWYG エディタ (実験的)。explicit デッキ未生成なら 1 ページ目を作って開く。
       const view = activeView(config)
-      if (!view.glassLayout) {
-        view.glassLayout = generateGlassLayout(config)
+      if (!view.pages?.length) {
+        view.pages = [{ id: genPageId(), name: 'Page 1', layout: generateGlassLayout(config) }]
+        pageEditingIdx = 0
         void saveConfig(config)
       }
       openFsEditor()
@@ -1794,7 +1856,7 @@ async function onClick(e: MouseEvent): Promise<void> {
     case 'layout-item-remove': {
       // segment を全行から外す → 未配置 (Unplaced 棚) に導出される。
       const key = t.dataset.segkey
-      const lay = activeView(config).glassLayout
+      const lay = editingLayout()
       if (lay && key) {
         lay.rows = lay.rows.map((r) => r.filter((k) => k !== key))
         void saveConfig(config)
@@ -1806,7 +1868,7 @@ async function onClick(e: MouseEvent): Promise<void> {
       // 任意テキストのラベルを作成 (未配置棚に出る)。inline input から読む。
       const input = root?.querySelector<HTMLInputElement>('.lay-add-input')
       const text = (input?.value ?? '').trim().slice(0, 64)
-      const lay = activeView(config).glassLayout
+      const lay = editingLayout()
       if (lay && text) {
         lay.customLabels[genLabelId()] = { text }
         void saveConfig(config)
@@ -1817,11 +1879,72 @@ async function onClick(e: MouseEvent): Promise<void> {
     case 'label-delete': {
       // custom ラベルを完全削除 (customLabels から除去 + 全 rows の参照を除去)。
       const id = t.dataset.labelId
-      const lay = activeView(config).glassLayout
+      const lay = editingLayout()
       if (lay && id) {
         delete lay.customLabels[id]
         const k = customLabelKey(id)
         lay.rows = lay.rows.map((r) => r.filter((x) => x !== k))
+        void saveConfig(config)
+        render()
+      }
+      break
+    }
+    case 'page-select': {
+      const i = Number(t.dataset.pageIdx)
+      const pages = activeView(config).pages
+      if (pages && Number.isInteger(i) && i >= 0 && i < pages.length) {
+        pageEditingIdx = i
+        render()
+      }
+      break
+    }
+    case 'page-add': {
+      const view = activeView(config)
+      view.pages ??= []
+      view.pages.push({
+        id: genPageId(),
+        name: `Page ${view.pages.length + 1}`,
+        layout: emptyGlassLayout(),
+      })
+      pageEditingIdx = view.pages.length - 1
+      layoutEditing = true
+      void saveConfig(config)
+      render()
+      break
+    }
+    case 'page-remove': {
+      const pages = activeView(config).pages
+      if (pages && pages.length > 1 && pageEditingIdx < pages.length) {
+        pages.splice(pageEditingIdx, 1)
+        if (pageEditingIdx >= pages.length) pageEditingIdx = pages.length - 1
+        void saveConfig(config)
+        render()
+      }
+      break
+    }
+    case 'page-move-up': {
+      const pages = activeView(config).pages
+      const i = pageEditingIdx
+      const a = pages?.[i - 1]
+      const b = pages?.[i]
+      if (pages && a && b && i > 0) {
+        pages[i - 1] = b
+        pages[i] = a
+        pageEditingIdx = i - 1
+        void saveConfig(config)
+        render()
+      }
+      break
+    }
+    case 'page-move-down': {
+      const pages = activeView(config).pages
+      const i = pageEditingIdx
+      const a = pages?.[i]
+      const b = pages?.[i + 1]
+      if (pages && a && b && i < pages.length - 1) {
+        pages[i] = b
+        pages[i + 1] = a
+        pageEditingIdx = i + 1
         void saveConfig(config)
         render()
       }
@@ -1859,7 +1982,20 @@ function onChange(e: Event): void {
   else if (action === 'opt-set') onOptionChange(e)
   else if (action === 'profile-geofence-place' || action === 'profile-geofence-mode')
     onGeofenceBindChange()
+  else if (action === 'page-rename') onPageRename(e)
   else onSegVisChange(e)
+}
+
+// ページ名の変更 (rename input の change)。現在編集中ページ (pageEditingIdx) に作用する。
+// render() しない (input フォーカスを保つ。値は DOM が保持)。
+function onPageRename(e: Event): void {
+  const t = e.target as HTMLInputElement
+  const raw = Number(t.dataset.pageIdx)
+  const i = Number.isInteger(raw) ? raw : pageEditingIdx
+  const page = activeView(config).pages?.[i]
+  if (!page) return
+  page.name = t.value.trim().slice(0, 24) || `Page ${i + 1}`
+  void saveConfig(config)
 }
 
 // #43 active preset のジオフェンス連動(place + mode)を保存する。place/mode の両 select を読む。
@@ -2102,8 +2238,7 @@ const fsCollapsedSources = new Set<string>() // 折りたたみ中の source(edi
 
 // チップの表示文字列 (実機の値。custom ラベルは本文)。
 function fsChipText(key: string): string {
-  if (isCustomLabelKey(key))
-    return activeView(config).glassLayout?.customLabels[customLabelId(key)]?.text ?? ''
+  if (isCustomLabelKey(key)) return editingLayout()?.customLabels[customLabelId(key)]?.text ?? ''
   const [sourceId, groupId, segId] = key.split('|')
   const sg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
   const { seg } = segLabelParts(key)
@@ -2155,7 +2290,7 @@ function fsListItem(key: string): string {
 
 // プレビュー本体 (10 行 × 左/右ゾーン) + 右ペインの未配置 list(source 別折りたたみ) の HTML。
 function renderFsBodyHtml(): string {
-  const lay = activeView(config).glassLayout
+  const lay = editingLayout()
   if (!lay) return ''
   const rows: string[] = []
   for (let i = 0; i < MAX_ROWS; i++) {
@@ -2213,7 +2348,7 @@ function refreshFsBody(): void {
 
 // 各行を split→join で正規化し、空になった右クラスタの @right を落とす。
 function normalizeFsRows(): void {
-  const lay = activeView(config).glassLayout
+  const lay = editingLayout()
   if (!lay) return
   lay.rows = lay.rows.map((r) => {
     const { left, right } = splitRowClusters(r)
@@ -2222,12 +2357,12 @@ function normalizeFsRows(): void {
 }
 
 function removeFsKey(key: string): void {
-  const lay = activeView(config).glassLayout
+  const lay = editingLayout()
   if (lay) lay.rows = lay.rows.map((r) => r.filter((k) => k !== key))
 }
 
 function moveFsKeyToZone(key: string, rowIdx: number, side: 'left' | 'right'): void {
-  const lay = activeView(config).glassLayout
+  const lay = editingLayout()
   if (!lay) return
   removeFsKey(key) // 重複配置を防ぐ (どこから来ても 1 箇所だけ)
   const { left, right } = splitRowClusters(lay.rows[rowIdx] ?? [])
@@ -2353,7 +2488,7 @@ function onFsPointerUp(e: PointerEvent): void {
   fsDrag = null
   drag?.ghost.remove()
   fsClearHot()
-  if (!drag || !activeView(config).glassLayout) return
+  if (!drag || !editingLayout()) return
   const zone = fsZoneAt(e)
   if (!zone) return
   if (zone.classList.contains('fs-tray')) {
@@ -2387,7 +2522,7 @@ function onFsClick(e: MouseEvent): void {
   }
   if (t.dataset.action === 'fs-unplace') {
     const key = t.dataset.segkey
-    if (key && activeView(config).glassLayout) {
+    if (key && editingLayout()) {
       removeFsKey(key)
       fsExpandSourceOf(key) // 折りたたみ中の source へ戻すと消えて見えるので開く
       normalizeFsRows()
