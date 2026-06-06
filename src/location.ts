@@ -1,10 +1,8 @@
 // 統合 client source "Location" の producer。位置由来の 4 producer(weather/airquality/geocode/geoinfo)を
 // 呼び、結果を 2 group(weather=気象+大気質 / place=地名+標高/TZ)へ再編して 1 StatusDoc を返す。
-// 併せて geofence(#43) 用の現在地キャッシュを refreshGeofencePosition で更新する(表示なし副作用)。
 // store.refreshSource(kind==='client') から poll ごとに呼ばれる。
 //
-// 設計(codex 3往復で確定): source 5→1・group 2 への集約。距離/方位ナビ表示(#42)は撤廃済(place 表示を
-// 全廃し geofence のみ存続)。geofence の位置追跡は Location source の poll に連動する(opt-in)。
+// 設計(codex 3往復で確定): source 5→1・group 2 への集約。距離/方位ナビ表示(#42)は撤廃済。
 // - geolocation は各 producer が getCurrentPosition(maximumAge で OS キャッシュ)を使うため、許可ダイアログは
 //   実質 1 回。各 producer は独自 TTL/backoff を内部に持つ(更新頻度: weather/air 30分・geoinfo 6時間 等)。
 // - health は per-segment: 各 producer の group.state を、その group の全 segment の Segment.state へ焼く
@@ -16,7 +14,6 @@ import type { OptionValues } from './config'
 import { LOCATION_PLACE_GROUP_ID, LOCATION_WEATHER_GROUP_ID } from './config'
 import { geocodeStatus } from './geocode'
 import { geoinfoStatus } from './geoinfo'
-import { refreshGeofencePosition } from './places'
 import type { Group, Segment, SourceState, StatusDoc } from './status-types'
 import { weatherStatus } from './weather'
 
@@ -53,13 +50,11 @@ export async function locationStatus(
   signal: AbortSignal,
   options?: OptionValues,
 ): Promise<StatusDoc | null> {
-  // 5 つ目は geofence 用 lastPos 更新の副作用(void)。表示には使わない。
   const [weather, air, geocode, geoinfo] = await Promise.all([
     weatherStatus(signal, options),
     airqualityStatus(signal, options),
     geocodeStatus(signal, options),
     geoinfoStatus(signal, options),
-    refreshGeofencePosition(signal),
   ])
   if (signal.aborted) return null
   const ts = Date.now()

@@ -7,13 +7,11 @@ import {
   type GlassLayout,
   type GroupRef,
   saveConfig,
-  setActiveProfile,
   syncSourceWithStatus,
 } from '../config'
 import { resolveDisplayLabels } from '../display-identity'
 import { esc } from '../escape'
 import { type GlassData, layoutRowClusters, MAX_ROWS, summarySections } from '../glass-render'
-import { getCurrentPlaceId } from '../places'
 import type { Group, SourceState } from '../status-types'
 import {
   getAllStatuses,
@@ -23,7 +21,7 @@ import {
   getSourceStatus,
   setSourcesFromConfig,
 } from '../store'
-import { suggestProfile, suggestProfileByGeofence } from '../suggest'
+import { suggestProfile } from '../suggest'
 import { createVisibilityRuntime, segKey } from '../visibility'
 import { requestRender } from './render-port'
 import { ctx } from './state'
@@ -191,30 +189,11 @@ export function visibleSig(): string {
 // このセッションで却下済み (dismissedSuggestions) の提案は除外する。currentSuggestion を更新し、
 // 提示すべき内容が変わったか (profileId の差分) を返す (変化時のみ Home を再描画するため)。
 export function recomputeSuggestion(): boolean {
-  // ジオフェンス(#43)を優先(現在地は強いシグナル)。圏内に suggest モードの bound preset があればそれ、
-  // 無ければ従来の接続ベース提案にフォールバックする。
-  const next =
-    suggestProfileByGeofence(ctx.config, getCurrentPlaceId()) ??
-    suggestProfile(ctx.config, getOnlineServerIds())
+  const next = suggestProfile(ctx.config, getOnlineServerIds())
   const shown = next && !ctx.dismissedSuggestions.has(next.profileId) ? next : null
   const changed = (ctx.currentSuggestion?.profileId ?? null) !== (shown?.profileId ?? null)
   ctx.currentSuggestion = shown
   return changed
-}
-
-// #43 ジオフェンス自動切替: 新しい place に入ったら mode=auto の bound preset へ 1 回切替える。
-// 同じ place に留まっている間は何もしない(flapping/手動操作の上書き防止)。圏外/位置不明なら何もしない。
-export function maybeGeofenceAutoSwitch(): void {
-  const placeId = getCurrentPlaceId()
-  if (placeId === ctx.lastGeofencePlace) return // place 不変 = 何もしない
-  ctx.lastGeofencePlace = placeId
-  if (!placeId) return
-  const prof = ctx.config.profiles.find(
-    (p) => p.geofence?.placeId === placeId && p.geofence?.mode === 'auto',
-  )
-  if (!prof || prof.id === ctx.config.activeProfileId) return
-  setActiveProfile(ctx.config, prof.id)
-  applyProfileChange() // saveConfig + syncAll + setSourcesFromConfig + render
 }
 
 export function parseKey(key: string): GroupRef {

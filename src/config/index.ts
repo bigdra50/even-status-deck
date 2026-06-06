@@ -10,7 +10,6 @@ export {
   BUILTIN_SOURCE_ID,
   CONFIG_VERSION,
   CUSTOM_LABEL_PREFIX,
-  DEFAULT_PLACE_RADIUS_M,
   DEFAULT_PROFILE_ID,
   GEOCODE_SOURCE_ID,
   GEOINFO_SOURCE_ID,
@@ -30,7 +29,6 @@ export {
   defaultShowGroupLabel,
   genLabelId,
   genPageId,
-  genPlaceId,
   genProfileId,
   genSourceId,
   isCustomLabelKey,
@@ -45,13 +43,6 @@ export { generateGlassLayout } from './layout'
 export { migrate } from './migration'
 export { loadConfig, saveConfig, setConfigBridge } from './persistence'
 export {
-  addPlace,
-  removePlace,
-  renamePlace,
-  setPlaceRadius,
-  updatePlaceLocation,
-} from './places'
-export {
   activeProfile,
   activeView,
   addProfile,
@@ -63,7 +54,6 @@ export {
   renameProfile,
   resolvePages,
   setActiveProfile,
-  setProfileGeofence,
   setSourceEnabled,
   sourceById,
 } from './profiles'
@@ -82,9 +72,7 @@ export type {
   GroupMeta,
   GroupRef,
   OptionValues,
-  Place,
   Profile,
-  ProfileGeofence,
   ProfileView,
   RemovedSourceView,
   RemovedView,

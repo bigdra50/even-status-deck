@@ -4,11 +4,9 @@
 import { expect, test } from 'bun:test'
 import {
   activeProfile,
-  addPlace,
   addProfile,
   addServer,
   BUILTIN_SOURCE_ID,
-  DEFAULT_PLACE_RADIUS_M,
   DEFAULT_PROFILE_ID,
   duplicateActiveProfile,
   emptyConfig,
@@ -16,18 +14,13 @@ import {
   LOCATION_SOURCE_ID,
   migrate,
   promoteSourceUrl,
-  removePlace,
   removeSourceUrl,
-  renamePlace,
   resolvePages,
   type SourceDef,
   setActiveProfile,
-  setPlaceRadius,
-  setProfileGeofence,
   setSourceUrls,
   sourceUrls,
   syncSourceWithStatus,
-  updatePlaceLocation,
 } from './config'
 import type { StatusDoc } from './status-types'
 
@@ -46,39 +39,6 @@ function g2Doc(segIds: string[]): StatusDoc {
     ],
   }
 }
-
-test('setProfileGeofence: bind/解除 + 不正 place は外す (#43)', () => {
-  const cfg = emptyConfig()
-  const home = addPlace(cfg, 'Home', 35, 139)
-  const prof = addProfile(cfg, 'P')
-  expect(setProfileGeofence(cfg, prof.id, home.id, 'auto')).toBe(true)
-  expect(prof.geofence).toEqual({ placeId: home.id, mode: 'auto' })
-  // 存在しない place は bind しない(=解除)
-  expect(setProfileGeofence(cfg, prof.id, 'nope', 'suggest')).toBe(true)
-  expect(prof.geofence).toBeUndefined()
-  // placeId=null で解除
-  setProfileGeofence(cfg, prof.id, home.id, 'suggest')
-  expect(setProfileGeofence(cfg, prof.id, null, 'suggest')).toBe(true)
-  expect(prof.geofence).toBeUndefined()
-  expect(setProfileGeofence(cfg, 'badprofile', home.id, 'auto')).toBe(false)
-})
-
-test('removePlace: bind 済み preset の geofence も外す (#43)', () => {
-  const cfg = emptyConfig()
-  const home = addPlace(cfg, 'Home', 35, 139)
-  const prof = addProfile(cfg, 'P')
-  setProfileGeofence(cfg, prof.id, home.id, 'auto')
-  removePlace(cfg, home.id)
-  expect(prof.geofence).toBeUndefined()
-})
-
-test('migrate: 不正な profile.geofence を sanitize する (#43)', () => {
-  const v4 = emptyConfig()
-  const p = addProfile(v4, 'P')
-  ;(p as unknown as { geofence: unknown }).geofence = { placeId: '', mode: 'auto' } // 空 placeId
-  const cfg = migrate(v4 as unknown as Record<string, unknown>)
-  expect(cfg.profiles.find((x) => x.id === p.id)?.geofence).toBeUndefined()
-})
 
 test('migrate(v3): client source は enabledSourceIds に入れない(opt-in 維持)', () => {
   const v3 = {
@@ -260,9 +220,11 @@ test('migrate: 統合は冪等 (2 回流しても client.location 1 つ・group 
   ])
 })
 
-// ── 距離/方位ナビ(#42)撤廃 migration (migrateDropPlaceNav) ──
-// 統合済 client.location の place group に焼かれた nav 動的 segment(pl_xxxx)と presence(here)を、
-// 素材・view・glassLayout から除去する。geofence(places/profile.geofence/inPlace 条件)は温存する。
+// ── 距離/方位ナビ(#42)撤廃 + 保存地点/geofence(#43)撤去 migration ──
+// migrateDropPlaceNav: 統合済 client.location の place group に焼かれた nav 動的 segment(pl_xxxx)と
+// presence(here)を素材・view・glassLayout から除去する。
+// cleanupPlacesGeofence: places / profile.geofence の残骸を削除。inPlace visibility 条件は
+// sanitizeLeaf が未知 kind を落とすことで自動 drop される(単独なら visibility ごと undefined=常時表示)。
 function locationV4WithNav(): Record<string, unknown> {
   return {
     version: 4,
@@ -292,6 +254,16 @@ function locationV4WithNav(): Record<string, unknown> {
               visibility: {
                 combinator: 'and',
                 conditions: [{ kind: 'inPlace', placeId: 'pl_home' }],
+              },
+            },
+            {
+              id: 's2',
+              visibility: {
+                combinator: 'and',
+                conditions: [
+                  { kind: 'inPlace', placeId: 'pl_home' },
+                  { kind: 'threshold', op: 'gte', value: 50 },
+                ],
               },
             },
           ],
@@ -349,127 +321,29 @@ test('migrate: 距離ナビ撤廃 — place group の pl_xxxx/here を素材/vie
   expect(loc?.options?.bearingStyle).toBeUndefined()
 })
 
-test('migrate: 距離ナビ撤廃でも geofence(places/profile.geofence/inPlace 条件)は温存', () => {
+test('migrate: places/geofence/inPlace 残骸は撤去 cleanup で消える (#43 撤去)', () => {
   const cfg = migrate(locationV4WithNav())
-  // 保存地点は残る(geofence 領域定義)。
-  expect(cfg.places?.map((p) => p.id)).toEqual(['pl_home'])
-  // profile の geofence 連動は残る。
-  expect(activeProfile(cfg).geofence).toEqual({ placeId: 'pl_home', mode: 'auto' })
-  // 他 segment の inPlace 表示条件は残る。
-  expect(cfg.groups['server.x'].g.segments[0].visibility?.conditions).toEqual([
-    { kind: 'inPlace', placeId: 'pl_home' },
+  // 保存地点配列は削除される(機能撤去。型からも消えているので raw で確認)。
+  expect((cfg as unknown as Record<string, unknown>).places).toBeUndefined()
+  // profile の geofence 連動も解除される。
+  expect((activeProfile(cfg) as unknown as Record<string, unknown>).geofence).toBeUndefined()
+  const segs = cfg.groups['server.x'].g.segments
+  // inPlace 単独条件は自動 drop → conditions 空 → visibility ごと undefined(常時表示へ fail-open)。
+  expect(segs.find((s) => s.id === 's1')?.visibility).toBeUndefined()
+  // inPlace + threshold 混合は inPlace だけ落ち、threshold は残る。
+  expect(segs.find((s) => s.id === 's2')?.visibility?.conditions).toEqual([
+    { kind: 'threshold', op: 'gte', value: 50 },
   ])
 })
 
-test('migrate: 距離ナビ撤廃は冪等 (2 回流しても place は地名/標高のみ)', () => {
+test('migrate: 距離ナビ撤廃 + places 撤去は冪等 (2 回流しても同じ)', () => {
   const once = migrate(locationV4WithNav())
   const twice = migrate(JSON.parse(JSON.stringify(once)) as Record<string, unknown>)
   expect(twice.groups[LOCATION_SOURCE_ID].place.segments.map((s) => s.id).sort()).toEqual([
     'city',
     'elev',
   ])
-  expect(twice.places?.map((p) => p.id)).toEqual(['pl_home'])
-})
-
-test('places CRUD: 追加/改名/座標更新/削除', () => {
-  const cfg = emptyConfig()
-  expect(cfg.places).toEqual([]) // ensureClientPlaces で初期化
-  const home = addPlace(cfg, 'Home', 35.68, 139.69)
-  addPlace(cfg, 'Work', 35.69, 139.7)
-  expect(cfg.places).toHaveLength(2)
-  expect(home.id).toMatch(/^pl_/)
-  expect(renamePlace(cfg, home.id, 'My House')).toBe(true)
-  expect(cfg.places?.find((p) => p.id === home.id)?.label).toBe('My House')
-  expect(updatePlaceLocation(cfg, home.id, 36, 140)).toBe(true)
-  expect(cfg.places?.find((p) => p.id === home.id)?.lat).toBe(36)
-  expect(renamePlace(cfg, 'nope', 'X')).toBe(false)
-  expect(removePlace(cfg, home.id)).toBe(true)
-  expect(cfg.places).toHaveLength(1)
-  expect(removePlace(cfg, home.id)).toBe(false) // 既に無い
-})
-
-test('removePlace: 他 segment の visibility から inPlace leaf を掃除する (#43)', () => {
-  const cfg = emptyConfig()
-  const home = addPlace(cfg, 'Home', 35, 139)
-  // 別 source の segment が「At Home」(+ threshold)条件を持つ状態を作る。
-  cfg.groups['server.x'] = {
-    g: {
-      segments: [
-        {
-          id: 's1',
-          visibility: {
-            combinator: 'and',
-            conditions: [
-              { kind: 'inPlace', placeId: home.id },
-              { kind: 'threshold', op: 'gte', value: 50 },
-            ],
-          },
-        },
-        {
-          id: 's2',
-          visibility: { combinator: 'and', conditions: [{ kind: 'inPlace', placeId: home.id }] },
-        },
-      ],
-    },
-  }
-  expect(removePlace(cfg, home.id)).toBe(true)
-  const segs = cfg.groups['server.x'].g.segments
-  // s1: inPlace 除去、threshold は残る
-  expect(segs[0].visibility?.conditions).toEqual([{ kind: 'threshold', op: 'gte', value: 50 }])
-  // s2: 条件が空になったので visibility ごと外れる(= 常時表示へ)
-  expect(segs[1].visibility).toBeUndefined()
-})
-
-test('removePlace: 素材/view/glassLayout の孤立 chip を掃除する', () => {
-  const cfg = emptyConfig()
-  const home = addPlace(cfg, 'Home', 35, 139)
-  const prof = activeProfile(cfg)
-  // sync が補充した想定で素材/view/glassLayout に place segment を手で配置する。
-  // 統合後: 保存地点 segment は client.location の 'place' group 配下。
-  cfg.groups[LOCATION_SOURCE_ID] ??= {}
-  cfg.groups[LOCATION_SOURCE_ID][LOCATION_PLACE_GROUP_ID] = { segments: [{ id: home.id }] }
-  prof.view.groups[LOCATION_SOURCE_ID] = {
-    [LOCATION_PLACE_GROUP_ID]: { enabled: true, segments: { [home.id]: true } },
-  }
-  const placeKey = `${LOCATION_SOURCE_ID}|${LOCATION_PLACE_GROUP_ID}|${home.id}`
-  prof.view.glassLayout = { rows: [[placeKey, 'builtin.local|clock|datetime']] }
-
-  expect(removePlace(cfg, home.id)).toBe(true)
-  expect(cfg.groups[LOCATION_SOURCE_ID][LOCATION_PLACE_GROUP_ID].segments).toEqual([]) // 素材掃除
-  expect(
-    prof.view.groups[LOCATION_SOURCE_ID][LOCATION_PLACE_GROUP_ID].segments[home.id],
-  ).toBeUndefined() // view 掃除
-  expect(prof.view.glassLayout?.rows[0]).toEqual(['builtin.local|clock|datetime']) // place chip だけ除去
-})
-
-test('places radius: 既定 150m / clamp / migrate 補完 (#43)', () => {
-  const cfg = emptyConfig()
-  const p = addPlace(cfg, 'Home', 35, 139)
-  expect(p.radiusM).toBe(DEFAULT_PLACE_RADIUS_M)
-  expect(setPlaceRadius(cfg, p.id, 300)).toBe(true)
-  expect(cfg.places?.[0].radiusM).toBe(300)
-  expect(setPlaceRadius(cfg, p.id, 5)).toBe(true) // 下限 clamp(20)
-  expect(cfg.places?.[0].radiusM).toBe(20)
-  expect(setPlaceRadius(cfg, p.id, 999_999)).toBe(true) // 上限 clamp(50000)
-  expect(cfg.places?.[0].radiusM).toBe(50_000)
-  // migrate: radiusM 欠落は既定で補完
-  const v4 = emptyConfig()
-  ;(v4 as unknown as { places: unknown[] }).places = [{ id: 'x', label: 'X', lat: 0, lon: 0 }]
-  const migrated = migrate(v4 as unknown as Record<string, unknown>)
-  expect(migrated.places?.[0].radiusM).toBe(DEFAULT_PLACE_RADIUS_M)
-})
-
-test('migrate(v4 same): 不正な places を sanitize する', () => {
-  // places は v4 の additive フィールド。v4 同版移行(migrateV4Same)で sanitize される。
-  const v4 = emptyConfig()
-  ;(v4 as unknown as { places: unknown[] }).places = [
-    { id: 'ok', label: 'Good', lat: 35, lon: 139 },
-    { id: 'bad1', label: 'NoCoord' }, // lat/lon 欠落 → 落とす
-    { id: 'bad2', label: 'OutOfRange', lat: 999, lon: 0 }, // 範囲外 → 落とす
-    { label: 'NoId', lat: 0, lon: 0 }, // id 欠落 → 落とす
-  ]
-  const cfg = migrate(v4 as unknown as Record<string, unknown>)
-  expect(cfg.places?.map((p) => p.id)).toEqual(['ok'])
+  expect((twice as unknown as Record<string, unknown>).places).toBeUndefined()
 })
 
 // ── builtin segment の静的 seed (companion Items が放電データ未蓄積でも rate/eta を設定可能に) ──
@@ -720,17 +594,6 @@ test('migrate: pages[].layout の orphan source chip を掃除', () => {
   activeProfile(cfg).view.pages = [{ id: 'p1', name: 'P1', layout: { rows, customLabels: {} } }]
   const migrated = migrate(cfg as unknown as Record<string, unknown>)
   expect(activeProfile(migrated).view.pages?.[0]?.layout.rows[0]).toEqual([validKey])
-})
-
-test('removePlace: pages からも place chip を除去', () => {
-  const cfg = emptyConfig()
-  const home = addPlace(cfg, 'Home', 35, 139)
-  const placeKey = `${LOCATION_SOURCE_ID}|${LOCATION_PLACE_GROUP_ID}|${home.id}`
-  const rows = Array.from({ length: 10 }, () => [] as string[])
-  rows[0] = [placeKey]
-  activeProfile(cfg).view.pages = [{ id: 'p1', name: 'P1', layout: { rows, customLabels: {} } }]
-  removePlace(cfg, home.id)
-  expect(activeProfile(cfg).view.pages?.[0]?.layout.rows[0]).toEqual([])
 })
 
 test('migrate: 非 active profile の pages も clock time/date を datetime へ畳む', () => {

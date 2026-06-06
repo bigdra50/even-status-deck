@@ -51,4 +51,3 @@ export const BUILTIN_SEG_LABELS: Record<string, string> = {
   rate: 'Rate',
   eta: 'Estimated time left',
 }
-export const DEFAULT_PLACE_RADIUS_M = 150 // ジオフェンス既定半径(m, #43)

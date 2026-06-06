@@ -15,7 +15,6 @@ import { ctx } from './state'
 import {
   applyDisplayLabels,
   glassPreviewHtml,
-  maybeGeofenceAutoSwitch,
   recomputeSuggestion,
   syncAll,
   visibleSig,
@@ -23,7 +22,6 @@ import {
 import {
   renderAddSource,
   renderHome,
-  renderPlaces,
   renderSourceDetail,
   renderSourceEdit,
   renderSources,
@@ -44,9 +42,7 @@ function screenHtml(): string {
         ? renderSources()
         : ctx.view === 'add-source'
           ? renderAddSource()
-          : ctx.view === 'places'
-            ? renderPlaces()
-            : renderHome()
+          : renderHome()
 }
 
 // 再描画後の Sortable 再付け・swipe 復元・dbg スクロールを順に行う。
@@ -83,7 +79,6 @@ function onStoreUpdate(): void {
   // 衝突解決 (segment owner prefix の displayLabel) を確定 (変化時のみ保存)。
   // group 見出しの衝突は永続リネームせず render-time マージ (display-identity の merge unit) で解く。
   if (applyDisplayLabels()) void saveConfig(ctx.config)
-  maybeGeofenceAutoSwitch() // #43 現在地 place 変化で auto モードの preset へ自動切替(view 非依存=glass にも効く)
   // 構成 (status の有無で変わる) が変化したときだけ再描画。値だけの更新では再描画しない
   // (毎 poll の innerHTML churn が iOS WebContent jettison を招くため。issue #4)。
   if (ctx.view === 'home') {

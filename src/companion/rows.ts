@@ -1,4 +1,4 @@
-// companion の group/segment/source/place 行 HTML を組み立てる純 render 部品層。
+// companion の group/segment/source 行 HTML を組み立てる純 render 部品層。
 // ctx(./state)・sync(./sync)・外部モジュールだけに依存し、index/debug-console は import しない (no-circular)。
 import {
   activeView,
@@ -6,11 +6,9 @@ import {
   BUILTIN_SEG_LABELS,
   BUILTIN_SOURCE_ID,
   customLabelKey,
-  DEFAULT_PLACE_RADIUS_M,
   type GroupRef,
   groupDisplayName,
   type OptionValues,
-  type Place,
   type SegMeta,
   type SourceDef,
   sourceById,
@@ -36,21 +34,6 @@ import { editingLayout, parseKey, statusGroup, visibleRefs, worstReportedState }
 // 1 segment が持てる条件 leaf の上限 (UI が破綻しない緩い上限)。
 export const MAX_CONDS = 4
 const DEFAULT_DISPLAY_SECS = 5 // 提示 (toast/notification) の既定 自動非表示秒数
-
-// inPlace leaf の place select + inside/outside(#43)。
-function leafInPlaceParams(a: string, leaf: Extract<VisibilityLeaf, { kind: 'inPlace' }>): string {
-  const placeOpts = (ctx.config.places ?? [])
-    .map(
-      (p) =>
-        `<option value="${esc(p.id)}" ${leaf.placeId === p.id ? 'selected' : ''}>${esc(p.label)}</option>`,
-    )
-    .join('')
-  return `<select class="vis-select" data-action="seg-vis-leaf-place" ${a}>${placeOpts}</select>
-    <select class="vis-select" data-action="seg-vis-leaf-side" ${a}>
-      <option value="inside" ${leaf.outside ? '' : 'selected'}>inside</option>
-      <option value="outside" ${leaf.outside ? 'selected' : ''}>outside</option>
-    </select>`
-}
 
 // 表示条件の対象 segment 候補 (同 group 内)。label は表示用、hasPct は live で percent を持つか
 // (threshold 候補の判定に使う)。母集合は素材 (meta.segments)、percent は live status から補う。
@@ -135,7 +118,6 @@ function leafParams(
   sibs: SegChoice[],
   selfId: string,
 ): string {
-  if (leaf.kind === 'inPlace') return leafInPlaceParams(a, leaf)
   if (leaf.kind === 'present') return leafPresentParams(a, leaf, choices, sibs)
   if (leaf.kind === 'threshold') return leafThresholdParams(a, leaf, choices, selfId)
   return leafOnChangeParams(a, leaf, choices, selfId)
@@ -143,7 +125,7 @@ function leafParams(
 
 // 1 leaf 行 (kind select + 対象/params + 削除ボタン)。threshold は同 group に percent を持つ segment が
 // ある時のみ候補。present は対象に別 segment が要るので兄弟がある時のみ。既存 leaf は条件を満たさなくても
-// 自分の kind を候補に残す (data 移行後の編集を壊さない)。inPlace(#43) は保存地点がある時。
+// 自分の kind を候補に残す (data 移行後の編集を壊さない)。
 function leafRow(
   seg2: string,
   leaf: VisibilityLeaf,
@@ -155,13 +137,11 @@ function leafRow(
   const a = `${seg2} data-idx="${i}"`
   const sibs = choices.filter((c) => c.id !== selfId)
   const allowThreshold = groupHasPct || leaf.kind === 'threshold'
-  const allowInPlace = (ctx.config.places?.length ?? 0) > 0 || leaf.kind === 'inPlace'
   const allowPresent = sibs.length > 0 || leaf.kind === 'present'
   const kindSel = `<select class="vis-select" data-action="seg-vis-leaf-kind" ${a}>
     ${allowThreshold ? `<option value="threshold" ${leaf.kind === 'threshold' ? 'selected' : ''}>When…</option>` : ''}
     <option value="onChange" ${leaf.kind === 'onChange' ? 'selected' : ''}>On update</option>
     ${allowPresent ? `<option value="present" ${leaf.kind === 'present' ? 'selected' : ''}>Has value</option>` : ''}
-    ${allowInPlace ? `<option value="inPlace" ${leaf.kind === 'inPlace' ? 'selected' : ''}>At place</option>` : ''}
   </select>`
   const params = leafParams(a, leaf, choices, sibs, selfId)
   const del = `<button class="vis-del" data-action="seg-vis-remove" ${a} title="Remove" aria-label="Remove">${icon('x', { size: 14 })}</button>`
@@ -569,17 +549,4 @@ export function allPlaceableKeys(): string[] {
   // ユーザー定義の custom ラベル
   for (const id of Object.keys(editingLayout()?.customLabels ?? {})) keys.push(customLabelKey(id))
   return keys
-}
-
-// ── 保存地点管理 (#43 geofence) ──
-// 各保存地点を name + 座標 + 半径 + 削除で並べ、現在地を新規保存できる。保存地点は geofence
-// (preset 自動切替/提案・inPlace 表示条件)の領域定義に使う。距離/方位ナビ表示(#42)は撤廃済。
-export function placeManageRow(p: Place): string {
-  const radius = p.radiusM ?? DEFAULT_PLACE_RADIUS_M
-  return `<div class="src"><div class="src-head">
-    <span class="src-name">${esc(p.label)}</span>
-    <span class="src-note mono">${p.lat.toFixed(3)}, ${p.lon.toFixed(3)} · ${radius}m</span>
-    <button class="link-btn" data-action="rename-place" data-place="${esc(p.id)}" title="Rename">Rename</button>
-    <button class="link-btn" data-action="radius-place" data-place="${esc(p.id)}" title="Geofence radius">Radius</button>
-    <button class="link-btn" data-action="delete-place" data-place="${esc(p.id)}" title="Delete">Delete</button></div></div>`
 }

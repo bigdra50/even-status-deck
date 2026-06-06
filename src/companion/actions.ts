@@ -4,27 +4,22 @@
 import {
   activeProfile,
   activeView,
-  addPlace,
   addProfile,
   addServer,
   BUILTIN_GROUP_LABELS,
   BUILTIN_SOURCE_ID,
   customLabelKey,
-  DEFAULT_PLACE_RADIUS_M,
   DEFAULT_PROFILE_ID,
   duplicateActiveProfile,
   generateGlassLayout,
   genLabelId,
   genPageId,
   promoteSourceUrl,
-  removePlace,
   removeProfile,
   removeSource,
   removeSourceUrl,
-  renamePlace,
   renameProfile,
   saveConfig,
-  setPlaceRadius,
   setSourceEnabled,
   sourceById,
   sourceUrls,
@@ -46,7 +41,6 @@ import {
   parseKey,
   statusGroup,
 } from './sync'
-import { afterPlacesChange, getCompanionPosition } from './views'
 
 type ClickHandler = (t: HTMLElement, e: MouseEvent) => void | Promise<void>
 
@@ -139,53 +133,13 @@ export const CLICK_ACTIONS: Record<string, ClickHandler> = {
     if (removeProfile(ctx.config, cur.id)) applyProfileChange()
   },
 
-  // ── sources-nav / places ──
+  // ── sources-nav ──
   'manage-sources'() {
     ctx.view = 'sources'
     requestRender()
   },
-  'manage-places'() {
-    ctx.view = 'places'
-    requestRender()
-  },
-  async 'add-current-place'() {
-    // 現在地を取得して名前を付けて保存する。位置許可が無ければ案内して中断。
-    const name = window.prompt('Place name', 'Home')
-    if (!name?.trim()) return
-    try {
-      const pos = await getCompanionPosition()
-      addPlace(ctx.config, name.trim(), pos.lat, pos.lon)
-      afterPlacesChange()
-    } catch {
-      window.alert('Could not get your location. Allow location access and try again.')
-    }
-  },
-  'rename-place'(t) {
-    const id = t.dataset.place
-    const p = ctx.config.places?.find((x) => x.id === id)
-    if (!id || !p) return
-    const name = window.prompt('Place name', p.label)
-    if (name?.trim() && renamePlace(ctx.config, id, name.trim())) afterPlacesChange()
-  },
-  'radius-place'(t) {
-    // ジオフェンス半径(m)。inPlace 表示条件と here(現在地)判定の圏を決める(#43)。
-    const id = t.dataset.place
-    const p = ctx.config.places?.find((x) => x.id === id)
-    if (!id || !p) return
-    const cur = String(p.radiusM ?? DEFAULT_PLACE_RADIUS_M)
-    const input = window.prompt('Geofence radius (meters)', cur)
-    const m = input == null ? Number.NaN : Number(input)
-    if (Number.isFinite(m) && setPlaceRadius(ctx.config, id, m)) afterPlacesChange()
-  },
-  'delete-place'(t) {
-    const id = t.dataset.place
-    if (!id) return
-    const p = ctx.config.places?.find((x) => x.id === id)
-    if (p && window.confirm(`Delete "${p.label}"?`) && removePlace(ctx.config, id))
-      afterPlacesChange()
-  },
 
-  // ── place ops / source add-edit-url ──
+  // ── source add-edit-url ──
   'open-add-source'() {
     ctx.view = 'add-source'
     requestRender()

@@ -170,20 +170,3 @@ export function renameProfile(cfg: Config, id: string, name: string): void {
   const prof = cfg.profiles.find((p) => p.id === id)
   if (prof) prof.name = trimmed
 }
-
-// preset のジオフェンス連動を設定する(#43)。placeId=null で解除。mode は suggest/auto。
-export function setProfileGeofence(
-  cfg: Config,
-  profileId: string,
-  placeId: string | null,
-  mode: 'suggest' | 'auto',
-): boolean {
-  const prof = cfg.profiles.find((p) => p.id === profileId)
-  if (!prof) return false
-  if (!placeId || !cfg.places?.some((pl) => pl.id === placeId)) {
-    prof.geofence = undefined
-  } else {
-    prof.geofence = { placeId, mode: mode === 'auto' ? 'auto' : 'suggest' }
-  }
-  return true
-}

@@ -1,14 +1,12 @@
-// change イベントハンドラ (表示条件 leaf 編集 / 表示オプション / preset 切替 / geofence 連動 / ページ名) と接続テスト。
+// change イベントハンドラ (表示条件 leaf 編集 / 表示オプション / preset 切替 / ページ名) と接続テスト。
 // index.ts から切り出した UI 編集レイヤ。依存は state/render-port/sync/rows と外部のみ (一方向)。
 
 import {
-  activeProfile,
   activeView,
   type GroupRef,
   reconcileSourceMachine,
   saveConfig,
   setActiveProfile,
-  setProfileGeofence,
   sourceById,
 } from '../config'
 import { fetchMachineFrom } from '../data'
@@ -146,23 +144,9 @@ function onSegVisLeafAbsent(t: HTMLElement): void {
   })
 }
 
-function onSegVisLeafPlace(t: HTMLElement): void {
-  withSegVisLeaf(t, ({ leaf, val }) => {
-    if (leaf.kind === 'inPlace') leaf.placeId = val
-  })
-}
-
-function onSegVisLeafSide(t: HTMLElement): void {
-  withSegVisLeaf(t, ({ leaf, val }) => {
-    if (leaf.kind === 'inPlace') leaf.outside = val === 'outside'
-  })
-}
-
 export const CHANGE_ACTIONS: Record<string, ChangeHandler> = {
   'profile-switch': (_t, e) => onProfileSwitch(e),
   'opt-set': (_t, e) => onOptionChange(e),
-  'profile-geofence-place': () => onGeofenceBindChange(),
-  'profile-geofence-mode': () => onGeofenceBindChange(),
   'page-rename': (_t, e) => onPageRename(e),
   'seg-vis-combinator': (t) => onSegVisCombinator(t),
   'seg-vis-display-ui': (t) => onSegVisDisplayUi(t),
@@ -174,8 +158,6 @@ export const CHANGE_ACTIONS: Record<string, ChangeHandler> = {
   'seg-vis-leaf-hold': (t) => onSegVisLeafHold(t),
   'seg-vis-leaf-seg': (t) => onSegVisLeafSeg(t),
   'seg-vis-leaf-absent': (t) => onSegVisLeafAbsent(t),
-  'seg-vis-leaf-place': (t) => onSegVisLeafPlace(t),
-  'seg-vis-leaf-side': (t) => onSegVisLeafSide(t),
 }
 
 export function onChange(e: Event): void {
@@ -193,24 +175,6 @@ function onPageRename(e: Event): void {
   if (!page) return
   page.name = t.value.trim().slice(0, 24) || `Page ${i + 1}`
   void saveConfig(ctx.config)
-}
-
-// #43 active preset のジオフェンス連動(place + mode)を保存する。place/mode の両 select を読む。
-function onGeofenceBindChange(): void {
-  const active = activeProfile(ctx.config)
-  const placeSel = ctx.root?.querySelector<HTMLSelectElement>(
-    '[data-action="profile-geofence-place"]',
-  )
-  const modeSel = ctx.root?.querySelector<HTMLSelectElement>(
-    '[data-action="profile-geofence-mode"]',
-  )
-  const placeId = placeSel?.value || null
-  const mode = modeSel?.value === 'auto' ? 'auto' : 'suggest'
-  if (setProfileGeofence(ctx.config, active.id, placeId, mode)) {
-    ctx.lastGeofencePlace = null // バインド変更後は次の onStoreUpdate で auto 切替を再評価させる
-    void saveConfig(ctx.config)
-    requestRender()
-  }
 }
 
 // Preset select の変更で active profile を切替える。enabledSourceIds が変わるため
@@ -272,7 +236,6 @@ export function applyOptionChange(ds: DOMStringMap, rawValue: unknown): void {
 // threshold は host が percent を持たない場合、同 group の percent を持つ兄弟を既定対象にする
 // (self だと percent 欠落で常に na になり機能しないため)。
 function newLeafOfKind(kind: string, ref: GroupRef, hostId: string): VisibilityLeaf {
-  if (kind === 'inPlace') return { kind: 'inPlace', placeId: ctx.config.places?.[0]?.id ?? '' }
   if (kind === 'present') {
     const sib = (ctx.config.groups[ref.sourceId]?.[ref.groupId]?.segments ?? [])
       .map((s) => s.id)
