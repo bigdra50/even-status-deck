@@ -890,7 +890,6 @@ function renderGlassSection(): string {
       ${renderPageTabs(pages)}
       ${renderPageControls(pages)}
       <div class="cmp-sub">Drag items to rows (1–${MAX_ROWS}) or the Unplaced shelf. Row number = position from top of glass.</div>
-      ${multi ? `<div class="cmp-sub">With multiple pages, row ${MAX_ROWS} is hidden behind the page dots on glass.</div>` : ''}
       ${renderGlassEdit(lay)}`
   }
   return `<div class="cmp-label cmp-label-row">Glass pages<span class="cmp-actions"><button class="gear-btn" data-action="layout-edit-toggle" title="Edit layout" aria-label="Edit layout">${icon('layout', { size: 16 })}</button><button class="gear-btn" data-action="fs-open" title="Fullscreen edit" aria-label="Fullscreen edit">${icon('maximize', { size: 16 })}</button></span></div>

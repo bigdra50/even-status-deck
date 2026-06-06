@@ -410,26 +410,8 @@ export function renderRuntimePage(
   return frame([...top, ...Array<string>(gap).fill(''), ...bottom], null)
 }
 
-// ページインジケータのグリフ (progress bar の幾何グリフ同様、実機描画実績あり。tofu なら i/N へ)。
-const DOT_FILLED = '●' // ●
-const DOT_EMPTY = '○' // ○
-const MAX_DOTS = 8 // これ超でドット列が溢れるため "i/N" テキストへフォールバック
-
-// 複数ページ時の位置インジケータ 1 行。total≤MAX_DOTS は ●/○ のドットバー、超えたら "i/N"。
-// INNER_W 中央寄せ (displayWidth 概算)。同一 TextContainer 内 1 行なので topology 不変 = ちらつき無し。
-function indicatorLine(idx: number, total: number): string {
-  const body =
-    total > MAX_DOTS
-      ? `${idx + 1}/${total}`
-      : Array.from({ length: total }, (_, i) => (i === idx ? DOT_FILLED : DOT_EMPTY)).join(' ')
-  const cols = Math.floor(INNER_W / SPACE_W) // 概算桁数 (proportional だが中央寄せ近似に十分)
-  const padN = Math.max(0, Math.floor((cols - displayWidth(body)) / 2))
-  return ' '.repeat(padN) + body
-}
-
-// デッキの現在ページを描く (glass.ts の単一描画エントリ)。explicit デッキが複数ページのときだけ
-// 最終行にインジケータを出し本文は 9 行。auto デッキ / 単一ページは本文 10 行 (インジケータ無し)。
-// auto を非表示にするのは既存 summary の 10→9 行回帰を避けるため (設計合意。spec §6 からの逸脱)。
+// デッキの現在ページを描く (glass.ts の単一描画エントリ)。全ページ本文 10 行。
+// ページ位置インジケータは出さない (実機でドットが大きすぎるためユーザー判断で撤去)。
 export function renderDeckPage(
   pages: RuntimePage[],
   idx: number,
@@ -437,14 +419,7 @@ export function renderDeckPage(
   visible?: VisibleMap,
 ): string {
   const total = pages.length
-  const safeIdx = total > 0 ? ((idx % total) + total) % total : 0 // 範囲外でも本文とドットを整合させる
+  const safeIdx = total > 0 ? ((idx % total) + total) % total : 0
   const page = pages[safeIdx] ?? { kind: 'autoSummary' }
-  const explicit = pages[0]?.kind === 'custom'
-  if (!explicit || total <= 1) return renderRuntimePage(page, d, MAX_ROWS, visible)
-  const bodyLines = renderRuntimePage(page, d, MAX_ROWS - 1, visible)
-    .split('\n')
-    .slice(0, MAX_ROWS - 1)
-  while (bodyLines.length < MAX_ROWS - 1) bodyLines.push('')
-  bodyLines.push(indicatorLine(safeIdx, total))
-  return bodyLines.join('\n')
+  return renderRuntimePage(page, d, MAX_ROWS, visible)
 }

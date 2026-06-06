@@ -81,14 +81,13 @@ test('buildRuntimePages: group が無い auto は summary 1 枚', () => {
   expect(buildRuntimePages(makeData(undefined, false))).toEqual([{ kind: 'autoSummary' }])
 })
 
-test('renderDeckPage: explicit 複数ページは最終行ドットバー (本文 9 行)', () => {
+test('renderDeckPage: explicit 複数ページもインジケータ無し (本文 10 行・撤去後)', () => {
   const d = makeData([page('p1', [G2_LEVEL]), page('p2', [G2_LEVEL]), page('p3', [G2_LEVEL])])
   const built = buildRuntimePages(d)
   expect(built.length).toBe(3)
-  const lines = renderDeckPage(built, 1, d).split('\n')
-  expect(lines.length).toBe(MAX_ROWS) // 本文 9 行 + インジケータ 1 行
-  const dots = (lines[MAX_ROWS - 1] ?? '').trim().split(' ')
-  expect(dots).toEqual(['○', '●', '○']) // idx=1 が ●
+  const out = renderDeckPage(built, 1, d)
+  expect(out.includes('●') || out.includes('○')).toBe(false)
+  expect(out.split('\n').length).toBeLessThanOrEqual(MAX_ROWS)
 })
 
 test('renderDeckPage: 単一ページはインジケータ無し', () => {
@@ -103,13 +102,6 @@ test('renderDeckPage: auto デッキ複数ページはインジケータ無し (
   expect(built.length).toBeGreaterThan(1)
   const out = renderDeckPage(built, 0, d)
   expect(out.includes('●') || out.includes('○')).toBe(false)
-})
-
-test('renderDeckPage: 8 ページ超はテキスト i/N インジケータ', () => {
-  const ps = Array.from({ length: 9 }, (_, i) => page(`p${i}`, [G2_LEVEL]))
-  const d = makeData(ps)
-  const last = renderDeckPage(buildRuntimePages(d), 2, d).split('\n')[MAX_ROWS - 1] ?? ''
-  expect(last).toContain('3/9')
 })
 
 test('layoutLines: ページごとの customLabels が独立 (漏れない)', () => {
