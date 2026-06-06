@@ -13,9 +13,11 @@ import {
   isCustomLabelKey,
   isRightDivider,
   LABEL_SEG,
+  type ProfileView,
   resolvePages,
   type ViewGroup,
 } from './config'
+import { computeGroupMergeUnits, type GroupMergeUnit, normalizeHeading } from './display-identity'
 import { MAX_ROWS } from './glass-types'
 import { sanitizeGlyphs } from './glyphs'
 import type { Group, StatusDoc } from './status-types'
@@ -26,11 +28,13 @@ import { isVisible, segKey, type VisibleMap } from './visibility'
 // HUD (時刻/電池) は builtin local の group (clock / g2) として groupOrder に含まれる。
 // 素材 (config.groups: GroupMeta) が segment の存在・順序・format を持ち、可視性 (enabled /
 // segment ON-OFF / align / showDefaultLabel) は active profile の view (ViewGroup) を読む。
+// 描画単位は merge unit (display-identity): 同 source 内で見出しが一致する group は summary 1 行 /
+// detail 1 ページに統合する。unit 構成は config のみで決まる (offline で揺れない)。
 // 描画時の仮想/実ページ。auto デッキ (autoSummary/autoDetail) は render-time に組み永続化しない。
 // custom は view.pages のユーザー定義をそのまま描く。scroll はこの列を巡回する。
 export type RuntimePage =
   | { kind: 'autoSummary' }
-  | { kind: 'autoDetail'; ref: GroupRef }
+  | { kind: 'autoDetail'; unit: GroupMergeUnit }
   | { kind: 'custom'; page: GlassPage }
 export type GlassData = {
   config: Config
@@ -123,31 +127,72 @@ function findGroup(d: GlassData, ref: GroupRef): Group | undefined {
   return d.statuses[ref.sourceId]?.groups.find((g) => g.id === ref.groupId)
 }
 
-// 1 group の summary 行: enabled かつ表示条件を満たす segment を "label value" で連結。
-// 順序は素材 (GroupMeta.segments)、ON/OFF は view (ViewGroup.segments)。
-// segment 単位の表示タイミング条件 (visible map) を適用する。全部隠れたら null (行ごと消える)。
-function groupLine(
+// 1 group の summary 用 segment parts ("label value")。enabled かつ表示条件を満たす segment を
+// 素材順 (GroupMeta.segments) で集める。ON/OFF は view (ViewGroup.segments)。
+// 幅計測 (clampSummaryLine) の前に sanitize する (後段 sanitize は ✅→OK の幅変化で枠を超える。issue #11)。
+function groupSegmentParts(
   g: Group,
   meta: GroupMeta,
   vg: ViewGroup,
   ref: GroupRef,
   visible?: VisibleMap,
-): string | null {
+): string[] {
   const segs = new Map(g.segments.map((s) => [s.id, s]))
   const parts: string[] = []
   for (const sm of meta.segments) {
     const seg = segs.get(sm.id)
     if (!(vg.segments[sm.id] ?? true) || !seg) continue
     if (!isVisible(visible, segKey(ref.sourceId, ref.groupId, sm.id))) continue
-    parts.push(seg.label ? `${seg.label} ${seg.value}` : seg.value)
+    parts.push(sanitizeGlyphs(seg.label ? `${seg.label} ${seg.value}` : seg.value))
   }
-  if (!parts.length) return null
-  // 見出しは displayName(衝突解決/手動) を最優先、無ければ live g.label (builtin は '' = 前置なし、不変)。
-  // groupLabelText と falsy 扱いを揃えるため空文字 displayName は採用しない(|| で g.label にフォール)。
-  const gname = meta.displayName || g.label
-  // summary は値を素のまま連結する (formatSegmentValue を通さない) ため、行全体を sanitize する。
-  // 切り詰めが無くグラスの折り返しに任せる経路なので、出力段の sanitize で幅問題は起きない。
-  return sanitizeGlyphs(gname ? `${gname}  ${parts.join('  ')}` : parts.join('  '))
+  return parts
+}
+
+// unit の summary parts: enabled な live member の parts を groupOrder 順に連結。
+// offline/disabled member は供出しないだけで unit 構成 (位置/align) には影響しない。
+function unitParts(
+  d: GlassData,
+  view: ProfileView,
+  unit: GroupMergeUnit,
+  visible?: VisibleMap,
+): string[] {
+  const parts: string[] = []
+  for (const ref of unit.members) {
+    const vg = view.groups[ref.sourceId]?.[ref.groupId]
+    const meta = d.config.groups[ref.sourceId]?.[ref.groupId]
+    if (!vg?.enabled || !meta) continue
+    const g = findGroup(d, ref)
+    if (!g) continue
+    parts.push(...groupSegmentParts(g, meta, vg, ref, visible))
+  }
+  return parts
+}
+
+// unit の表示見出し。merged は unit.heading (merge identity = 全 member 共通)。singleton は従来規則
+// (displayName || live g.label) を維持し、builtin の見出し無し ('' = 前置なし) を変えない。
+// 空文字 displayName は採用しない (groupLabelText と falsy 扱いを揃える)。sanitize 済みを返す。
+function unitHeading(d: GlassData, unit: GroupMergeUnit): string {
+  if (unit.members.length > 1) return sanitizeGlyphs(unit.heading)
+  const ref = unit.rep
+  const meta = d.config.groups[ref.sourceId]?.[ref.groupId]
+  return sanitizeGlyphs(meta?.displayName || findGroup(d, ref)?.label || '')
+}
+
+// summary 行を物理 1 行に clamp する。segment 境界で px 幅 (getTextWidth) が安全幅に収まる分まで
+// 詰め、残りは '… +N'。autoSummary の top/bottom gap 計算 (renderRuntimePage) は論理行数ベース
+// なので、折り返しで物理行が増えると 10 行予算を破る — summary は必ず物理 1 行にして防ぐ
+// (全データは autoDetail ページで見る)。安全幅は justifyClusters と同じく space 1 個分を残す。
+function clampSummaryLine(heading: string, parts: string[]): string {
+  const safe = INNER_W - SPACE_W
+  const join = (ps: string[]) => (heading ? [heading, ...ps] : ps).join('  ')
+  if (getTextWidth(join(parts)) <= safe) return join(parts)
+  for (let keep = parts.length - 1; keep >= 1; keep--) {
+    const line = `${join(parts.slice(0, keep))}  … +${parts.length - keep}`
+    if (getTextWidth(line) <= safe) return line
+  }
+  // 見出し + 先頭 1 part でも超える極端例。'… +N' は付けたまま折り返しに任せる (情報を黙って捨てない)。
+  if (parts.length === 1) return join(parts)
+  return `${join(parts.slice(0, 1))}  … +${parts.length - 1}`
 }
 
 // group ラベルテキスト。衝突解決/手動の displayName(素材) を最優先し、無ければ
@@ -169,8 +214,10 @@ function showsGroupLabel(vg: ViewGroup, groupId: string): boolean {
 }
 
 // items を解決して 1 クラスタの文字列を連結する。各 segment は値 (segLabel value) を出し、group の
-// default-label が ON なら group 名を前置する。隣接する同 group の run では先頭 1 回だけ
-// (dedup)。custom テキストラベルは独立要素で run を切る。enabled/表示条件/status でフィルタ。
+// default-label が ON なら group 名を前置する。隣接する「同見出し」(同 source + 正規化見出し一致 =
+// merge unit と同じ規則) の run では先頭 1 回だけ (dedup)。見出しを実際に出すまで run を「ラベル済」
+// にしない (label OFF の member が次 member の見出しを抑止しない)。custom テキストラベルは独立要素で
+// run を切る。enabled/表示条件/status でフィルタ。
 function renderKeys(
   items: string[],
   d: GlassData,
@@ -179,13 +226,15 @@ function renderKeys(
 ): string {
   const view = activeView(d.config)
   const parts: string[] = []
-  let prevGroup: string | null = null // 直前に出力した segment の groupId (custom label / 行頭で null)
+  let runKey: string | null = null // 現在の run の見出しキー (custom label / 行頭で null)
+  let runLabeled = false // この run で見出しを出力済みか
   for (const key of items) {
     if (isCustomLabelKey(key)) {
       const text = customLabels[customLabelId(key)]?.text
       if (text) {
         parts.push(text) // ユーザー定義の自由テキストラベル
-        prevGroup = null // run を切る (後続の同 group はラベル再表示)
+        runKey = null // run を切る (後続の同見出しはラベル再表示)
+        runLabeled = false
       }
       continue
     }
@@ -202,14 +251,19 @@ function renderKeys(
     if (!seg) continue // status 欠落 (missing) → 描画時 skip (rows からは消さない)
     const v = formatSegmentValue(seg.value, seg.widthChars, seg.isNumeric ?? false)
     const body = seg.label ? `${seg.label} ${v}` : v
-    // default-label: ON かつ run の先頭 (直前と group が変わった) なら group 名を前置
-    if (showsGroupLabel(vg, groupId) && groupId !== prevGroup) {
-      const gl = groupLabelText(d, sourceId, groupId)
-      parts.push(gl ? `${gl} ${body}` : body)
+    const gl = groupLabelText(d, sourceId, groupId)
+    const headKey = `${sourceId} ${normalizeHeading(gl)}` // 区切りは sourceId に現れない NUL
+    if (headKey !== runKey) {
+      runKey = headKey
+      runLabeled = false
+    }
+    // default-label: ON かつこの run でまだ見出しを出していなければ前置
+    if (showsGroupLabel(vg, groupId) && !runLabeled && gl) {
+      parts.push(`${gl} ${body}`)
+      runLabeled = true
     } else {
       parts.push(body)
     }
-    prevGroup = groupId
   }
   // 値は formatSegmentValue で sanitize 済 (切り詰め前)。ラベル/custom テキストはここで sanitize する。
   // justify は本関数の出力(クラスタ文字列)を px 計測するので、出力段で sanitize すれば幅は整合する。
@@ -285,8 +339,9 @@ export function layoutLines(
   return layoutRowClusters(lay, d, visible, budget).map(justifyClusters)
 }
 
-// 従来の group=1行 描画 (glassLayout 未設定時)。align で top/bottom に振り分ける。
-// companion プレビュー (auto) でも再利用する。
+// unit=1行 の summary 描画 (glassLayout 未設定時)。align で top/bottom に振り分ける。
+// companion プレビュー (auto) でも再利用する。align は代表 (groupOrder 先頭 member) に従う —
+// 静的代表なので offline/disable で行位置が動かない (member 間で align が食い違っても代表を採用)。
 export function summarySections(
   d: GlassData,
   visible?: VisibleMap,
@@ -294,15 +349,12 @@ export function summarySections(
   const view = activeView(d.config)
   const top: string[] = []
   const bottom: string[] = []
-  for (const ref of view.groupOrder) {
-    const vg = view.groups[ref.sourceId]?.[ref.groupId]
-    const meta = d.config.groups[ref.sourceId]?.[ref.groupId]
-    if (!vg?.enabled || !meta) continue
-    const g = findGroup(d, ref)
-    if (!g) continue
-    const line = groupLine(g, meta, vg, ref, visible)
-    if (!line) continue
-    if (vg.align === 'bottom') bottom.push(line)
+  for (const unit of computeGroupMergeUnits(d.config, view)) {
+    const parts = unitParts(d, view, unit, visible)
+    if (!parts.length) continue // 全 member 不可視 → 行ごと消える
+    const line = clampSummaryLine(unitHeading(d, unit), parts)
+    const vg = view.groups[unit.rep.sourceId]?.[unit.rep.groupId]
+    if (vg?.align === 'bottom') bottom.push(line)
     else top.push(line)
   }
   return { top, bottom }
@@ -315,24 +367,34 @@ export function summaryBody(d: GlassData, visible?: VisibleMap): string[] {
   return all.length ? all : ['(no metric)']
 }
 
-// 詳細本文: その group の (表示条件を満たす) segment を bar 表示 (percent あれば)。
-function detailBody(d: GlassData, ref: GroupRef, visible?: VisibleMap): string[] {
-  const g = findGroup(d, ref)
-  if (!g) return summaryBody(d, visible)
-  const lines: string[] = g.label ? [sanitizeGlyphs(g.label)] : []
-  for (const seg of g.segments) {
-    if (!isVisible(visible, segKey(ref.sourceId, ref.groupId, seg.id))) continue
-    const v = formatSegmentValue(seg.value, seg.widthChars, seg.isNumeric ?? false) // 値は sanitize 済
-    // ラベルは pad(幅計算) の前に sanitize する。reset も同様にグラスへ渡る前に通す。
-    const label = seg.label ? sanitizeGlyphs(seg.label) : ''
-    if (typeof seg.percent === 'number') {
-      const name = label ? pad(label, 8) : ''
-      const reset = seg.reset ? ` ${sanitizeGlyphs(seg.reset)}` : ''
-      lines.push(`${name} ${bar(seg.percent)} ${v}${reset}`.trim())
-    } else {
-      lines.push(label ? `${pad(label, 8)} ${v}` : v)
+// 詳細本文: unit の enabled な live member 全ての (表示条件を満たす) segment を bar 表示
+// (percent あれば)。見出しは unit で 1 回。segment の ON/OFF (vg.segments) は意図的に見ない
+// (detail はその unit の全データを見る画面)。全 member が status 欠落なら summary へフォールバック。
+function detailBody(d: GlassData, unit: GroupMergeUnit, visible?: VisibleMap): string[] {
+  const view = activeView(d.config)
+  const heading = unitHeading(d, unit)
+  const lines: string[] = heading ? [heading] : []
+  let live = false
+  for (const ref of unit.members) {
+    if (!view.groups[ref.sourceId]?.[ref.groupId]?.enabled) continue // disabled member は供出しない
+    const g = findGroup(d, ref)
+    if (!g) continue // offline member はスキップ (代表欠落でも summary へはフォールバックしない)
+    live = true
+    for (const seg of g.segments) {
+      if (!isVisible(visible, segKey(ref.sourceId, ref.groupId, seg.id))) continue
+      const v = formatSegmentValue(seg.value, seg.widthChars, seg.isNumeric ?? false) // 値は sanitize 済
+      // ラベルは pad(幅計算) の前に sanitize する。reset も同様にグラスへ渡る前に通す。
+      const label = seg.label ? sanitizeGlyphs(seg.label) : ''
+      if (typeof seg.percent === 'number') {
+        const name = label ? pad(label, 8) : ''
+        const reset = seg.reset ? ` ${sanitizeGlyphs(seg.reset)}` : ''
+        lines.push(`${name} ${bar(seg.percent)} ${v}${reset}`.trim())
+      } else {
+        lines.push(label ? `${pad(label, 8)} ${v}` : v)
+      }
     }
   }
+  if (!live) return summaryBody(d, visible)
   return lines
 }
 
@@ -355,18 +417,12 @@ function hasRenderableLayout(lay: GlassLayout, d: GlassData, visible?: VisibleMa
   return layoutLines(lay, d, visible, MAX_ROWS).some((line) => line.trim() !== '')
 }
 
-// auto デッキの detail 対象 group ref 列 (表示可能 segment が 1 つ以上ある有効 group。groupOrder 順)。
-function renderableGroupRefs(d: GlassData, visible?: VisibleMap): GroupRef[] {
+// auto デッキの detail 対象 unit 列 (表示可能 segment が 1 つ以上ある unit。groupOrder 順)。
+function renderableUnits(d: GlassData, visible?: VisibleMap): GroupMergeUnit[] {
   const view = activeView(d.config)
-  const out: GroupRef[] = []
-  for (const ref of view.groupOrder) {
-    const vg = view.groups[ref.sourceId]?.[ref.groupId]
-    const meta = d.config.groups[ref.sourceId]?.[ref.groupId]
-    if (!vg?.enabled || !meta) continue
-    const g = findGroup(d, ref)
-    if (g && groupLine(g, meta, vg, ref, visible)) out.push(ref)
-  }
-  return out
+  return computeGroupMergeUnits(d.config, view).filter(
+    (unit) => unitParts(d, view, unit, visible).length > 0,
+  )
 }
 
 // 表示するランタイムページ列。pages (explicit デッキ) があればそれを、無ければ auto デッキ
@@ -382,7 +438,8 @@ export function buildRuntimePages(d: GlassData, visible?: VisibleMap): RuntimePa
   }
   return [
     { kind: 'autoSummary' },
-    ...renderableGroupRefs(d, visible).map((ref): RuntimePage => ({ kind: 'autoDetail', ref })),
+    // unit snapshot をページに保持 (描画時に再解決せず、build 時の構成とズレない)。
+    ...renderableUnits(d, visible).map((unit): RuntimePage => ({ kind: 'autoDetail', unit })),
   ]
 }
 
@@ -395,7 +452,8 @@ export function renderRuntimePage(
   visible?: VisibleMap,
 ): string {
   if (page.kind === 'autoDetail') {
-    return frame(clampRows(detailBody(d, page.ref, visible), budget), null)
+    // merged unit は member 数ぶん行が増えうるが、超過は clampRows の '+N more' に畳む (意図的)。
+    return frame(clampRows(detailBody(d, page.unit, visible), budget), null)
   }
   if (page.kind === 'custom') {
     return layoutLines(page.page.layout, d, visible, budget).join('\n')
