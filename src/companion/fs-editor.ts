@@ -308,6 +308,10 @@ function onFsPointerUp(e: PointerEvent): void {
   refreshFsBody()
 }
 
+// onFsClick が処理する action 一覧 (下の if 連鎖の鏡。契約テスト actions.test.ts が
+// 「放出された data-action ⊆ ハンドラ集合」の分類に使う)。連鎖に増減があればここも揃える。
+export const FS_ACTIONS = ['fs-done', 'fs-toggle-source', 'fs-unplace'] as const
+
 function onFsClick(e: MouseEvent): void {
   const t = (e.target as HTMLElement).closest('[data-action]') as HTMLElement | null
   if (!t) return
