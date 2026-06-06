@@ -202,6 +202,8 @@ function clampSummaryLine(heading: string, parts: string[]): string {
 
 // 文字列を px 幅 maxPx 以下へ code point 単位で切り詰め、削ったら '…' を付ける (サロゲートを割らない)。
 // clampSummaryLine の最終 fallback 専用 (劣化値が summary に来る病的ケースのみ走る)。
+// 注: 先頭 1 code point は必ず残すため、maxPx が 1 文字幅未満の極小値なら超過しうる
+// (呼び出し元の maxPx は常に「安全幅 − '… +N' 幅」≒ 540px なので実際には到達しない)。
 function truncateToWidth(s: string, maxPx: number): string {
   if (getTextWidth(s) <= maxPx) return s
   const cps = [...s]
@@ -209,17 +211,14 @@ function truncateToWidth(s: string, maxPx: number): string {
   return `${cps.join('')}…`
 }
 
-// group ラベルテキスト。衝突解決/手動の displayName(素材) を最優先し、無ければ
-// builtin=code-owned / server=status group.label or source label。
-function groupLabelText(d: GlassData, sourceId: string, groupId: string): string {
+// group ラベルテキスト (表示用)。手動 rename の displayName(素材) を最優先し、無ければ
+// builtin=code-owned / server=status group.label or source label。live は呼び出し元が解決済みの
+// status group を渡す (renderKeys が segment 解決で同じ group を引くため、二重検索を避ける)。
+function groupLabelText(d: GlassData, sourceId: string, groupId: string, live?: Group): string {
   const override = d.config.groups[sourceId]?.[groupId]?.displayName
   if (override) return override
   if (sourceId === BUILTIN_SOURCE_ID) return BUILTIN_GROUP_LABELS[groupId] ?? groupId
-  return (
-    findGroup(d, { sourceId, groupId })?.label ||
-    d.config.sources.find((s) => s.id === sourceId)?.label ||
-    groupId
-  )
+  return live?.label || d.config.sources.find((s) => s.id === sourceId)?.label || groupId
 }
 
 // group が default-label (group 名の前置) を出すか。未設定は groupId 既定 (clock=false/他=true)。
@@ -261,7 +260,8 @@ function renderKeys(
     if (!meta?.segments.some((s) => s.id === segId)) continue // 素材に存在しない segment
     if (!(vg.segments[segId] ?? true)) continue // segment 無効
     if (!isVisible(visible, key)) continue // 表示タイミング条件
-    const seg = findGroup(d, { sourceId, groupId })?.segments.find((s) => s.id === segId)
+    const liveGroup = findGroup(d, { sourceId, groupId })
+    const seg = liveGroup?.segments.find((s) => s.id === segId)
     if (!seg) continue // status 欠落 (missing) → 描画時 skip (rows からは消さない)
     const v = formatSegmentValue(seg.value, seg.widthChars, seg.isNumeric ?? false)
     const body = seg.label ? `${seg.label} ${v}` : v
@@ -279,7 +279,7 @@ function renderKeys(
     // default-label: ON かつこの run でまだ見出しを出していなければ前置 (ラベル文言は表示用の
     // groupLabelText。解決は出すときだけ = label OFF の segment で余計な status 検索をしない)
     if (showsGroupLabel(vg, groupId) && !runLabeled) {
-      const gl = groupLabelText(d, sourceId, groupId)
+      const gl = groupLabelText(d, sourceId, groupId, liveGroup)
       if (gl) {
         parts.push(`${gl} ${body}`)
         runLabeled = true

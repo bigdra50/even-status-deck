@@ -445,18 +445,38 @@ function optionControls(
   return `<div class="clock-ctl">${fields.map(ctl).join('')}</div>`
 }
 
-// ref と同じ source 内に merge 見出し (effectiveGroupHeading) が一致する別 group があるか。
-// glass はマージ表示するが管理 UI は per-group のままなので、同名行に group id を併記する判定に使う。
+// sourceId 内で headingKey (正規化済み見出し) が一致する別 group のうち、いずれかの profile の
+// view.groupOrder で groupId と共存している (= その preset で実際にマージが起きる) ものを返す。
 // 描画 (computeGroupMergeUnits) と同じ resolver/正規化を共有 = 「表示はマージ・併記なし」のズレを防ぐ。
-// スコープは意図的に config.groups 全体 (active view の groupOrder ではない): 素材と rename は全
-// profile 共有なので、他 preset でだけ両方が表示されるとそこでマージが起きる。over-approximate が安全。
+// スコープは「全 profile の groupOrder 共存」: rename と素材は全 profile 共有なので active view 限定
+// では他 preset のマージを見逃し、素材全体では どの preset でも共存しない group まで誤検出する。
+function headingCollidesInSomeProfile(
+  sourceId: string,
+  groupId: string,
+  headingKey: string,
+): string | null {
+  if (!headingKey) return null
+  const rivals = Object.keys(config.groups[sourceId] ?? {}).filter(
+    (gid) =>
+      gid !== groupId &&
+      normalizeHeading(effectiveGroupHeading(config, sourceId, gid)) === headingKey,
+  )
+  if (!rivals.length) return null
+  const inOrder = (order: GroupRef[], gid: string) =>
+    order.some((r) => r.sourceId === sourceId && r.groupId === gid)
+  for (const rival of rivals) {
+    const merges = config.profiles.some(
+      (p) => inOrder(p.view.groupOrder, groupId) && inOrder(p.view.groupOrder, rival),
+    )
+    if (merges) return rival
+  }
+  return null
+}
+
+// ref の現在の見出しが (どこかの preset で) 別 group とマージされるか。同名行への group id 併記判定。
 function groupHeadingCollides(sourceId: string, groupId: string): boolean {
   const mine = normalizeHeading(effectiveGroupHeading(config, sourceId, groupId))
-  if (!mine) return false
-  return Object.keys(config.groups[sourceId] ?? {}).some(
-    (gid) =>
-      gid !== groupId && normalizeHeading(effectiveGroupHeading(config, sourceId, gid)) === mine,
-  )
+  return headingCollidesInSomeProfile(sourceId, groupId, mine) !== null
 }
 
 function groupRow(ref: GroupRef): string {
@@ -1743,24 +1763,21 @@ async function onClick(e: MouseEvent): Promise<void> {
         const next = window.prompt('Group name', meta.displayName ?? base)
         if (next !== null) {
           const v = next.trim()
-          // 変更後の見出しが同 source の別 group と一致するならマージが起きる。暗黙に発動させず
+          // 変更後の見出しがいずれかの preset で別 group とマージされるなら、暗黙に発動させず
           // confirm で意図を確認する (base へ戻した結果マージされるケースも同様)。
-          // 判定は描画と同じ resolver: 変更後の effective 見出しを先に確定してから比較する。
-          // スコープは config.groups 全体 (groupHeadingCollides と同じ理由: rename は全 profile に効く)。
+          // 判定は描画と同じ resolver: 変更後の effective 見出しを先に確定してから比較する
+          // (スコープは headingCollidesInSomeProfile = 全 profile の groupOrder 共存)。
           const renamed = v !== '' && v !== base
           const nextHeading = renamed
             ? v
             : isBuiltin
               ? (BUILTIN_GROUP_LABELS[ref.groupId] ?? ref.groupId)
               : (meta.lastLabel ?? '')
-          const nextKey = normalizeHeading(nextHeading)
-          const mergesWith =
-            nextKey &&
-            Object.keys(config.groups[ref.sourceId] ?? {}).find(
-              (gid) =>
-                gid !== ref.groupId &&
-                normalizeHeading(effectiveGroupHeading(config, ref.sourceId, gid)) === nextKey,
-            )
+          const mergesWith = headingCollidesInSomeProfile(
+            ref.sourceId,
+            ref.groupId,
+            normalizeHeading(nextHeading),
+          )
           if (
             mergesWith &&
             !window.confirm(
