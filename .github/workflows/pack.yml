@@ -37,7 +37,7 @@ jobs:
           fi
       - name: Pack .ehpk
         run: bun run pack
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: status-deck-${{ steps.meta.outputs.version }}-ehpk
           path: status-deck.ehpk
