@@ -20,14 +20,24 @@ bun run lint         # biome
 ## テスト / CI
 
 ```bash
-bun run test:unit    # unit (bun test server src)
-bun run test:e2e     # companion UI の playwright e2e (dev server は自動起動)
-bun run test:sim     # evenhub-simulator のグラス表示 e2e (e2e-sim/run.ts)
+bun run test:unit     # unit (bun test server src)
+bun run test:coverage # unit + coverage (lcov → Codecov)
+bun run test:e2e      # companion UI の playwright e2e (dev server は自動起動)
+bun run test:sim      # evenhub-simulator のグラス表示 e2e (e2e-sim/run.ts)
 ```
+
+コード品質ゲート（`ci.yml` の build ジョブ）:
+
+- `lint` — Biome（`noExcessiveCognitiveComplexity` warn、閾値 15）
+- `lint:deps` — dependency-cruiser
+- `knip` — 未使用 export / dep
+- `lint:dup` — jscpd 重複率 3% 未満
+- `lint:fta` — FTA score-cap 170
+- `test:coverage` + Codecov — `bun test --coverage`（patch は informational）
 
 | workflow | トリガ | 内容 |
 |---|---|---|
-| `ci.yml` | push main / PR | lint → lint:deps → knip → build |
+| `ci.yml` | push main / PR | lint → lint:deps → knip → lint:dup → lint:fta → test:coverage → build |
 | `e2e.yml` | push main / PR | playwright e2e |
 | `sim-e2e.yml` | push main / dispatch | simulator E2E（ジョブが重いので PR では回さない） |
 | `pack.yml` | tag `v*` / dispatch | `.ehpk` を artifact / Release 化（[RELEASE.md](./RELEASE.md) 参照） |
