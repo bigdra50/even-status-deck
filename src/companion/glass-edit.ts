@@ -30,39 +30,63 @@ import { editingLayout, glassPreviewHtml, parseKey, statusGroup, visibleRefs } f
 // segment は widthChars (確保枠) 優先、無ければ value 長。custom ラベルはテキスト長。
 // group default-label の前置分も run 先頭で加算 (rowText の dedup と合わせる)。
 const ROW_MAX_CHARS = 50
+
+type RowOverflowKeyWidth = { width: number; counts: boolean; nextPrevGroup: string | null }
+
+// custom ラベル key の行幅寄与を返す。スキップ時は null。
+function rowOverflowCustomLabelWidth(key: string): RowOverflowKeyWidth | null {
+  if (!isCustomLabelKey(key)) return null
+  const text = editingLayout()?.customLabels[customLabelId(key)]?.text ?? ''
+  if (!text) return null
+  return { width: text.length, counts: true, nextPrevGroup: null }
+}
+
+// segment key の行幅寄与を返す。スキップ時は null。
+function rowOverflowSegmentWidth(
+  key: string,
+  prevGroup: string | null,
+  view: ReturnType<typeof activeView>,
+): RowOverflowKeyWidth | null {
+  if (isCustomLabelKey(key)) return null
+  const [sourceId, groupId, segId] = key.split('|')
+  const seg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
+  if (!seg) return null
+  const vg = view.groups[sourceId]?.[groupId]
+  const inMeta =
+    ctx.config.groups[sourceId]?.[groupId]?.segments.some((s) => s.id === segId) ?? false
+  // 無効化された segment は glass(rowText) で描画されないので幅計算からも除外 (過大評価防止)。
+  if (!inMeta || !(vg?.segments[segId] ?? true)) return null
+  const labelLen = seg.label ? seg.label.length + 1 : 0
+  const valLen = seg.widthChars ?? seg.value.length
+  let w = labelLen + valLen
+  const showsLabel = vg?.showDefaultLabel ?? groupId !== 'clock'
+  if (showsLabel && groupId !== prevGroup) {
+    const { group } = segLabelParts(key)
+    if (group) w += group.length + 1 // run 先頭の group 名前置
+  }
+  return { width: w, counts: true, nextPrevGroup: groupId }
+}
+
+// 1 key 分の行幅寄与を返す。スキップ時は null。
+function rowOverflowKeyWidth(
+  key: string,
+  prevGroup: string | null,
+  view: ReturnType<typeof activeView>,
+): RowOverflowKeyWidth | null {
+  return rowOverflowCustomLabelWidth(key) ?? rowOverflowSegmentWidth(key, prevGroup, view)
+}
+
 export function rowOverflow(items: string[]): boolean {
   const view = activeView(ctx.config)
   let total = 0
   let n = 0
   let prevGroup: string | null = null
   for (const key of items) {
-    if (isCustomLabelKey(key)) {
-      const text = editingLayout()?.customLabels[customLabelId(key)]?.text ?? ''
-      if (!text) continue
-      total += text.length
-      prevGroup = null
-      n++
-      continue
-    }
-    const [sourceId, groupId, segId] = key.split('|')
-    const seg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
-    if (!seg) continue
-    const vg = view.groups[sourceId]?.[groupId]
-    const inMeta =
-      ctx.config.groups[sourceId]?.[groupId]?.segments.some((s) => s.id === segId) ?? false
-    // 無効化された segment は glass(rowText) で描画されないので幅計算からも除外 (過大評価防止)。
-    if (!inMeta || !(vg?.segments[segId] ?? true)) continue
-    const labelLen = seg.label ? seg.label.length + 1 : 0
-    const valLen = seg.widthChars ?? seg.value.length
-    let w = labelLen + valLen
-    const showsLabel = vg?.showDefaultLabel ?? groupId !== 'clock'
-    if (showsLabel && groupId !== prevGroup) {
-      const { group } = segLabelParts(key)
-      if (group) w += group.length + 1 // run 先頭の group 名前置
-    }
-    total += w
-    prevGroup = groupId
-    n++
+    const contrib = rowOverflowKeyWidth(key, prevGroup, view)
+    if (!contrib) continue
+    total += contrib.width
+    prevGroup = contrib.nextPrevGroup
+    if (contrib.counts) n++
   }
   return total + Math.max(0, n - 1) * 2 > ROW_MAX_CHARS
 }

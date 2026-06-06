@@ -34,24 +34,23 @@ import {
 // 表示項目リストの構成シグネチャ (順序込み)。変化したら項目リストを再描画する。
 let lastVisibleSig = ''
 
-function render(): void {
-  if (!ctx.root) return
-  // Home を出す直前に提案を最新化する。store の health 変化は Home 以外 (source-edit) でも
-  // 起こり得る (接続テストで追加した source が即 offline になる等) が、その間の notify は
-  // onStoreUpdate が握り潰すため、Home へ戻った描画時に必ず計算し直してバナーを正す。
-  if (ctx.view === 'home') recomputeSuggestion()
-  ctx.root.innerHTML =
-    ctx.view === 'source-edit'
-      ? renderSourceEdit()
-      : ctx.view === 'source-detail'
-        ? renderSourceDetail()
-        : ctx.view === 'sources'
-          ? renderSources()
-          : ctx.view === 'add-source'
-            ? renderAddSource()
-            : ctx.view === 'places'
-              ? renderPlaces()
-              : renderHome()
+// 現在 view に対応する画面 HTML を返す。
+function screenHtml(): string {
+  return ctx.view === 'source-edit'
+    ? renderSourceEdit()
+    : ctx.view === 'source-detail'
+      ? renderSourceDetail()
+      : ctx.view === 'sources'
+        ? renderSources()
+        : ctx.view === 'add-source'
+          ? renderAddSource()
+          : ctx.view === 'places'
+            ? renderPlaces()
+            : renderHome()
+}
+
+// 再描画後の Sortable 再付け・swipe 復元・dbg スクロールを順に行う。
+function afterRenderWiring(): void {
   // home と source-detail は群/段の構成シグネチャを記録し、SortableJS を張る。
   // source-detail は #source-list を持たない (group 横断並べ替え=Glass Layout の責務) ので
   // group sortable は張られず、.src-metrics の segment 並べ替えのみ有効になる。
@@ -61,6 +60,16 @@ function render(): void {
     if (ctx.view === 'home') applySwipeOpen() // 再描画後に開いていた swipe カードの transform を復元
     if (ctx.view === 'home') scrollDbgBottomIfOpen() // 開いていれば最新行へ
   }
+}
+
+function render(): void {
+  if (!ctx.root) return
+  // Home を出す直前に提案を最新化する。store の health 変化は Home 以外 (source-edit) でも
+  // 起こり得る (接続テストで追加した source が即 offline になる等) が、その間の notify は
+  // onStoreUpdate が握り潰すため、Home へ戻った描画時に必ず計算し直してバナーを正す。
+  if (ctx.view === 'home') recomputeSuggestion()
+  ctx.root.innerHTML = screenHtml()
+  afterRenderWiring()
 }
 
 function updatePreview(): void {
