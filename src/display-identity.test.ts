@@ -1,11 +1,13 @@
 // display-identity の単体テスト (表示モデル Phase2)。実行: bun test src/display-identity.test.ts
 import { expect, test } from 'bun:test'
-import type { Config, SourceDef } from './config'
+import type { Config, GroupRef, ProfileView, SourceDef } from './config'
 import {
   collisionCategories,
+  computeGroupMergeUnits,
+  effectiveGroupHeading,
   effectiveOwner,
+  normalizeHeading,
   resolveDisplayLabels,
-  resolveGroupDisplayNames,
 } from './display-identity'
 import type { StatusDoc } from './status-types'
 
@@ -23,6 +25,21 @@ function makeConfig(
       ]),
     ),
   } as unknown as Config
+}
+
+// makeConfig の groups に lastLabel / displayName を後付けする (merge unit テスト用)。
+function setGroupMeta(
+  cfg: Config,
+  sourceId: string,
+  groupId: string,
+  meta: { lastLabel?: string; displayName?: string },
+): void {
+  Object.assign(cfg.groups[sourceId]?.[groupId] ?? {}, meta)
+}
+
+// groupOrder だけ持つ最小 ProfileView。
+function viewOf(order: GroupRef[]): ProfileView {
+  return { groups: {}, groupOrder: order } as unknown as ProfileView
 }
 
 test('effectiveOwner: displayOwner 優先、空/未設定は label にフォールバック', () => {
@@ -129,7 +146,27 @@ test('resolveDisplayLabels: 両方 online なら双方に owner prefix、非衝�
   expect(labels.get('server.local|system|cpu')).toBe(null) // 非衝突 → クリア
 })
 
-test('resolveGroupDisplayNames: 同 source の同 label group を区別 (代表は素のまま)', () => {
+test('effectiveGroupHeading: displayName > builtin コード所有 > lastLabel の順で解決', () => {
+  const cfg = makeConfig([{ id: 'builtin.local' }, { id: 'server.local', label: 'Local' }], {
+    'builtin.local': { g2: [{ id: 'level' }] },
+    'server.local': { 'claude-code': [{ id: 'cost' }], system: [{ id: 'cpu' }] },
+  })
+  setGroupMeta(cfg, 'server.local', 'claude-code', { lastLabel: 'Claude' })
+  setGroupMeta(cfg, 'server.local', 'system', { lastLabel: 'System', displayName: 'Box' })
+  expect(effectiveGroupHeading(cfg, 'server.local', 'claude-code')).toBe('Claude') // lastLabel
+  expect(effectiveGroupHeading(cfg, 'server.local', 'system')).toBe('Box') // ユーザー rename 優先
+  expect(effectiveGroupHeading(cfg, 'builtin.local', 'g2')).toBe('G2') // builtin はコード所有
+  // lastLabel 未捕捉 (一度も online になっていない) は空 = マージ対象外
+  expect(effectiveGroupHeading(cfg, 'server.local', 'nope')).toBe('')
+})
+
+test('normalizeHeading: NFC + trim で正規化し case は区別する', () => {
+  expect(normalizeHeading(' Claude ')).toBe('Claude')
+  expect(normalizeHeading('Çafé')).toBe('Çafé') // 結合文字 → NFC 合成
+  expect(normalizeHeading('claude')).not.toBe(normalizeHeading('Claude'))
+})
+
+test('computeGroupMergeUnits: 同 source の同見出し group を 1 unit に畳む (代表=order 先頭)', () => {
   const cfg = makeConfig([{ id: 'server.local', label: 'Local' }], {
     'server.local': {
       'claude-code': [{ id: 'cost' }],
@@ -137,46 +174,73 @@ test('resolveGroupDisplayNames: 同 source の同 label group を区別 (代表�
       system: [{ id: 'cpu' }],
     },
   })
-  const doc: StatusDoc = {
-    version: 1,
-    ts: 0,
-    groups: [
-      {
-        id: 'claude-code',
-        label: 'Claude',
-        segments: [{ id: 'cost', label: 'Cost', value: '$1' }],
-      },
-      {
-        id: 'claude-limits',
-        label: 'Claude',
-        segments: [{ id: 'session', label: '5h', value: '45%' }],
-      },
-      { id: 'system', label: 'System', segments: [{ id: 'cpu', label: 'CPU', value: '12%' }] },
-    ],
-  }
-  const m = resolveGroupDisplayNames(cfg, { 'server.local': doc })
-  expect(m.get('server.local|claude-code')).toBe(null) // 代表(groupId 昇順先頭) は素のまま
-  expect(m.get('server.local|claude-limits')).toBe('Claude (limits)') // suffix で区別
-  expect(m.get('server.local|system')).toBe(null) // 非衝突 → クリア
+  setGroupMeta(cfg, 'server.local', 'claude-code', { lastLabel: 'Claude' })
+  setGroupMeta(cfg, 'server.local', 'claude-limits', { lastLabel: ' Claude ' }) // trim 後一致
+  setGroupMeta(cfg, 'server.local', 'system', { lastLabel: 'System' })
+  const units = computeGroupMergeUnits(
+    cfg,
+    viewOf([
+      { sourceId: 'server.local', groupId: 'claude-code' },
+      { sourceId: 'server.local', groupId: 'system' },
+      { sourceId: 'server.local', groupId: 'claude-limits' },
+    ]),
+  )
+  expect(units.length).toBe(2)
+  expect(units[0]?.heading).toBe('Claude')
+  expect(units[0]?.rep).toEqual({ sourceId: 'server.local', groupId: 'claude-code' })
+  // member は groupOrder 順 (order 上 system を挟んでも unit は代表位置に畳まれる)
+  expect(units[0]?.members.map((r) => r.groupId)).toEqual(['claude-code', 'claude-limits'])
+  expect(units[1]?.heading).toBe('System')
 })
 
-test('resolveGroupDisplayNames: offline group は map に含めない(揺らさない)', () => {
-  const cfg = makeConfig([{ id: 'server.local', label: 'Local' }], {
-    'server.local': { 'claude-code': [{ id: 'cost' }], 'claude-limits': [{ id: 'session' }] },
-  })
-  // claude-limits は status に無い (offline)
-  const doc: StatusDoc = {
-    version: 1,
-    ts: 0,
-    groups: [
-      {
-        id: 'claude-code',
-        label: 'Claude',
-        segments: [{ id: 'cost', label: 'Cost', value: '$1' }],
-      },
+test('computeGroupMergeUnits: cross-source / 空見出しはマージしない', () => {
+  const cfg = makeConfig(
+    [
+      { id: 'server.a', label: 'A' },
+      { id: 'server.b', label: 'B' },
     ],
-  }
-  const m = resolveGroupDisplayNames(cfg, { 'server.local': doc })
-  expect(m.get('server.local|claude-code')).toBe(null) // 衝突相手 offline → 単独 → クリア
-  expect(m.has('server.local|claude-limits')).toBe(false) // offline → 不在 (既存値を維持)
+    {
+      'server.a': { claude: [{ id: 'x' }], noname: [{ id: 'y' }] },
+      'server.b': { claude: [{ id: 'x' }], anon: [{ id: 'z' }] },
+    },
+  )
+  setGroupMeta(cfg, 'server.a', 'claude', { lastLabel: 'Claude' })
+  setGroupMeta(cfg, 'server.b', 'claude', { lastLabel: 'Claude' })
+  // noname/anon は lastLabel 無し (空見出し)
+  const units = computeGroupMergeUnits(
+    cfg,
+    viewOf([
+      { sourceId: 'server.a', groupId: 'claude' },
+      { sourceId: 'server.b', groupId: 'claude' }, // 別マシンの Claude → 別 unit
+      { sourceId: 'server.a', groupId: 'noname' },
+      { sourceId: 'server.b', groupId: 'anon' }, // 空見出し同士 → それぞれ単独
+    ]),
+  )
+  expect(units.length).toBe(4)
+  expect(units.every((u) => u.members.length === 1)).toBe(true)
+})
+
+test('computeGroupMergeUnits: 別名 rename で解除・同名 rename で意図的マージ', () => {
+  const cfg = makeConfig([{ id: 'server.local', label: 'Local' }], {
+    'server.local': {
+      'claude-code': [{ id: 'cost' }],
+      'claude-limits': [{ id: 'session' }],
+      system: [{ id: 'cpu' }],
+    },
+  })
+  setGroupMeta(cfg, 'server.local', 'claude-code', { lastLabel: 'Claude' })
+  setGroupMeta(cfg, 'server.local', 'claude-limits', { lastLabel: 'Claude', displayName: 'Quota' })
+  setGroupMeta(cfg, 'server.local', 'system', { lastLabel: 'System', displayName: 'Claude' })
+  const units = computeGroupMergeUnits(
+    cfg,
+    viewOf([
+      { sourceId: 'server.local', groupId: 'claude-code' },
+      { sourceId: 'server.local', groupId: 'claude-limits' },
+      { sourceId: 'server.local', groupId: 'system' },
+    ]),
+  )
+  // claude-limits は 'Quota' へ rename = 解除 / system は 'Claude' へ rename = claude-code とマージ
+  expect(units.length).toBe(2)
+  expect(units[0]?.members.map((r) => r.groupId)).toEqual(['claude-code', 'system'])
+  expect(units[1]?.heading).toBe('Quota')
 })

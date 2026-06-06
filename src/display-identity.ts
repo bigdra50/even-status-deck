@@ -6,10 +6,11 @@ import {
   BUILTIN_GROUP_LABELS,
   BUILTIN_SOURCE_ID,
   type Config,
+  type GroupRef,
+  type ProfileView,
   type SourceDef,
-  sourceById,
 } from './config'
-import type { Group, StatusDoc } from './status-types'
+import type { StatusDoc } from './status-types'
 import { segKey } from './visibility/keys'
 
 // source の表示オーナー。明示 displayOwner があればそれ、無ければ source.label にフォールバック。
@@ -17,61 +18,58 @@ export function effectiveOwner(source: SourceDef): string {
   return source.displayOwner?.trim() || source.label
 }
 
-// group の base label (companion/glass の見出しと同じ規則)。builtin はコード所有ラベル、他は live group.label。
-function groupBaseLabel(
-  config: Config,
-  sourceId: string,
-  groupId: string,
-  liveGroup: Group | undefined,
-): string {
+// group の effective 見出し (merge identity)。ユーザー rename(displayName) を最優先し、builtin は
+// コード所有ラベル、他は sync が記録した lastLabel。live label に直接依存しないことで offline でも
+// unit 構成が揺れない。表示専用のフォールバック (source label / groupId) はここでは持たない
+// (空見出しはマージ対象外なので、表示側が好きに補ってよい)。
+// 前提: group label は静的(producer の固定リテラル)であること。変動値(時刻/カウント等)を label に
+// 混ぜると poll 毎に lastLabel が変わり sync が毎回 saveConfig する churn を招く(外部 provider の罠)。
+export function effectiveGroupHeading(config: Config, sourceId: string, groupId: string): string {
+  const meta = config.groups[sourceId]?.[groupId]
+  if (meta?.displayName) return meta.displayName
   if (sourceId === BUILTIN_SOURCE_ID) return BUILTIN_GROUP_LABELS[groupId] ?? groupId
-  return liveGroup?.label || sourceById(config, sourceId)?.label || groupId
+  return meta?.lastLabel ?? ''
 }
 
-// group id から衝突区別子を作る ('claude-limits' -> 'limits'、'-' 無しは id 全体)。
-function groupSuffix(groupId: string): string {
-  const i = groupId.lastIndexOf('-')
-  return i >= 0 && i < groupId.length - 1 ? groupId.slice(i + 1) : groupId
+// 見出し等価判定の正規化 (NFC + trim。case は区別)。merge 判定・custom layout の label dedup・
+// companion の rename confirm で必ずこれを共有する (判定ズレで「表示はマージ・確認は非マージ」を防ぐ)。
+export function normalizeHeading(s: string): string {
+  return s.normalize('NFC').trim()
 }
 
-// 同一 source 内で base label が衝突する group に displayName を解決する。
-// 返り値 'sourceId|groupId' -> string(設定: '<label> (<suffix>)') | null(クリア)。
-// 代表(groupId 昇順の先頭)は label のまま(null)、残りに suffix を付ける。
-// live status に無い(offline/未取得)group は map に含めない(= 既存値を維持。揺らさない)。
-// 前提: group の base label は静的(producer の固定リテラル)であること。変動値(時刻/カウント等)を
-// group label に混ぜると poll 毎に desired が変わり companion で毎 poll saveConfig する churn を招く
-// (resolveDisplayLabels と同じ注意。外部 JS provider を増やす際の罠)。
-export function resolveGroupDisplayNames(
-  config: Config,
-  statuses: Record<string, StatusDoc | null>,
-): Map<string, string | null> {
-  const out = new Map<string, string | null>()
-  for (const src of config.sources) {
-    const groups = config.groups[src.id]
-    if (!groups) continue
-    const doc = statuses[src.id]
-    // この source の live group ごとに base label を集める (offline group は対象外)。
-    const byLabel = new Map<string, { groupId: string; label: string }[]>()
-    for (const gid of Object.keys(groups)) {
-      const liveGroup = doc?.groups.find((g) => g.id === gid)
-      if (!liveGroup) continue
-      const label = groupBaseLabel(config, src.id, gid, liveGroup)
-      const arr = byLabel.get(label) ?? []
-      arr.push({ groupId: gid, label })
-      byLabel.set(label, arr)
+// glass の表示単位。同一 source 内で正規化見出しが一致する group は 1 unit にマージ表示する
+// (例: builtin 'claude-code' と外部 provider 'claude-limits' が両方 'Claude' → 1 行/1 ページ)。
+export type GroupMergeUnit = {
+  heading: string // 代表 member の effective 見出し ('' = 見出し無し)
+  rep: GroupRef // 代表 = groupOrder 先頭 member (静的)。unit の位置・align はこれに従う
+  members: GroupRef[] // groupOrder 順。offline/disabled member も含む (segment を出さないだけ)
+}
+
+// view.groupOrder を merge unit 列に畳む。config のみで完結する静的計算 (statuses 非依存) なので
+// online/offline・enable 切替で unit 構成・代表・align が揺れない。空見出しと cross-source は
+// マージしない (別マシンの同名 group は別物)。
+export function computeGroupMergeUnits(config: Config, view: ProfileView): GroupMergeUnit[] {
+  const units: GroupMergeUnit[] = []
+  const byKey = new Map<string, GroupMergeUnit>()
+  for (const ref of view.groupOrder) {
+    if (!config.groups[ref.sourceId]?.[ref.groupId]) continue // 素材に無い ref は描画対象外 (renderer と同じ)
+    const heading = effectiveGroupHeading(config, ref.sourceId, ref.groupId)
+    const key = normalizeHeading(heading)
+    if (!key) {
+      units.push({ heading, rep: ref, members: [ref] }) // 空見出しは常に単独
+      continue
     }
-    for (const [label, items] of byLabel) {
-      if (items.length < 2) {
-        for (const it of items) out.set(`${src.id}|${it.groupId}`, null) // 衝突なし → クリア
-        continue
-      }
-      const sorted = [...items].sort((a, b) => a.groupId.localeCompare(b.groupId))
-      sorted.forEach((it, i) => {
-        out.set(`${src.id}|${it.groupId}`, i === 0 ? null : `${label} (${groupSuffix(it.groupId)})`)
-      })
+    const unitKey = `${ref.sourceId}\u0000${key}`
+    const existing = byKey.get(unitKey)
+    if (existing) {
+      existing.members.push(ref)
+    } else {
+      const unit: GroupMergeUnit = { heading, rep: ref, members: [ref] }
+      byKey.set(unitKey, unit)
+      units.push(unit)
     }
   }
-  return out
+  return units
 }
 
 // 「同一 category leaf を 2 つ以上の異なる owner が出す」category 集合。

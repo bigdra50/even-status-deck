@@ -747,3 +747,78 @@ test('migrate: 非 active profile の pages も clock time/date を datetime へ
   const p2m = migrated.profiles.find((p) => p.id === p2.id)
   expect(p2m?.view.pages?.[0]?.layout.rows[0]).toEqual([dtKey])
 })
+
+// ── group 見出しマージ移行: 旧 'auto' 衝突命名の一掃と lastLabel 捕捉 ──
+
+// label 付き server group の最小 StatusDoc (lastLabel 捕捉テスト用)。
+function labeledDoc(groupId: string, label: string): StatusDoc {
+  return {
+    version: 1,
+    ts: 0,
+    groups: [{ id: groupId, label, segments: [{ id: 'a', label: 'A', value: 'x' }] }],
+  }
+}
+
+test('migrate: 旧 auto 衝突命名は displayName ごと一掃し user 命名は保全する', () => {
+  const cfg = emptyConfig()
+  const src = addServer(cfg, 'Mac')
+  cfg.groups[src.id] = {
+    'claude-limits': { segments: [], displayName: 'Claude (limits)', displayNameSource: 'auto' },
+    'claude-code': { segments: [], displayName: 'My Claude', displayNameSource: 'user' },
+    // 出所不明 (marker 無し) の displayName はユーザー命名として保全する
+    system: { segments: [], displayName: 'Box' },
+  }
+  const migrated = migrate(JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>)
+  const groups = migrated.groups[src.id]
+  expect(groups['claude-limits']?.displayName).toBeUndefined()
+  expect(groups['claude-code']?.displayName).toBe('My Claude')
+  expect(groups.system?.displayName).toBe('Box')
+  // 廃止フィールド displayNameSource は常に落とす
+  for (const meta of Object.values(groups)) {
+    expect((meta as { displayNameSource?: string }).displayNameSource).toBeUndefined()
+  }
+})
+
+test('migrate 冪等: auto 一掃を二度かけても安定', () => {
+  const cfg = emptyConfig()
+  const src = addServer(cfg, 'Mac')
+  cfg.groups[src.id] = {
+    'claude-limits': { segments: [], displayName: 'Claude (limits)', displayNameSource: 'auto' },
+    'claude-code': { segments: [], displayName: 'My Claude', displayNameSource: 'user' },
+  }
+  const once = migrate(JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>)
+  const twice = migrate(JSON.parse(JSON.stringify(once)) as Record<string, unknown>)
+  expect(twice.groups[src.id]?.['claude-limits']?.displayName).toBeUndefined()
+  expect(twice.groups[src.id]?.['claude-code']?.displayName).toBe('My Claude')
+})
+
+test('migrate: 不正な lastLabel を sanitize する', () => {
+  const cfg = emptyConfig()
+  const src = addServer(cfg, 'Mac')
+  cfg.groups[src.id] = {
+    a: { segments: [], lastLabel: '' },
+    b: { segments: [], lastLabel: 123 as unknown as string },
+    c: { segments: [], lastLabel: 'Claude' },
+  }
+  const migrated = migrate(JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>)
+  expect(migrated.groups[src.id]?.a?.lastLabel).toBeUndefined()
+  expect(migrated.groups[src.id]?.b?.lastLabel).toBeUndefined()
+  expect(migrated.groups[src.id]?.c?.lastLabel).toBe('Claude')
+})
+
+test('syncSourceWithStatus: live group label を lastLabel に捕捉する (再 sync は no-op)', () => {
+  const cfg = emptyConfig()
+  const src = addServer(cfg, 'Mac')
+  expect(syncSourceWithStatus(cfg, src.id, labeledDoc('claude-limits', 'Claude'))).toBe(true)
+  expect(cfg.groups[src.id]?.['claude-limits']?.lastLabel).toBe('Claude')
+  // 同じ label の再 sync では変更なし (毎 poll saveConfig churn を起こさない)
+  expect(syncSourceWithStatus(cfg, src.id, labeledDoc('claude-limits', 'Claude'))).toBe(false)
+  // 空 label は記録しない (builtin 等の見出し無し group)
+  syncSourceWithStatus(cfg, src.id, labeledDoc('nolabel', ''))
+  expect(cfg.groups[src.id]?.nolabel?.lastLabel).toBeUndefined()
+  // 非空→空への変化は lastLabel を削除 (旧見出しで誤マージし続けない)
+  expect(syncSourceWithStatus(cfg, src.id, labeledDoc('claude-limits', ''))).toBe(true)
+  expect(cfg.groups[src.id]?.['claude-limits']?.lastLabel).toBeUndefined()
+  // 空のまま再 sync しても no-op
+  expect(syncSourceWithStatus(cfg, src.id, labeledDoc('claude-limits', ''))).toBe(false)
+})

@@ -56,9 +56,10 @@ import {
 import { fetchMachineFrom, type MachineInfo } from './data'
 import {
   collisionCategories,
+  effectiveGroupHeading,
   effectiveOwner,
+  normalizeHeading,
   resolveDisplayLabels,
-  resolveGroupDisplayNames,
 } from './display-identity'
 import { esc } from './escape'
 import {
@@ -189,33 +190,6 @@ function applyDisplayLabels(): boolean {
           delete sm.displayLabel
           changed = true
         }
-      }
-    }
-  }
-  return changed
-}
-
-// 表示モデル: 同 source 内の group label 衝突を解決し GroupMeta.displayName を確定する(永続)。
-// displayNameSource==='user'(ユーザーがリネーム)は自動上書きしない。offline group は触らない。変化時 true。
-function applyGroupDisplayNames(): boolean {
-  const statuses = { ...getRenderableStatuses(), [BUILTIN_SOURCE_ID]: localStatus(config) }
-  const desired = resolveGroupDisplayNames(config, statuses)
-  let changed = false
-  for (const [sourceId, groups] of Object.entries(config.groups)) {
-    for (const [gid, meta] of Object.entries(groups)) {
-      if (meta.displayNameSource === 'user') continue // 手動命名は保持
-      const want = desired.get(`${sourceId}|${gid}`)
-      if (want === undefined) continue // offline/未取得は維持 (map に無い)
-      if (want) {
-        if (meta.displayName !== want || meta.displayNameSource !== 'auto') {
-          meta.displayName = want
-          meta.displayNameSource = 'auto'
-          changed = true
-        }
-      } else if (meta.displayName !== undefined) {
-        delete meta.displayName
-        delete meta.displayNameSource
-        changed = true
       }
     }
   }
@@ -471,6 +445,40 @@ function optionControls(
   return `<div class="clock-ctl">${fields.map(ctl).join('')}</div>`
 }
 
+// sourceId 内で headingKey (正規化済み見出し) が一致する別 group のうち、いずれかの profile の
+// view.groupOrder で groupId と共存している (= その preset で実際にマージが起きる) ものを返す。
+// 描画 (computeGroupMergeUnits) と同じ resolver/正規化を共有 = 「表示はマージ・併記なし」のズレを防ぐ。
+// スコープは「全 profile の groupOrder 共存」: rename と素材は全 profile 共有なので active view 限定
+// では他 preset のマージを見逃し、素材全体では どの preset でも共存しない group まで誤検出する。
+function headingCollidesInSomeProfile(
+  sourceId: string,
+  groupId: string,
+  headingKey: string,
+): string | null {
+  if (!headingKey) return null
+  const rivals = Object.keys(config.groups[sourceId] ?? {}).filter(
+    (gid) =>
+      gid !== groupId &&
+      normalizeHeading(effectiveGroupHeading(config, sourceId, gid)) === headingKey,
+  )
+  if (!rivals.length) return null
+  const inOrder = (order: GroupRef[], gid: string) =>
+    order.some((r) => r.sourceId === sourceId && r.groupId === gid)
+  for (const rival of rivals) {
+    const merges = config.profiles.some(
+      (p) => inOrder(p.view.groupOrder, groupId) && inOrder(p.view.groupOrder, rival),
+    )
+    if (merges) return rival
+  }
+  return null
+}
+
+// ref の現在の見出しが (どこかの preset で) 別 group とマージされるか。同名行への group id 併記判定。
+function groupHeadingCollides(sourceId: string, groupId: string): boolean {
+  const mine = normalizeHeading(effectiveGroupHeading(config, sourceId, groupId))
+  return headingCollidesInSomeProfile(sourceId, groupId, mine) !== null
+}
+
 function groupRow(ref: GroupRef): string {
   const g = statusGroup(ref.sourceId, ref.groupId)
   const meta = config.groups[ref.sourceId]?.[ref.groupId]
@@ -531,15 +539,21 @@ function groupRow(ref: GroupRef): string {
       : src
         ? `<span class="src-note">${esc(src.label)}</span>`
         : ''
+  // 同 source 内で同名の group は glass で 1 unit にマージされる。管理面は per-group なので
+  // どの provider 由来か分かるよう group id を淡色併記する (衝突時のみ)。
+  const gidTag = groupHeadingCollides(ref.sourceId, ref.groupId)
+    ? `<span class="src-note">${esc(ref.groupId)}</span>`
+    : ''
   // default-label トグル (glass で group 名を前置するか)。位置/上詰めは Glass layout で決める。
   const showsLabel = vg.showDefaultLabel ?? ref.groupId !== 'clock'
   const labelBtn = `<button class="label-btn ${showsLabel ? 'on' : ''}" data-action="toggle-grouplabel" data-key="${key}" title="${showsLabel ? 'Group label shown on glass' : 'Group label hidden'}">${icon('tag', { size: 15 })}</button>`
-  // group 名のリネーム (Source Detail)。衝突自動命名 ('Claude (limits)') を上書きできる。user 命名は自動再付与しない。
+  // group 名のリネーム (Source Detail)。同 source 内で同名の group は glass で 1 unit にマージ表示される。
   const renameBtn = `<button class="label-btn" data-action="edit-groupname" data-key="${key}" title="Rename group" aria-label="Rename group">${icon('pencil', { size: 14 })}</button>`
   // owner は Source Detail ヘッダで編集 / glass picker でバッジ表示する (表示モデル新 IA)。group 行には出さない。
   return `<div class="src" data-key="${key}"><div class="src-head"><span class="src-grip">${icon('grip', { size: 16 })}</span>
     <span class="src-caret" data-action="expand" data-key="${key}">${caret}</span>
     <span class="src-name" data-action="expand" data-key="${key}">${esc(title)}</span>
+    ${gidTag}
     ${srcTag}
     ${renameBtn}
     ${labelBtn}
@@ -827,10 +841,14 @@ function groupOrderRow(ref: GroupRef): string {
   const title = groupDisplayName(config, ref.sourceId, ref.groupId) ?? baseTitle
   const owner = src ? effectiveOwner(src) : ''
   const key = `${esc(ref.sourceId)}|${esc(ref.groupId)}`
+  // 同名で glass マージされる group は行が見分けられないので group id を併記する (衝突時のみ)。
+  const gidTag = groupHeadingCollides(ref.sourceId, ref.groupId)
+    ? `<span class="src-note">${esc(ref.groupId)}</span>`
+    : ''
   return `<div class="src ord-row" data-key="${key}"><div class="src-head">
     <span class="src-grip">${icon('grip', { size: 16 })}</span>
     <span class="src-name">${esc(title)}</span>
-    <span class="src-note">${esc(owner)}</span></div></div>`
+    ${gidTag}<span class="src-note">${esc(owner)}</span></div></div>`
 }
 
 // auto モードの順序エディタ。#source-list を使い既存 onGroupReorder を再接続する (group sortable)。
@@ -1732,7 +1750,8 @@ async function onClick(e: MouseEvent): Promise<void> {
       break
     }
     case 'edit-groupname': {
-      // group 名のリネーム (素材・全 preset 共有)。衝突自動命名 ('Claude (limits)') を上書きできる。
+      // group 名のリネーム (素材・全 preset 共有)。同 source 内で同名にすると glass で 1 unit に
+      // マージ表示され、別名にすると解除される (display-identity の merge unit)。
       const ref = parseKey(t.dataset.key ?? '')
       const meta = config.groups[ref.sourceId]?.[ref.groupId]
       if (meta) {
@@ -1744,14 +1763,33 @@ async function onClick(e: MouseEvent): Promise<void> {
         const next = window.prompt('Group name', meta.displayName ?? base)
         if (next !== null) {
           const v = next.trim()
-          if (v && v !== base) {
-            meta.displayName = v // 手動命名 (自動衝突解決に上書きされない)
-            meta.displayNameSource = 'user'
+          // 変更後の見出しがいずれかの preset で別 group とマージされるなら、暗黙に発動させず
+          // confirm で意図を確認する (base へ戻した結果マージされるケースも同様)。
+          // 判定は描画と同じ resolver: 変更後の effective 見出しを先に確定してから比較する
+          // (スコープは headingCollidesInSomeProfile = 全 profile の groupOrder 共存)。
+          const renamed = v !== '' && v !== base
+          const nextHeading = renamed
+            ? v
+            : isBuiltin
+              ? (BUILTIN_GROUP_LABELS[ref.groupId] ?? ref.groupId)
+              : (meta.lastLabel ?? '')
+          const mergesWith = headingCollidesInSomeProfile(
+            ref.sourceId,
+            ref.groupId,
+            normalizeHeading(nextHeading),
+          )
+          if (
+            mergesWith &&
+            !window.confirm(
+              `"${nextHeading}" is already used by "${mergesWith}" in this source. Groups with the same name are combined on glass. Continue?`,
+            )
+          ) {
+            break
+          }
+          if (renamed) {
+            meta.displayName = v // 手動命名 (glass の見出しと merge 判定を上書き)
           } else {
-            // 空 or base と同じ → 自動衝突解決に戻す
-            delete meta.displayName
-            delete meta.displayNameSource
-            applyGroupDisplayNames()
+            delete meta.displayName // 空 or base と同じ → producer の label に戻す
           }
           void saveConfig(config)
           render()
@@ -2196,11 +2234,10 @@ async function runConnectionTest(): Promise<void> {
 }
 
 function onStoreUpdate(): void {
-  syncAll() // 新 group を config に取り込み (永続)
-  // 衝突解決 (segment owner prefix の displayLabel + group の displayName) を確定 (変化時のみ保存)。
-  const dlChanged = applyDisplayLabels()
-  const gnChanged = applyGroupDisplayNames()
-  if (dlChanged || gnChanged) void saveConfig(config)
+  syncAll() // 新 group を config に取り込み (永続。group の lastLabel = merge identity もここで捕捉)
+  // 衝突解決 (segment owner prefix の displayLabel) を確定 (変化時のみ保存)。
+  // group 見出しの衝突は永続リネームせず render-time マージ (display-identity の merge unit) で解く。
+  if (applyDisplayLabels()) void saveConfig(config)
   maybeGeofenceAutoSwitch() // #43 現在地 place 変化で auto モードの preset へ自動切替(view 非依存=glass にも効く)
   // 構成 (status の有無で変わる) が変化したときだけ再描画。値だけの更新では再描画しない
   // (毎 poll の innerHTML churn が iOS WebContent jettison を招くため。issue #4)。
