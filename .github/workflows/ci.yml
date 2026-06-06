@@ -16,4 +16,11 @@ jobs:
       - run: bun run lint
       - run: bun run lint:deps
       - run: bun run knip
+      - run: bun run lint:dup
+      - run: bun run lint:fta
+      - run: bun run test:coverage
+      - uses: codecov/codecov-action@v6
+        with:
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false
       - run: bun run build
