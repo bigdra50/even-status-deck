@@ -9,13 +9,11 @@ import {
   BUILTIN_GROUP_LABELS,
   BUILTIN_SEG_LABELS,
   BUILTIN_SOURCE_ID,
-  type Config,
   customLabelId,
   customLabelKey,
   DEFAULT_PLACE_RADIUS_M,
   DEFAULT_PROFILE_ID,
   duplicateActiveProfile,
-  emptyConfig,
   ensureDefaultServer,
   type GlassLayout,
   type GlassPage,
@@ -53,7 +51,7 @@ import {
   sourceUrls,
   syncSourceWithStatus,
 } from '../config'
-import { fetchMachineFrom, type MachineInfo } from '../data'
+import { fetchMachineFrom } from '../data'
 import {
   collisionCategories,
   effectiveGroupHeading,
@@ -94,40 +92,21 @@ import {
   startPolling,
   subscribe,
 } from '../store'
-import { type ProfileSuggestion, suggestProfile, suggestProfileByGeofence } from '../suggest'
+import { suggestProfile, suggestProfileByGeofence } from '../suggest'
 import { createVisibilityRuntime, type DisplayUi, segKey, type VisibilityLeaf } from '../visibility'
+import {
+  registerPreviewUpdater,
+  registerRenderer,
+  requestPreviewUpdate,
+  requestRender,
+} from './render-port'
+import { ctx } from './state'
 
 // 1 segment が持てる条件 leaf の上限 (UI が破綻しない緩い上限)。
 const MAX_CONDS = 4
 const DEFAULT_DISPLAY_SECS = 5 // 提示 (toast/notification) の既定 自動非表示秒数
 
-// companion (スマホ WebView) の Home / Source 編集。複数ソースを横断して設定する。
-// source-detail: 新 IA のドリルダウン先 (その source の group/segment 設定。flat Items を置換)。
-let view: 'home' | 'source-detail' | 'source-edit' | 'sources' | 'add-source' | 'places' = 'home'
-// source-detail で表示中の source id。
-let detailSourceId: string | null = null
-// source-edit から戻る先 (Sources 一覧経由か / Home への新規追加経由か)
-let sourceEditBack: 'home' | 'sources' | 'source-detail' = 'home'
-let editingSourceId: string | null = null
-let editMachine: MachineInfo | null = null // 接続テストの検出結果
-let config: Config = emptyConfig()
-let root: HTMLElement | null = null
-
-// 接続テスト状態
-let testState: 'idle' | 'testing' | 'ok' | 'error' = 'idle'
-let testError = ''
-let testUrl = ''
-
-// glass layout の編集モード (GLASS PREVIEW を WYSIWYG 編集面にする / 普段は view)。
-let layoutEditing = false
-// explicit デッキ編集中の対象ページ index (pages[pageEditingIdx])。profile 跨ぎでリセット。
-let pageEditingIdx = 0
-
-// ── Phase 4: プリセット切替の提案 (接続検出ベース。自動適用はしない) ──
-// このセッション中に却下した提案 profileId。一度 dismiss した profile は同セッションで再提示しない。
-const dismissedSuggestions = new Set<string>()
-// 現在表示中の提案 (無ければ null)。store の health 変化で再計算し、変化したときだけ Home を再描画する。
-let currentSuggestion: ProfileSuggestion | null = null
+// companion の共有可変状態は state.ts の ctx に集約した (分割モジュール間の共有点)。
 
 // ── デバッグコンソール (実験/検証用) ──
 // 実機 (WKWebView) には devtools が無いため、console.* を捕捉して glass preview の下の
@@ -145,13 +124,13 @@ let dbgHooked = false
 function glassData(): GlassData {
   // glass/preview は offline source を除いた renderable を使う (実機同様に古い値=嘘を出さない)。
   return {
-    config,
-    statuses: { ...getRenderableStatuses(), [BUILTIN_SOURCE_ID]: localStatus(config) },
+    config: ctx.config,
+    statuses: { ...getRenderableStatuses(), [BUILTIN_SOURCE_ID]: localStatus(ctx.config) },
   }
 }
 
 function statusGroup(sourceId: string, groupId: string): Group | undefined {
-  const doc = sourceId === BUILTIN_SOURCE_ID ? localStatus(config) : getSourceStatus(sourceId)
+  const doc = sourceId === BUILTIN_SOURCE_ID ? localStatus(ctx.config) : getSourceStatus(sourceId)
   return doc?.groups.find((g) => g.id === groupId)
 }
 
@@ -159,9 +138,9 @@ function statusGroup(sourceId: string, groupId: string): Group | undefined {
 function syncAll(): boolean {
   let changed = false
   for (const [sid, status] of Object.entries(getAllStatuses())) {
-    if (status && syncSourceWithStatus(config, sid, status)) changed = true
+    if (status && syncSourceWithStatus(ctx.config, sid, status)) changed = true
   }
-  if (changed) void saveConfig(config)
+  if (changed) void saveConfig(ctx.config)
   return changed
 }
 
@@ -170,11 +149,11 @@ function syncAll(): boolean {
 // online/offline で揺れないよう offline source は触らない。getRenderableStatuses は offline を null 化
 // するので(getAllStatuses の保持値とは違い)、offline segment は desired に出ず既存値が維持される。
 function applyDisplayLabels(): boolean {
-  const statuses = { ...getRenderableStatuses(), [BUILTIN_SOURCE_ID]: localStatus(config) }
-  const desired = resolveDisplayLabels(config, statuses)
+  const statuses = { ...getRenderableStatuses(), [BUILTIN_SOURCE_ID]: localStatus(ctx.config) }
+  const desired = resolveDisplayLabels(ctx.config, statuses)
   let changed = false
-  for (const src of config.sources) {
-    const groups = config.groups[src.id]
+  for (const src of ctx.config.sources) {
+    const groups = ctx.config.groups[src.id]
     if (!groups) continue
     for (const [gid, meta] of Object.entries(groups)) {
       for (const sm of meta.segments) {
@@ -205,7 +184,7 @@ const previewVisibility = createVisibilityRuntime({ wake: false })
 
 // 現在編集中ページ (pageEditingIdx) の layout。auto デッキ (pages 未設定) なら undefined。
 function editingLayout(): GlassLayout | undefined {
-  return activeView(config).pages?.[pageEditingIdx]?.layout
+  return activeView(ctx.config).pages?.[ctx.pageEditingIdx]?.layout
 }
 
 // 空の glass layout (新規ページ用。全行空・customLabels なし)。
@@ -214,7 +193,7 @@ function emptyGlassLayout(): GlassLayout {
 }
 
 function glassPreviewHtml(): string {
-  const visible = previewVisibility.compute(config, getRenderableStatuses()).map
+  const visible = previewVisibility.compute(ctx.config, getRenderableStatuses()).map
   const d = glassData()
   const grow = (l: string) => `<span class="grow">${l ? esc(l) : '&nbsp;'}</span>`
   const lay = editingLayout()
@@ -235,7 +214,7 @@ function glassPreviewHtml(): string {
 // ── 表示項目 (groupOrder 横断) ──
 // 実在する (status にある) group だけを active view の groupOrder 順に並べる。
 function visibleRefs(): GroupRef[] {
-  return activeView(config).groupOrder.filter((r) => statusGroup(r.sourceId, r.groupId))
+  return activeView(ctx.config).groupOrder.filter((r) => statusGroup(r.sourceId, r.groupId))
 }
 
 // 表示項目リストの構成シグネチャ (順序込み)。変化したら項目リストを再描画する。
@@ -246,7 +225,7 @@ function visibleSig(): string {
   const refs = visibleRefs()
     .map((r) => `${r.sourceId}:${r.groupId}`)
     .join('|')
-  const health = config.sources
+  const health = ctx.config.sources
     .filter((s) => s.kind === 'server')
     .map((s) => `${s.id}=${getSourceHealth(s.id)}/${worstReportedState(s.id).state}`)
     .join(',')
@@ -259,7 +238,7 @@ function clamp(n: number, lo: number, hi: number): number {
 
 // inPlace leaf の place select + inside/outside(#43)。
 function leafInPlaceParams(a: string, leaf: Extract<VisibilityLeaf, { kind: 'inPlace' }>): string {
-  const placeOpts = (config.places ?? [])
+  const placeOpts = (ctx.config.places ?? [])
     .map(
       (p) =>
         `<option value="${esc(p.id)}" ${leaf.placeId === p.id ? 'selected' : ''}>${esc(p.label)}</option>`,
@@ -276,7 +255,7 @@ function leafInPlaceParams(a: string, leaf: Extract<VisibilityLeaf, { kind: 'inP
 // (threshold 候補の判定に使う)。母集合は素材 (meta.segments)、percent は live status から補う。
 type SegChoice = { id: string; label: string; hasPct: boolean }
 function segChoicesFor(ref: GroupRef): SegChoice[] {
-  const metaSegs = config.groups[ref.sourceId]?.[ref.groupId]?.segments ?? []
+  const metaSegs = ctx.config.groups[ref.sourceId]?.[ref.groupId]?.segments ?? []
   const liveG = statusGroup(ref.sourceId, ref.groupId)
   const isB = ref.sourceId === BUILTIN_SOURCE_ID
   return metaSegs.map((s) => {
@@ -350,7 +329,7 @@ function leafRow(
   const a = `${seg2} data-idx="${i}"`
   const sibs = choices.filter((c) => c.id !== selfId)
   const allowThreshold = groupHasPct || leaf.kind === 'threshold'
-  const allowInPlace = (config.places?.length ?? 0) > 0 || leaf.kind === 'inPlace'
+  const allowInPlace = (ctx.config.places?.length ?? 0) > 0 || leaf.kind === 'inPlace'
   const allowPresent = sibs.length > 0 || leaf.kind === 'present'
   const kindSel = `<select class="vis-select" data-action="seg-vis-leaf-kind" ${a}>
     ${allowThreshold ? `<option value="threshold" ${leaf.kind === 'threshold' ? 'selected' : ''}>When…</option>` : ''}
@@ -456,16 +435,16 @@ function headingCollidesInSomeProfile(
   headingKey: string,
 ): string | null {
   if (!headingKey) return null
-  const rivals = Object.keys(config.groups[sourceId] ?? {}).filter(
+  const rivals = Object.keys(ctx.config.groups[sourceId] ?? {}).filter(
     (gid) =>
       gid !== groupId &&
-      normalizeHeading(effectiveGroupHeading(config, sourceId, gid)) === headingKey,
+      normalizeHeading(effectiveGroupHeading(ctx.config, sourceId, gid)) === headingKey,
   )
   if (!rivals.length) return null
   const inOrder = (order: GroupRef[], gid: string) =>
     order.some((r) => r.sourceId === sourceId && r.groupId === gid)
   for (const rival of rivals) {
-    const merges = config.profiles.some(
+    const merges = ctx.config.profiles.some(
       (p) => inOrder(p.view.groupOrder, groupId) && inOrder(p.view.groupOrder, rival),
     )
     if (merges) return rival
@@ -475,16 +454,16 @@ function headingCollidesInSomeProfile(
 
 // ref の現在の見出しが (どこかの preset で) 別 group とマージされるか。同名行への group id 併記判定。
 function groupHeadingCollides(sourceId: string, groupId: string): boolean {
-  const mine = normalizeHeading(effectiveGroupHeading(config, sourceId, groupId))
+  const mine = normalizeHeading(effectiveGroupHeading(ctx.config, sourceId, groupId))
   return headingCollidesInSomeProfile(sourceId, groupId, mine) !== null
 }
 
 function groupRow(ref: GroupRef): string {
   const g = statusGroup(ref.sourceId, ref.groupId)
-  const meta = config.groups[ref.sourceId]?.[ref.groupId]
-  const vg = activeView(config).groups[ref.sourceId]?.[ref.groupId]
+  const meta = ctx.config.groups[ref.sourceId]?.[ref.groupId]
+  const vg = activeView(ctx.config).groups[ref.sourceId]?.[ref.groupId]
   if (!g || !meta || !vg) return ''
-  const src = sourceById(config, ref.sourceId)
+  const src = sourceById(ctx.config, ref.sourceId)
   const isBuiltin = ref.sourceId === BUILTIN_SOURCE_ID
   const key = `${esc(ref.sourceId)}|${esc(ref.groupId)}`
   // 行名: 衝突解決/手動の displayName を最優先。無ければ builtin はコード所有ラベル、他は live label。
@@ -501,7 +480,7 @@ function groupRow(ref: GroupRef): string {
   // 非 segment ノードを中に混ぜると index が +1 ずれて別 segment を動かす (silent なデータ破損)。
   const srcFields = sourceOptionSchema(ref.sourceId)
   const srcOpts = srcFields.length
-    ? optionControls(key, '', 'source', srcFields, resolveSourceOptions(config, ref.sourceId))
+    ? optionControls(key, '', 'source', srcFields, resolveSourceOptions(ctx.config, ref.sourceId))
     : ''
   const metrics = vg.expanded
     ? `${srcOpts}<div class="src-metrics" data-key="${key}">${meta.segments
@@ -520,7 +499,7 @@ function groupRow(ref: GroupRef): string {
                 sm.id,
                 'segment',
                 segFields,
-                resolveSegmentOptions(config, ref.sourceId, ref.groupId, sm.id),
+                resolveSegmentOptions(ctx.config, ref.sourceId, ref.groupId, sm.id),
               )
             : ''
           return `<div class="metric${missing ? ' missing' : ''}"><div class="metric-row"><span class="mgrip">${icon('grip', { size: 16 })}</span>
@@ -686,7 +665,7 @@ function lastSeenText(id: string): string {
 function segLabelParts(key: string): { group: string; seg: string } {
   const [sourceId, groupId, segId] = key.split('|')
   // group 名は displayName(衝突解決/手動) を最優先。無ければ builtin=コード所有 / 他=live label。
-  const override = groupDisplayName(config, sourceId, groupId)
+  const override = groupDisplayName(ctx.config, sourceId, groupId)
   if (sourceId === BUILTIN_SOURCE_ID) {
     return {
       group: override ?? BUILTIN_GROUP_LABELS[groupId] ?? groupId,
@@ -696,7 +675,7 @@ function segLabelParts(key: string): { group: string; seg: string } {
   const g = statusGroup(sourceId, groupId)
   const seg = g?.segments.find((s) => s.id === segId)
   return {
-    group: override ?? (g?.label || sourceById(config, sourceId)?.label || groupId),
+    group: override ?? (g?.label || sourceById(ctx.config, sourceId)?.label || groupId),
     seg: seg?.label || segId,
   }
 }
@@ -704,10 +683,10 @@ function segLabelParts(key: string): { group: string; seg: string } {
 // 配置可能な全 key (active view の groupOrder 順)。未配置リストの母集合。
 // group ラベルは default-label (group 単位トグル) が自動で出すので chip にはしない。
 function allPlaceableKeys(): string[] {
-  const view = activeView(config)
+  const view = activeView(ctx.config)
   const keys: string[] = []
   for (const ref of view.groupOrder) {
-    const meta = config.groups[ref.sourceId]?.[ref.groupId]
+    const meta = ctx.config.groups[ref.sourceId]?.[ref.groupId]
     const vg = view.groups[ref.sourceId]?.[ref.groupId]
     if (!meta || !vg) continue
     for (const sm of meta.segments) {
@@ -724,7 +703,7 @@ function allPlaceableKeys(): string[] {
 // group default-label の前置分も run 先頭で加算 (rowText の dedup と合わせる)。
 const ROW_MAX_CHARS = 50
 function rowOverflow(items: string[]): boolean {
-  const view = activeView(config)
+  const view = activeView(ctx.config)
   let total = 0
   let n = 0
   let prevGroup: string | null = null
@@ -741,7 +720,8 @@ function rowOverflow(items: string[]): boolean {
     const seg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
     if (!seg) continue
     const vg = view.groups[sourceId]?.[groupId]
-    const inMeta = config.groups[sourceId]?.[groupId]?.segments.some((s) => s.id === segId) ?? false
+    const inMeta =
+      ctx.config.groups[sourceId]?.[groupId]?.segments.some((s) => s.id === segId) ?? false
     // 無効化された segment は glass(rowText) で描画されないので幅計算からも除外 (過大評価防止)。
     if (!inMeta || !(vg?.segments[segId] ?? true)) continue
     const labelLen = seg.label ? seg.label.length + 1 : 0
@@ -777,14 +757,14 @@ function wysChip(key: string): string {
   const sg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
   const text = sg ? (sg.label ? `${sg.label} ${sg.value}` : sg.value) : seg
   // default-label ON の group のみ group 名を薄く前置表示 (実機の前置ラベルに対応)
-  const vg = activeView(config).groups[sourceId]?.[groupId]
+  const vg = activeView(ctx.config).groups[sourceId]?.[groupId]
   const showsLabel = vg?.showDefaultLabel ?? groupId !== 'clock'
   const grp = group && showsLabel ? `<span class="wys-grp">${esc(group)}</span>` : ''
   // owner バッジ (表示モデル新 IA): 同系統衝突 category の segment だけ、混ぜて並べる picker で出自を区別する。
-  const cat = config.groups[sourceId]?.[groupId]?.segments.find((s) => s.id === segId)?.category
-  const src = sourceById(config, sourceId)
+  const cat = ctx.config.groups[sourceId]?.[groupId]?.segments.find((s) => s.id === segId)?.category
+  const src = sourceById(ctx.config, sourceId)
   const ownerBadge =
-    cat != null && src && collisionCategories(config).has(cat)
+    cat != null && src && collisionCategories(ctx.config).has(cat)
       ? `<span class="owner-badge owner-fixed" title="Owner">${esc(effectiveOwner(src))}</span>`
       : ''
   return `<span class="wys-chip" data-segkey="${esc(key)}" title="${esc(group ? `${group} ${seg}` : seg)}">${grip}${grp}${ownerBadge}<span class="wys-txt">${esc(text)}</span>${x}</span>`
@@ -834,11 +814,11 @@ function groupOrderRow(ref: GroupRef): string {
   const g = statusGroup(ref.sourceId, ref.groupId)
   if (!g) return ''
   const isBuiltin = ref.sourceId === BUILTIN_SOURCE_ID
-  const src = sourceById(config, ref.sourceId)
+  const src = sourceById(ctx.config, ref.sourceId)
   const baseTitle = isBuiltin
     ? (BUILTIN_GROUP_LABELS[ref.groupId] ?? ref.groupId)
     : g.label || src?.label || ref.groupId
-  const title = groupDisplayName(config, ref.sourceId, ref.groupId) ?? baseTitle
+  const title = groupDisplayName(ctx.config, ref.sourceId, ref.groupId) ?? baseTitle
   const owner = src ? effectiveOwner(src) : ''
   const key = `${esc(ref.sourceId)}|${esc(ref.groupId)}`
   // 同名で glass マージされる group は行が見分けられないので group id を併記する (衝突時のみ)。
@@ -864,7 +844,7 @@ function renderGlassAutoOrder(): string {
 function renderPageTabs(pages: GlassPage[]): string {
   const tabs = pages
     .map((p, i) => {
-      const active = i === pageEditingIdx ? ' page-tab-active' : ''
+      const active = i === ctx.pageEditingIdx ? ' page-tab-active' : ''
       return `<button class="page-tab${active}" data-action="page-select" data-page-idx="${i}" title="${esc(p.name)}">${esc(p.name)}</button>`
     })
     .join('')
@@ -874,13 +854,13 @@ function renderPageTabs(pages: GlassPage[]): string {
 
 // 編集中ページ (pageEditingIdx) の操作行: 名前 rename / 左右移動 / 削除。
 function renderPageControls(pages: GlassPage[]): string {
-  const cur = pages[pageEditingIdx]
+  const cur = pages[ctx.pageEditingIdx]
   if (!cur) return ''
-  const up = pageEditingIdx === 0 ? 'disabled' : ''
-  const down = pageEditingIdx >= pages.length - 1 ? 'disabled' : ''
+  const up = ctx.pageEditingIdx === 0 ? 'disabled' : ''
+  const down = ctx.pageEditingIdx >= pages.length - 1 ? 'disabled' : ''
   const del = pages.length <= 1 ? 'disabled' : ''
   return `<div class="page-ctl">
-      <input class="page-name-input" type="text" maxlength="24" value="${esc(cur.name)}" data-action="page-rename" data-page-idx="${pageEditingIdx}" placeholder="Page name" aria-label="Page name" />
+      <input class="page-name-input" type="text" maxlength="24" value="${esc(cur.name)}" data-action="page-rename" data-page-idx="${ctx.pageEditingIdx}" placeholder="Page name" aria-label="Page name" />
       <button class="gear-btn" data-action="page-move-up" title="Move left" aria-label="Move left" ${up}>${icon('chevron-left', { size: 14 })}</button>
       <button class="gear-btn" data-action="page-move-down" title="Move right" aria-label="Move right" ${down}>${icon('chevron-right', { size: 14 })}</button>
       <button class="gear-btn danger" data-action="page-remove" title="Delete page" aria-label="Delete page" ${del}>${icon('trash', { size: 14 })}</button>
@@ -889,7 +869,7 @@ function renderPageControls(pages: GlassPage[]): string {
 
 // Glass セクション: auto デッキ (pages 未設定) は従来 UI、explicit デッキはページ tab + 選択ページ編集。
 function renderGlassSection(): string {
-  const pages = activeView(config).pages
+  const pages = activeView(ctx.config).pages
   if (!pages?.length) {
     return `<div class="cmp-label cmp-label-row">Glass<span class="cmp-actions">
         <button class="gear-btn" data-action="layout-customize" title="Customize layout" aria-label="Customize layout">${icon('layout', { size: 16 })}</button>
@@ -900,10 +880,10 @@ function renderGlassSection(): string {
       <div class="cmp-sub">One row per group. Customize layout to place items freely on the preview.</div>
       ${renderGlassAutoOrder()}`
   }
-  if (pageEditingIdx >= pages.length) pageEditingIdx = 0
-  const lay = pages[pageEditingIdx]?.layout ?? pages[0].layout
+  if (ctx.pageEditingIdx >= pages.length) ctx.pageEditingIdx = 0
+  const lay = pages[ctx.pageEditingIdx]?.layout ?? pages[0].layout
   const multi = pages.length > 1
-  if (layoutEditing) {
+  if (ctx.layoutEditing) {
     return `<div class="cmp-label cmp-label-row">Glass pages<button class="gear-btn" data-action="layout-edit-toggle" title="Done" aria-label="Done">${icon('check', { size: 16 })}</button></div>
       ${renderPageTabs(pages)}
       ${renderPageControls(pages)}
@@ -912,7 +892,7 @@ function renderGlassSection(): string {
   }
   return `<div class="cmp-label cmp-label-row">Glass pages<span class="cmp-actions"><button class="gear-btn" data-action="layout-edit-toggle" title="Edit layout" aria-label="Edit layout">${icon('layout', { size: 16 })}</button><button class="gear-btn" data-action="fs-open" title="Fullscreen edit" aria-label="Fullscreen edit">${icon('maximize', { size: 16 })}</button></span></div>
     ${renderPageTabs(pages)}
-    <div class="gpv"><div class="gpv-cap">G2 576×288${multi ? ` — page ${pageEditingIdx + 1}/${pages.length}` : ''}</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
+    <div class="gpv"><div class="gpv-cap">G2 576×288${multi ? ` — page ${ctx.pageEditingIdx + 1}/${pages.length}` : ''}</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
     <div class="cmp-sub">Glass gestures: swipe = next/prev page / tap = first page / double-tap = exit</div>`
 }
 
@@ -924,34 +904,33 @@ function recomputeSuggestion(): boolean {
   // ジオフェンス(#43)を優先(現在地は強いシグナル)。圏内に suggest モードの bound preset があればそれ、
   // 無ければ従来の接続ベース提案にフォールバックする。
   const next =
-    suggestProfileByGeofence(config, getCurrentPlaceId()) ??
-    suggestProfile(config, getOnlineServerIds())
-  const shown = next && !dismissedSuggestions.has(next.profileId) ? next : null
-  const changed = (currentSuggestion?.profileId ?? null) !== (shown?.profileId ?? null)
-  currentSuggestion = shown
+    suggestProfileByGeofence(ctx.config, getCurrentPlaceId()) ??
+    suggestProfile(ctx.config, getOnlineServerIds())
+  const shown = next && !ctx.dismissedSuggestions.has(next.profileId) ? next : null
+  const changed = (ctx.currentSuggestion?.profileId ?? null) !== (shown?.profileId ?? null)
+  ctx.currentSuggestion = shown
   return changed
 }
 
 // #43 ジオフェンス自動切替: 新しい place に入ったら mode=auto の bound preset へ 1 回切替える。
 // 同じ place に留まっている間は何もしない(flapping/手動操作の上書き防止)。圏外/位置不明なら何もしない。
-let lastGeofencePlace: string | null = null
 function maybeGeofenceAutoSwitch(): void {
   const placeId = getCurrentPlaceId()
-  if (placeId === lastGeofencePlace) return // place 不変 = 何もしない
-  lastGeofencePlace = placeId
+  if (placeId === ctx.lastGeofencePlace) return // place 不変 = 何もしない
+  ctx.lastGeofencePlace = placeId
   if (!placeId) return
-  const prof = config.profiles.find(
+  const prof = ctx.config.profiles.find(
     (p) => p.geofence?.placeId === placeId && p.geofence?.mode === 'auto',
   )
-  if (!prof || prof.id === config.activeProfileId) return
-  setActiveProfile(config, prof.id)
+  if (!prof || prof.id === ctx.config.activeProfileId) return
+  setActiveProfile(ctx.config, prof.id)
   applyProfileChange() // saveConfig + syncAll + setSourcesFromConfig + render
 }
 
 // 提案バナー: 非モーダルで dismiss 可能 (Switch / × の 2 アクション)。glass は勝手に変えない。
 // 提案が無ければ空文字 (Home から消える)。承認で Phase 2 の切替 (onSuggestAccept) を呼ぶ。
 function renderSuggestionBanner(): string {
-  const s = currentSuggestion
+  const s = ctx.currentSuggestion
   if (!s) return ''
   const detail =
     s.reason === 'geofence'
@@ -977,15 +956,15 @@ function renderSuggestionBanner(): string {
 // Home 最上部の状況セット切替。select で active を切替え、隣のボタンで追加/複製/リネーム/削除。
 // Default (id 'default') は削除不可なので、active が Default のときは削除ボタンを無効化する。
 function renderProfileBar(): string {
-  const active = activeProfile(config)
-  const options = config.profiles
+  const active = activeProfile(ctx.config)
+  const options = ctx.config.profiles
     .map(
       (p) =>
         `<option value="${esc(p.id)}" ${p.id === active.id ? 'selected' : ''}>${esc(p.name)}</option>`,
     )
     .join('')
   // Default は削除不可 + profile が 1 個だけのときも削除不可 (最後の 1 個は残す)。
-  const canDelete = active.id !== DEFAULT_PROFILE_ID && config.profiles.length > 1
+  const canDelete = active.id !== DEFAULT_PROFILE_ID && ctx.config.profiles.length > 1
   const delAttr = canDelete ? '' : 'disabled'
   return `
     <div class="cmp-label">Preset</div>
@@ -1002,7 +981,7 @@ function renderProfileBar(): string {
 // #43 この preset をジオフェンス(保存地点)に連動させる UI。保存地点があるときだけ出す。
 // place=Off で解除、suggest=バナー提案 / auto=圏内で自動切替。Location source(place group)の位置を使う。
 function renderProfileGeofence(active: Profile): string {
-  const places = config.places ?? []
+  const places = ctx.config.places ?? []
   if (places.length === 0) return ''
   const gf = active.geofence
   const placeOpts =
@@ -1026,7 +1005,7 @@ function renderProfileGeofence(active: Profile): string {
 function renderHome(): string {
   // 新 IA: この preset で有効な全 source (builtin 含む) を nav カードで出す。tap で Source Detail へ。
   // 旧 flat Items リスト (全 source 横断の group リスト) は廃止。中身の設定は Source Detail に移設。
-  const sources = config.sources.filter((s) => isSourceEnabled(config, s.id))
+  const sources = ctx.config.sources.filter((s) => isSourceEnabled(ctx.config, s.id))
   // provenance でセクション化 (Included / Connected / Extensions)。空セクションは描かない。
   const sourcesHtml = sources.length
     ? SOURCE_SECTIONS.map(({ key, label, hint }) => {
@@ -1059,11 +1038,11 @@ function renderSourceDetail(): string {
   // 存在 かつ 現 preset で有効 な source のみ detail を出す。profile 自動切替(geofence)や
   // remove-from-preset/delete で無効/消滅したら Home へフォールバック (stale detail に居座らない)。
   const s =
-    detailSourceId && isSourceEnabled(config, detailSourceId)
-      ? sourceById(config, detailSourceId)
+    ctx.detailSourceId && isSourceEnabled(ctx.config, ctx.detailSourceId)
+      ? sourceById(ctx.config, ctx.detailSourceId)
       : undefined
   if (!s) {
-    view = 'home'
+    ctx.view = 'home'
     return renderHome()
   }
   const isBuiltin = s.kind === 'builtin'
@@ -1089,7 +1068,7 @@ function renderSourceDetail(): string {
 // Sources 一覧: 全 source 実体 (preset 非依存)。編集・削除はここに集約。
 function renderSources(): string {
   // Manage all は URL を持つ server source のみ (client=Location は Home の Add/Remove で管理)。
-  const sources = config.sources.filter((s) => s.kind === 'server')
+  const sources = ctx.config.sources.filter((s) => s.kind === 'server')
   const html = sources.length
     ? sources.map(sourceManageRow).join('')
     : '<div class="cmp-sub">No sources yet.</div>'
@@ -1104,8 +1083,8 @@ function renderSources(): string {
 
 // preset への source 追加 (既存プールから / 新規作成)。
 function renderAddSource(): string {
-  const available = config.sources.filter(
-    (s) => s.kind !== 'builtin' && !isSourceEnabled(config, s.id),
+  const available = ctx.config.sources.filter(
+    (s) => s.kind !== 'builtin' && !isSourceEnabled(ctx.config, s.id),
   )
   const list = available.length
     ? available.map(sourceAddRow).join('')
@@ -1134,7 +1113,7 @@ function placeManageRow(p: Place): string {
 }
 
 function renderPlaces(): string {
-  const places = config.places ?? []
+  const places = ctx.config.places ?? []
   const html = places.length
     ? places.map(placeManageRow).join('')
     : '<div class="cmp-sub">No saved places yet. Save your current location to start.</div>'
@@ -1164,27 +1143,27 @@ function getCompanionPosition(): Promise<{ lat: number; lon: number }> {
 
 // 保存地点変更後の共通処理: 永続化 → store へ反映(setSavedPlaces 経由) → Location 再 poll → 再描画。
 function afterPlacesChange(): void {
-  void saveConfig(config)
-  setSourcesFromConfig(config) // store の savedPlaces を最新化(geofence の圏内判定に即反映)
+  void saveConfig(ctx.config)
+  setSourcesFromConfig(ctx.config) // store の savedPlaces を最新化(geofence の圏内判定に即反映)
   refreshSourceById(LOCATION_SOURCE_ID) // Location が有効なら再 poll(refreshGeofencePosition で lastPos も更新)
-  render()
+  requestRender()
 }
 
 // ── ソース編集 ──
 function renderDetected(): string {
-  const m = editMachine
+  const m = ctx.editMachine
   if (!m) return ''
   return `<div class="field"><label>Machine name</label><div class="autoval">${esc(m.label)}</div></div>
      <div class="field"><label>machineId</label><div class="autoval mono">${esc(m.machineId)}</div></div>`
 }
 
 function renderTestStatus(): string {
-  if (testState === 'testing')
+  if (ctx.testState === 'testing')
     return `<div class="status-testing">${icon('loader', { size: 14, cls: 'ic-spin' })} Connecting…</div>`
-  if (testState === 'ok')
+  if (ctx.testState === 'ok')
     return `<div class="status-ok">${icon('check', { size: 14 })} Connected</div>${renderDetected()}`
-  if (testState === 'error')
-    return `<div class="status-err">${icon('x', { size: 14 })} Failed: ${esc(testError)}</div>
+  if (ctx.testState === 'error')
+    return `<div class="status-err">${icon('x', { size: 14 })} Failed: ${esc(ctx.testError)}</div>
       <div class="cmp-sub">Check the URL and that the server is running.</div>`
   return '<div class="cmp-sub">Test the connection to load items.</div>'
 }
@@ -1213,11 +1192,15 @@ function renderRouteList(s: SourceDef | undefined): string {
 }
 
 function renderSourceEdit(): string {
-  const s = editingSourceId ? sourceById(config, editingSourceId) : undefined
-  const url = testUrl || (s ? sourceUrl(s) : undefined) || 'http://127.0.0.1:8723'
-  const testing = testState === 'testing'
+  const s = ctx.editingSourceId ? sourceById(ctx.config, ctx.editingSourceId) : undefined
+  const url = ctx.testUrl || (s ? sourceUrl(s) : undefined) || 'http://127.0.0.1:8723'
+  const testing = ctx.testState === 'testing'
   const backLabel =
-    sourceEditBack === 'sources' ? 'Sources' : sourceEditBack === 'source-detail' ? 'Back' : 'Home'
+    ctx.sourceEditBack === 'sources'
+      ? 'Sources'
+      : ctx.sourceEditBack === 'source-detail'
+        ? 'Back'
+        : 'Home'
   return `
     <div class="topbar"><button class="nav-btn" data-action="back">${icon('arrow-left', { size: 16 })} ${backLabel}</button>
       <span class="h-title">Server</span><span></span></div>
@@ -1235,37 +1218,37 @@ function renderSourceEdit(): string {
 }
 
 function render(): void {
-  if (!root) return
+  if (!ctx.root) return
   // Home を出す直前に提案を最新化する。store の health 変化は Home 以外 (source-edit) でも
   // 起こり得る (接続テストで追加した source が即 offline になる等) が、その間の notify は
   // onStoreUpdate が握り潰すため、Home へ戻った描画時に必ず計算し直してバナーを正す。
-  if (view === 'home') recomputeSuggestion()
-  root.innerHTML =
-    view === 'source-edit'
+  if (ctx.view === 'home') recomputeSuggestion()
+  ctx.root.innerHTML =
+    ctx.view === 'source-edit'
       ? renderSourceEdit()
-      : view === 'source-detail'
+      : ctx.view === 'source-detail'
         ? renderSourceDetail()
-        : view === 'sources'
+        : ctx.view === 'sources'
           ? renderSources()
-          : view === 'add-source'
+          : ctx.view === 'add-source'
             ? renderAddSource()
-            : view === 'places'
+            : ctx.view === 'places'
               ? renderPlaces()
               : renderHome()
   // home と source-detail は群/段の構成シグネチャを記録し、SortableJS を張る。
   // source-detail は #source-list を持たない (group 横断並べ替え=Glass Layout の責務) ので
   // group sortable は張られず、.src-metrics の segment 並べ替えのみ有効になる。
-  if (view === 'home' || view === 'source-detail') {
+  if (ctx.view === 'home' || ctx.view === 'source-detail') {
     lastVisibleSig = visibleSig()
     attachSortables()
-    if (view === 'home') applySwipeOpen() // 再描画後に開いていた swipe カードの transform を復元
-    if (view === 'home' && dbgOpen) scrollDbgBottom() // 開いていれば最新行へ
+    if (ctx.view === 'home') applySwipeOpen() // 再描画後に開いていた swipe カードの transform を復元
+    if (ctx.view === 'home' && dbgOpen) scrollDbgBottom() // 開いていれば最新行へ
   }
 }
 
 function updatePreview(): void {
   // 編集モードの WYSIWYG キャンバス (.wys-screen) は上書きしない (view の連結テキストのみ更新)。
-  const el = root?.querySelector('.gpv-screen')
+  const el = ctx.root?.querySelector('.gpv-screen')
   if (el && !el.classList.contains('wys-screen')) el.innerHTML = glassPreviewHtml()
 }
 
@@ -1291,8 +1274,8 @@ let swipeDrag: SwipeDrag | null = null
 
 // 開いているカードだけ transform を当てる(再描画後の復元にも使う)。
 function applySwipeOpen(): void {
-  if (!root) return
-  for (const fg of root.querySelectorAll<HTMLElement>('.swipe-row > .swipe-fg')) {
+  if (!ctx.root) return
+  for (const fg of ctx.root.querySelectorAll<HTMLElement>('.swipe-row > .swipe-fg')) {
     const src = (fg.parentElement as HTMLElement | null)?.dataset.src ?? ''
     fg.style.transform = src && src === swipeOpenSrc ? `translateX(-${SWIPE_ACTION_W}px)` : ''
   }
@@ -1393,7 +1376,7 @@ function attachSortables(): void {
   // forceFallback: iOS WKWebView では HTML5 DnD が touch で動かないため必須。
   // delayOnTouchOnly: タッチは長押しでドラッグ開始 (素早いスワイプはスクロールに通す)。
   // drag 中はドロップ先セルをハイライト。
-  if (layoutEditing) {
+  if (ctx.layoutEditing) {
     for (const el of document.querySelectorAll<HTMLElement>('.wys-cell')) {
       sortables.push(
         Sortable.create(el, {
@@ -1442,10 +1425,10 @@ function recomputeWysFromDom(): void {
     const right = readZone(i, 'right')
     return right.length ? [...left, RIGHT_DIVIDER, ...right] : left
   })
-  const page = activeView(config).pages?.[pageEditingIdx]
+  const page = activeView(ctx.config).pages?.[ctx.pageEditingIdx]
   if (page) page.layout = { rows, customLabels: lay.customLabels }
-  void saveConfig(config)
-  render()
+  void saveConfig(ctx.config)
+  requestRender()
 }
 
 function parseKey(key: string): GroupRef {
@@ -1456,27 +1439,27 @@ function parseKey(key: string): GroupRef {
 // active view の groupOrder を並べ替える。indices は visibleRefs (実在 group) 基準。非表示 ref は温存。
 function onGroupReorder(oldIndex?: number, newIndex?: number): void {
   if (oldIndex == null || newIndex == null || oldIndex === newIndex) return
-  const view = activeView(config)
+  const view = activeView(ctx.config)
   const visible = visibleRefs()
   const [moved] = visible.splice(oldIndex, 1)
   if (!moved) return
   visible.splice(newIndex, 0, moved)
   const rest = view.groupOrder.filter((r) => !statusGroup(r.sourceId, r.groupId))
   view.groupOrder = [...visible, ...rest]
-  void saveConfig(config)
-  updatePreview()
+  void saveConfig(ctx.config)
+  requestPreviewUpdate()
 }
 
 // segment の並び順は素材 (GroupMeta.segments) に持つ (全 profile 共通の順序基準)。
 function onSegReorder(key: string, oldIndex?: number, newIndex?: number): void {
   const ref = parseKey(key)
-  const meta = config.groups[ref.sourceId]?.[ref.groupId]
+  const meta = ctx.config.groups[ref.sourceId]?.[ref.groupId]
   if (!meta || oldIndex == null || newIndex == null || oldIndex === newIndex) return
   const [moved] = meta.segments.splice(oldIndex, 1)
   if (!moved) return
   meta.segments.splice(newIndex, 0, moved)
-  void saveConfig(config)
-  updatePreview()
+  void saveConfig(ctx.config)
+  requestPreviewUpdate()
 }
 
 // profile を切替/複製/追加した後の共通処理。enabledSourceIds が変わるので store の fetch 範囲を
@@ -1486,12 +1469,12 @@ function onSegReorder(key: string, oldIndex?: number, newIndex?: number): void {
 //   補充する (setSourcesFromConfig は未変更ソースを再 fetch しない = onStoreUpdate が来ないため、
 //   ここで明示的に active view へ反映してから描画する)。
 function applyProfileChange(): void {
-  layoutEditing = false
-  pageEditingIdx = 0
-  void saveConfig(config)
+  ctx.layoutEditing = false
+  ctx.pageEditingIdx = 0
+  void saveConfig(ctx.config)
   syncAll() // 切替先 view を cached status から補充 (変化あれば内部で保存)
-  setSourcesFromConfig(config)
-  render() // render() が Home 描画前に recomputeSuggestion する (active 変更で提案が変わる)
+  setSourcesFromConfig(ctx.config)
+  requestRender() // requestRender() が Home 描画前に recomputeSuggestion する (active 変更で提案が変わる)
 }
 
 // ── イベント ──
@@ -1503,8 +1486,8 @@ async function onClick(e: MouseEvent): Promise<void> {
   }
   switch (t.dataset.action) {
     case 'home':
-      view = 'home'
-      render()
+      ctx.view = 'home'
+      requestRender()
       break
     case 'open-source-detail':
       // swipe 直後(時間窓)や、どれか開いている時のカードタップは「閉じるだけ」で遷移しない。
@@ -1512,51 +1495,51 @@ async function onClick(e: MouseEvent): Promise<void> {
         closeSwipe()
         break
       }
-      detailSourceId = t.dataset.src ?? null
-      view = 'source-detail'
-      render()
+      ctx.detailSourceId = t.dataset.src ?? null
+      ctx.view = 'source-detail'
+      requestRender()
       break
     case 'suggest-accept':
       onSuggestAccept()
       break
     case 'suggest-dismiss':
       // このセッション中は同じ提案 (同 profile) を再表示しない。glass はそのまま (手動操作を妨げない)。
-      if (currentSuggestion) dismissedSuggestions.add(currentSuggestion.profileId)
-      currentSuggestion = null
-      render()
+      if (ctx.currentSuggestion) ctx.dismissedSuggestions.add(ctx.currentSuggestion.profileId)
+      ctx.currentSuggestion = null
+      requestRender()
       break
     case 'profile-add':
-      addProfile(config, `Preset ${config.profiles.length + 1}`)
+      addProfile(ctx.config, `Preset ${ctx.config.profiles.length + 1}`)
       applyProfileChange()
       break
     case 'profile-duplicate':
-      duplicateActiveProfile(config)
+      duplicateActiveProfile(ctx.config)
       applyProfileChange()
       break
     case 'profile-rename': {
-      const cur = activeProfile(config)
+      const cur = activeProfile(ctx.config)
       const name = window.prompt('Preset name', cur.name)
       if (name?.trim()) {
-        renameProfile(config, cur.id, name)
-        void saveConfig(config)
-        render()
+        renameProfile(ctx.config, cur.id, name)
+        void saveConfig(ctx.config)
+        requestRender()
       }
       break
     }
     case 'profile-delete': {
-      const cur = activeProfile(config)
-      if (cur.id === DEFAULT_PROFILE_ID || config.profiles.length <= 1) break
+      const cur = activeProfile(ctx.config)
+      if (cur.id === DEFAULT_PROFILE_ID || ctx.config.profiles.length <= 1) break
       if (!window.confirm(`Delete preset "${cur.name}"?`)) break
-      if (removeProfile(config, cur.id)) applyProfileChange()
+      if (removeProfile(ctx.config, cur.id)) applyProfileChange()
       break
     }
     case 'manage-sources':
-      view = 'sources'
-      render()
+      ctx.view = 'sources'
+      requestRender()
       break
     case 'manage-places':
-      view = 'places'
-      render()
+      ctx.view = 'places'
+      requestRender()
       break
     case 'add-current-place': {
       // 現在地を取得して名前を付けて保存する。位置許可が無ければ案内して中断。
@@ -1564,7 +1547,7 @@ async function onClick(e: MouseEvent): Promise<void> {
       if (!name?.trim()) break
       try {
         const pos = await getCompanionPosition()
-        addPlace(config, name.trim(), pos.lat, pos.lon)
+        addPlace(ctx.config, name.trim(), pos.lat, pos.lon)
         afterPlacesChange()
       } catch {
         window.alert('Could not get your location. Allow location access and try again.')
@@ -1573,44 +1556,44 @@ async function onClick(e: MouseEvent): Promise<void> {
     }
     case 'rename-place': {
       const id = t.dataset.place
-      const p = config.places?.find((x) => x.id === id)
+      const p = ctx.config.places?.find((x) => x.id === id)
       if (!id || !p) break
       const name = window.prompt('Place name', p.label)
-      if (name?.trim() && renamePlace(config, id, name.trim())) afterPlacesChange()
+      if (name?.trim() && renamePlace(ctx.config, id, name.trim())) afterPlacesChange()
       break
     }
     case 'radius-place': {
       // ジオフェンス半径(m)。inPlace 表示条件と here(現在地)判定の圏を決める(#43)。
       const id = t.dataset.place
-      const p = config.places?.find((x) => x.id === id)
+      const p = ctx.config.places?.find((x) => x.id === id)
       if (!id || !p) break
       const cur = String(p.radiusM ?? DEFAULT_PLACE_RADIUS_M)
       const input = window.prompt('Geofence radius (meters)', cur)
       const m = input == null ? Number.NaN : Number(input)
-      if (Number.isFinite(m) && setPlaceRadius(config, id, m)) afterPlacesChange()
+      if (Number.isFinite(m) && setPlaceRadius(ctx.config, id, m)) afterPlacesChange()
       break
     }
     case 'delete-place': {
       const id = t.dataset.place
       if (!id) break
-      const p = config.places?.find((x) => x.id === id)
-      if (p && window.confirm(`Delete "${p.label}"?`) && removePlace(config, id))
+      const p = ctx.config.places?.find((x) => x.id === id)
+      if (p && window.confirm(`Delete "${p.label}"?`) && removePlace(ctx.config, id))
         afterPlacesChange()
       break
     }
     case 'open-add-source':
-      view = 'add-source'
-      render()
+      ctx.view = 'add-source'
+      requestRender()
       break
     case 'add-to-preset': {
       // 既存 source をこの preset に追加する。
       const id = t.dataset.src
       if (id) {
-        setSourceEnabled(config, id, true)
-        void saveConfig(config)
-        setSourcesFromConfig(config) // fetch 範囲を広げる (取得開始)
-        view = 'home'
-        render()
+        setSourceEnabled(ctx.config, id, true)
+        void saveConfig(ctx.config)
+        setSourcesFromConfig(ctx.config) // fetch 範囲を広げる (取得開始)
+        ctx.view = 'home'
+        requestRender()
       }
       break
     }
@@ -1620,120 +1603,120 @@ async function onClick(e: MouseEvent): Promise<void> {
       const id = t.dataset.src
       if (id) {
         if (swipeOpenSrc === id) swipeOpenSrc = null // 消えるカードの swipe 状態を破棄
-        setSourceEnabled(config, id, false)
-        void saveConfig(config)
-        setSourcesFromConfig(config) // fetch 範囲を狭める (停止/status 破棄)
-        if (view === 'source-detail') view = 'home' // 外した source の detail に留まらない
-        render()
+        setSourceEnabled(ctx.config, id, false)
+        void saveConfig(ctx.config)
+        setSourcesFromConfig(ctx.config) // fetch 範囲を狭める (停止/status 破棄)
+        if (ctx.view === 'source-detail') ctx.view = 'home' // 外した source の detail に留まらない
+        requestRender()
       }
       break
     }
     case 'create-new-source': {
       // preset への新規追加: 実体を作り active preset に入れて URL 入力へ。戻り先は Home。
-      const def = addServer(config, 'New server')
-      void saveConfig(config)
-      editingSourceId = def.id
-      testState = 'idle'
-      testUrl = ''
-      editMachine = null
-      sourceEditBack = 'home'
-      view = 'source-edit'
-      render()
+      const def = addServer(ctx.config, 'New server')
+      void saveConfig(ctx.config)
+      ctx.editingSourceId = def.id
+      ctx.testState = 'idle'
+      ctx.testUrl = ''
+      ctx.editMachine = null
+      ctx.sourceEditBack = 'home'
+      ctx.view = 'source-edit'
+      requestRender()
       break
     }
     case 'new-source': {
       // Sources 一覧からの新規 (実体追加)。戻り先は Sources 一覧。
-      const def = addServer(config, 'New server')
-      void saveConfig(config)
-      editingSourceId = def.id
-      testState = 'idle'
-      testUrl = ''
-      editMachine = null
-      sourceEditBack = 'sources'
-      view = 'source-edit'
-      render()
+      const def = addServer(ctx.config, 'New server')
+      void saveConfig(ctx.config)
+      ctx.editingSourceId = def.id
+      ctx.testState = 'idle'
+      ctx.testUrl = ''
+      ctx.editMachine = null
+      ctx.sourceEditBack = 'sources'
+      ctx.view = 'source-edit'
+      requestRender()
       break
     }
     case 'edit-source':
-      editingSourceId = t.dataset.src ?? null
-      testState = 'idle'
-      testUrl = ''
-      editMachine = null
+      ctx.editingSourceId = t.dataset.src ?? null
+      ctx.testState = 'idle'
+      ctx.testUrl = ''
+      ctx.editMachine = null
       // Source Detail から開いたら detail へ戻す (動線維持)。それ以外は Sources 一覧へ。
-      sourceEditBack = view === 'source-detail' ? 'source-detail' : 'sources'
-      view = 'source-edit'
-      render()
+      ctx.sourceEditBack = ctx.view === 'source-detail' ? 'source-detail' : 'sources'
+      ctx.view = 'source-edit'
+      requestRender()
       break
     case 'back':
-      editingSourceId = null
-      view = sourceEditBack
-      render()
+      ctx.editingSourceId = null
+      ctx.view = ctx.sourceEditBack
+      requestRender()
       break
     case 'delete-source':
-      if (editingSourceId) {
-        removeSource(config, editingSourceId)
-        void saveConfig(config)
-        setSourcesFromConfig(config)
-        editingSourceId = null
-        view = sourceEditBack
-        render()
+      if (ctx.editingSourceId) {
+        removeSource(ctx.config, ctx.editingSourceId)
+        void saveConfig(ctx.config)
+        setSourcesFromConfig(ctx.config)
+        ctx.editingSourceId = null
+        ctx.view = ctx.sourceEditBack
+        requestRender()
       }
       break
     case 'url-remove': {
-      const s = editingSourceId ? sourceById(config, editingSourceId) : undefined
+      const s = ctx.editingSourceId ? sourceById(ctx.config, ctx.editingSourceId) : undefined
       const u = s ? sourceUrls(s)[Number(t.dataset.urlidx)] : undefined
       if (s && u) {
         removeSourceUrl(s, u)
-        testUrl = '' // 入力欄を新しい主経路に追従させる
-        void saveConfig(config)
-        setSourcesFromConfig(config)
-        render()
+        ctx.testUrl = '' // 入力欄を新しい主経路に追従させる
+        void saveConfig(ctx.config)
+        setSourcesFromConfig(ctx.config)
+        requestRender()
       }
       break
     }
     case 'url-primary': {
-      const s = editingSourceId ? sourceById(config, editingSourceId) : undefined
+      const s = ctx.editingSourceId ? sourceById(ctx.config, ctx.editingSourceId) : undefined
       const u = s ? sourceUrls(s)[Number(t.dataset.urlidx)] : undefined
       if (s && u) {
         promoteSourceUrl(s, u)
-        testUrl = '' // 入力欄を新しい主経路に追従させる
-        void saveConfig(config)
-        setSourcesFromConfig(config)
-        render()
+        ctx.testUrl = '' // 入力欄を新しい主経路に追従させる
+        void saveConfig(ctx.config)
+        setSourcesFromConfig(ctx.config)
+        requestRender()
       }
       break
     }
     case 'expand': {
       const ref = parseKey(t.dataset.key ?? '')
-      const vg = activeView(config).groups[ref.sourceId]?.[ref.groupId]
+      const vg = activeView(ctx.config).groups[ref.sourceId]?.[ref.groupId]
       if (vg) {
         vg.expanded = !vg.expanded
-        void saveConfig(config)
-        render()
+        void saveConfig(ctx.config)
+        requestRender()
       }
       break
     }
     case 'toggle-group': {
       const ref = parseKey(t.dataset.key ?? '')
-      const vg = activeView(config).groups[ref.sourceId]?.[ref.groupId]
+      const vg = activeView(ctx.config).groups[ref.sourceId]?.[ref.groupId]
       if (vg) {
         vg.enabled = !vg.enabled
-        void saveConfig(config)
-        render()
+        void saveConfig(ctx.config)
+        requestRender()
       }
       break
     }
     case 'edit-owner': {
       // 表示モデル Phase2: 同系統データの出自(owner)をリネームする。source.displayOwner を更新し、
       // displayLabel(衝突焼込)を再計算して保存。owner は source 単位なので同 source の全 group に効く。
-      const src = sourceById(config, t.dataset.src ?? '')
+      const src = sourceById(ctx.config, t.dataset.src ?? '')
       if (src) {
         const next = window.prompt('Owner name (to tell same-type data apart)', effectiveOwner(src))
         if (next?.trim()) {
           src.displayOwner = next.trim()
           applyDisplayLabels()
-          void saveConfig(config)
-          render()
+          void saveConfig(ctx.config)
+          requestRender()
         }
       }
       break
@@ -1741,11 +1724,11 @@ async function onClick(e: MouseEvent): Promise<void> {
     case 'toggle-grouplabel': {
       // glass で group 名を前置するか (default-label)。
       const ref = parseKey(t.dataset.key ?? '')
-      const vg = activeView(config).groups[ref.sourceId]?.[ref.groupId]
+      const vg = activeView(ctx.config).groups[ref.sourceId]?.[ref.groupId]
       if (vg) {
         vg.showDefaultLabel = !(vg.showDefaultLabel ?? ref.groupId !== 'clock')
-        void saveConfig(config)
-        render()
+        void saveConfig(ctx.config)
+        requestRender()
       }
       break
     }
@@ -1753,13 +1736,13 @@ async function onClick(e: MouseEvent): Promise<void> {
       // group 名のリネーム (素材・全 preset 共有)。同 source 内で同名にすると glass で 1 unit に
       // マージ表示され、別名にすると解除される (display-identity の merge unit)。
       const ref = parseKey(t.dataset.key ?? '')
-      const meta = config.groups[ref.sourceId]?.[ref.groupId]
+      const meta = ctx.config.groups[ref.sourceId]?.[ref.groupId]
       if (meta) {
         const g = statusGroup(ref.sourceId, ref.groupId)
         const isBuiltin = ref.sourceId === BUILTIN_SOURCE_ID
         const base = isBuiltin
           ? (BUILTIN_GROUP_LABELS[ref.groupId] ?? ref.groupId)
-          : g?.label || sourceById(config, ref.sourceId)?.label || ref.groupId
+          : g?.label || sourceById(ctx.config, ref.sourceId)?.label || ref.groupId
         const next = window.prompt('Group name', meta.displayName ?? base)
         if (next !== null) {
           const v = next.trim()
@@ -1791,20 +1774,20 @@ async function onClick(e: MouseEvent): Promise<void> {
           } else {
             delete meta.displayName // 空 or base と同じ → producer の label に戻す
           }
-          void saveConfig(config)
-          render()
+          void saveConfig(ctx.config)
+          requestRender()
         }
       }
       break
     }
     case 'toggle-seg': {
       const ref = parseKey(t.dataset.key ?? '')
-      const vg = activeView(config).groups[ref.sourceId]?.[ref.groupId]
+      const vg = activeView(ctx.config).groups[ref.sourceId]?.[ref.groupId]
       const segId = t.dataset.seg
       if (vg && segId) {
         vg.segments[segId] = !(vg.segments[segId] ?? true)
-        void saveConfig(config)
-        render()
+        void saveConfig(ctx.config)
+        requestRender()
       }
       break
     }
@@ -1817,7 +1800,7 @@ async function onClick(e: MouseEvent): Promise<void> {
     case 'seg-vis-add': {
       // 表示条件は素材 (SegMeta.visibility。profile 非依存)。
       const ref = parseKey(t.dataset.key ?? '')
-      const sm = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find(
+      const sm = ctx.config.groups[ref.sourceId]?.[ref.groupId]?.segments.find(
         (s) => s.id === t.dataset.seg,
       )
       if (sm) {
@@ -1833,59 +1816,59 @@ async function onClick(e: MouseEvent): Promise<void> {
               : { kind: 'onChange', holdMs: 5000 },
           )
           sm.visibility = cond
-          void saveConfig(config)
-          render()
+          void saveConfig(ctx.config)
+          requestRender()
         }
       }
       break
     }
     case 'seg-vis-remove': {
       const ref = parseKey(t.dataset.key ?? '')
-      const sm = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find(
+      const sm = ctx.config.groups[ref.sourceId]?.[ref.groupId]?.segments.find(
         (s) => s.id === t.dataset.seg,
       )
       const idx = Number(t.dataset.idx)
       if (sm?.visibility && Number.isInteger(idx)) {
         sm.visibility.conditions.splice(idx, 1)
         if (sm.visibility.conditions.length === 0) sm.visibility = undefined
-        void saveConfig(config)
-        render()
+        void saveConfig(ctx.config)
+        requestRender()
       }
       break
     }
     case 'layout-edit-toggle':
-      layoutEditing = !layoutEditing
-      render()
+      ctx.layoutEditing = !ctx.layoutEditing
+      requestRender()
       break
     case 'layout-customize': {
       // auto → explicit: 現在の groupOrder から 1 ページ目を生成して編集モードへ。
-      activeView(config).pages = [
-        { id: genPageId(), name: 'Page 1', layout: generateGlassLayout(config) },
+      activeView(ctx.config).pages = [
+        { id: genPageId(), name: 'Page 1', layout: generateGlassLayout(ctx.config) },
       ]
-      pageEditingIdx = 0
-      layoutEditing = true // 生成と同時に編集モードへ
-      void saveConfig(config)
-      render()
+      ctx.pageEditingIdx = 0
+      ctx.layoutEditing = true // 生成と同時に編集モードへ
+      void saveConfig(ctx.config)
+      requestRender()
       break
     }
     case 'layout-reset': {
       // explicit → auto: 全ページと legacy glassLayout を破棄して自動デッキへ戻す。
-      const view = activeView(config)
+      const view = activeView(ctx.config)
       view.pages = undefined
       view.glassLayout = undefined
-      pageEditingIdx = 0
-      layoutEditing = false
-      void saveConfig(config)
-      render()
+      ctx.pageEditingIdx = 0
+      ctx.layoutEditing = false
+      void saveConfig(ctx.config)
+      requestRender()
       break
     }
     case 'fs-open': {
       // フルスクリーン WYSIWYG エディタ (実験的)。explicit デッキ未生成なら 1 ページ目を作って開く。
-      const view = activeView(config)
+      const view = activeView(ctx.config)
       if (!view.pages?.length) {
-        view.pages = [{ id: genPageId(), name: 'Page 1', layout: generateGlassLayout(config) }]
-        pageEditingIdx = 0
-        void saveConfig(config)
+        view.pages = [{ id: genPageId(), name: 'Page 1', layout: generateGlassLayout(ctx.config) }]
+        ctx.pageEditingIdx = 0
+        void saveConfig(ctx.config)
       }
       openFsEditor()
       break
@@ -1896,20 +1879,20 @@ async function onClick(e: MouseEvent): Promise<void> {
       const lay = editingLayout()
       if (lay && key) {
         lay.rows = lay.rows.map((r) => r.filter((k) => k !== key))
-        void saveConfig(config)
-        render()
+        void saveConfig(ctx.config)
+        requestRender()
       }
       break
     }
     case 'label-add': {
       // 任意テキストのラベルを作成 (未配置棚に出る)。inline input から読む。
-      const input = root?.querySelector<HTMLInputElement>('.lay-add-input')
+      const input = ctx.root?.querySelector<HTMLInputElement>('.lay-add-input')
       const text = (input?.value ?? '').trim().slice(0, 64)
       const lay = editingLayout()
       if (lay && text) {
         lay.customLabels[genLabelId()] = { text }
-        void saveConfig(config)
-        render()
+        void saveConfig(ctx.config)
+        requestRender()
       }
       break
     }
@@ -1921,69 +1904,69 @@ async function onClick(e: MouseEvent): Promise<void> {
         delete lay.customLabels[id]
         const k = customLabelKey(id)
         lay.rows = lay.rows.map((r) => r.filter((x) => x !== k))
-        void saveConfig(config)
-        render()
+        void saveConfig(ctx.config)
+        requestRender()
       }
       break
     }
     case 'page-select': {
       const i = Number(t.dataset.pageIdx)
-      const pages = activeView(config).pages
+      const pages = activeView(ctx.config).pages
       if (pages && Number.isInteger(i) && i >= 0 && i < pages.length) {
-        pageEditingIdx = i
-        render()
+        ctx.pageEditingIdx = i
+        requestRender()
       }
       break
     }
     case 'page-add': {
-      const view = activeView(config)
+      const view = activeView(ctx.config)
       view.pages ??= []
       view.pages.push({
         id: genPageId(),
         name: `Page ${view.pages.length + 1}`,
         layout: emptyGlassLayout(),
       })
-      pageEditingIdx = view.pages.length - 1
-      layoutEditing = true
-      void saveConfig(config)
-      render()
+      ctx.pageEditingIdx = view.pages.length - 1
+      ctx.layoutEditing = true
+      void saveConfig(ctx.config)
+      requestRender()
       break
     }
     case 'page-remove': {
-      const pages = activeView(config).pages
-      if (pages && pages.length > 1 && pageEditingIdx < pages.length) {
-        pages.splice(pageEditingIdx, 1)
-        if (pageEditingIdx >= pages.length) pageEditingIdx = pages.length - 1
-        void saveConfig(config)
-        render()
+      const pages = activeView(ctx.config).pages
+      if (pages && pages.length > 1 && ctx.pageEditingIdx < pages.length) {
+        pages.splice(ctx.pageEditingIdx, 1)
+        if (ctx.pageEditingIdx >= pages.length) ctx.pageEditingIdx = pages.length - 1
+        void saveConfig(ctx.config)
+        requestRender()
       }
       break
     }
     case 'page-move-up': {
-      const pages = activeView(config).pages
-      const i = pageEditingIdx
+      const pages = activeView(ctx.config).pages
+      const i = ctx.pageEditingIdx
       const a = pages?.[i - 1]
       const b = pages?.[i]
       if (pages && a && b && i > 0) {
         pages[i - 1] = b
         pages[i] = a
-        pageEditingIdx = i - 1
-        void saveConfig(config)
-        render()
+        ctx.pageEditingIdx = i - 1
+        void saveConfig(ctx.config)
+        requestRender()
       }
       break
     }
     case 'page-move-down': {
-      const pages = activeView(config).pages
-      const i = pageEditingIdx
+      const pages = activeView(ctx.config).pages
+      const i = ctx.pageEditingIdx
       const a = pages?.[i]
       const b = pages?.[i + 1]
       if (pages && a && b && i < pages.length - 1) {
         pages[i] = b
         pages[i + 1] = a
-        pageEditingIdx = i + 1
-        void saveConfig(config)
-        render()
+        ctx.pageEditingIdx = i + 1
+        void saveConfig(ctx.config)
+        requestRender()
       }
       break
     }
@@ -1995,7 +1978,7 @@ async function onClick(e: MouseEvent): Promise<void> {
       break
     case 'console-toggle':
       dbgOpen = !dbgOpen
-      render()
+      requestRender()
       break
     case 'console-copy':
       await copyDbgLogs(t)
@@ -2024,28 +2007,32 @@ function onChange(e: Event): void {
 }
 
 // ページ名の変更 (rename input の change)。現在編集中ページ (pageEditingIdx) に作用する。
-// render() しない (input フォーカスを保つ。値は DOM が保持)。
+// requestRender() しない (input フォーカスを保つ。値は DOM が保持)。
 function onPageRename(e: Event): void {
   const t = e.target as HTMLInputElement
   const raw = Number(t.dataset.pageIdx)
-  const i = Number.isInteger(raw) ? raw : pageEditingIdx
-  const page = activeView(config).pages?.[i]
+  const i = Number.isInteger(raw) ? raw : ctx.pageEditingIdx
+  const page = activeView(ctx.config).pages?.[i]
   if (!page) return
   page.name = t.value.trim().slice(0, 24) || `Page ${i + 1}`
-  void saveConfig(config)
+  void saveConfig(ctx.config)
 }
 
 // #43 active preset のジオフェンス連動(place + mode)を保存する。place/mode の両 select を読む。
 function onGeofenceBindChange(): void {
-  const active = activeProfile(config)
-  const placeSel = root?.querySelector<HTMLSelectElement>('[data-action="profile-geofence-place"]')
-  const modeSel = root?.querySelector<HTMLSelectElement>('[data-action="profile-geofence-mode"]')
+  const active = activeProfile(ctx.config)
+  const placeSel = ctx.root?.querySelector<HTMLSelectElement>(
+    '[data-action="profile-geofence-place"]',
+  )
+  const modeSel = ctx.root?.querySelector<HTMLSelectElement>(
+    '[data-action="profile-geofence-mode"]',
+  )
   const placeId = placeSel?.value || null
   const mode = modeSel?.value === 'auto' ? 'auto' : 'suggest'
-  if (setProfileGeofence(config, active.id, placeId, mode)) {
-    lastGeofencePlace = null // バインド変更後は次の onStoreUpdate で auto 切替を再評価させる
-    void saveConfig(config)
-    render()
+  if (setProfileGeofence(ctx.config, active.id, placeId, mode)) {
+    ctx.lastGeofencePlace = null // バインド変更後は次の onStoreUpdate で auto 切替を再評価させる
+    void saveConfig(ctx.config)
+    requestRender()
   }
 }
 
@@ -2053,18 +2040,18 @@ function onGeofenceBindChange(): void {
 // fetch 範囲も更新する (applyProfileChange)。
 function onProfileSwitch(e: Event): void {
   const id = (e.target as HTMLSelectElement).value
-  if (!id || id === config.activeProfileId) return
-  setActiveProfile(config, id)
+  if (!id || id === ctx.config.activeProfileId) return
+  setActiveProfile(ctx.config, id)
   applyProfileChange()
 }
 
 // 提案バナーの承認: Phase 2 の切替を呼ぶ (自動適用ではなくユーザー操作を起点にする)。
 // 提案先が存在しなければ何もしない (取り違え防止)。切替後は applyProfileChange が提案を再計算する。
 function onSuggestAccept(): void {
-  const s = currentSuggestion
-  if (!s || s.profileId === config.activeProfileId) return
-  if (!config.profiles.some((p) => p.id === s.profileId)) return
-  setActiveProfile(config, s.profileId)
+  const s = ctx.currentSuggestion
+  if (!s || s.profileId === ctx.config.activeProfileId) return
+  if (!ctx.config.profiles.some((p) => p.id === s.profileId)) return
+  setActiveProfile(ctx.config, s.profileId)
   applyProfileChange()
 }
 
@@ -2088,29 +2075,29 @@ function applyOptionChange(ds: DOMStringMap, rawValue: unknown): void {
   if (scope === 'segment') {
     const segId = ds.seg
     if (!segId) return
-    ok = setSegmentOption(config, ref.sourceId, ref.groupId, segId, fieldId, rawValue)
+    ok = setSegmentOption(ctx.config, ref.sourceId, ref.groupId, segId, fieldId, rawValue)
   } else {
-    ok = setSourceOption(config, ref.sourceId, fieldId, rawValue)
+    ok = setSourceOption(ctx.config, ref.sourceId, fieldId, rawValue)
     if (ok) {
       // 新しい options を store の defs へ反映してから再取得する。defs は config のクローンのため、
       // setSourcesFromConfig で同期しないと client producer が旧 options で fetch してしまう (#36 が
       // #40 へ先送りした「単位変更の即時反映」ギャップ)。urlset 不変なので他 source は再 fetch されない。
-      setSourcesFromConfig(config)
+      setSourcesFromConfig(ctx.config)
       refreshSourceById(ref.sourceId)
     }
   }
   if (!ok) return
-  void saveConfig(config)
-  render()
+  void saveConfig(ctx.config)
+  requestRender()
 }
 
 // kind 切替時の新 leaf 既定値。present は兄弟必須なので最初の兄弟を対象にする。
 // threshold は host が percent を持たない場合、同 group の percent を持つ兄弟を既定対象にする
 // (self だと percent 欠落で常に na になり機能しないため)。
 function newLeafOfKind(kind: string, ref: GroupRef, hostId: string): VisibilityLeaf {
-  if (kind === 'inPlace') return { kind: 'inPlace', placeId: config.places?.[0]?.id ?? '' }
+  if (kind === 'inPlace') return { kind: 'inPlace', placeId: ctx.config.places?.[0]?.id ?? '' }
   if (kind === 'present') {
-    const sib = (config.groups[ref.sourceId]?.[ref.groupId]?.segments ?? [])
+    const sib = (ctx.config.groups[ref.sourceId]?.[ref.groupId]?.segments ?? [])
       .map((s) => s.id)
       .find((id) => id !== hostId)
     return { kind: 'present', seg: sib ?? '' }
@@ -2134,7 +2121,7 @@ function onSegVisChange(e: Event): void {
   const segId = t.dataset.seg
   if (!action?.startsWith('seg-vis-') || !key || !segId) return
   const ref = parseKey(key)
-  const sm = config.groups[ref.sourceId]?.[ref.groupId]?.segments.find((s) => s.id === segId)
+  const sm = ctx.config.groups[ref.sourceId]?.[ref.groupId]?.segments.find((s) => s.id === segId)
   const vis = sm?.visibility
   if (!vis) return
   const val = t.value
@@ -2191,32 +2178,32 @@ function onSegVisChange(e: Event): void {
         return
     }
   }
-  void saveConfig(config)
-  render()
+  void saveConfig(ctx.config)
+  requestRender()
 }
 
 // 編集中ソースの URL を検証・更新し、store に反映する。
 async function runConnectionTest(): Promise<void> {
-  const input = root?.querySelector<HTMLInputElement>('.field-row input[type="text"]')
+  const input = ctx.root?.querySelector<HTMLInputElement>('.field-row input[type="text"]')
   const url = (input?.value ?? '').trim()
-  if (!url || !editingSourceId) return
-  testUrl = url
-  testState = 'testing'
-  testError = ''
-  render()
+  if (!url || !ctx.editingSourceId) return
+  ctx.testUrl = url
+  ctx.testState = 'testing'
+  ctx.testError = ''
+  requestRender()
   const clean = url.replace(/\/+$/, '')
   // fetchMachineFrom は machineId が非空 string のときだけ object を返す (parseMachineInfo)。
   // null は「接続失敗」または「接続成功だが machineId 不明」を意味し、後者でも空 machineId を
   // reconcile に渡さない (空 machineId による別マシン誤合流 = データ破壊を構造的に防ぐ)。
   const m = await fetchMachineFrom(clean)
   if (!m) {
-    testState = 'error'
-    testError = 'Connection failed'
-    render()
+    ctx.testState = 'error'
+    ctx.testError = 'Connection failed'
+    requestRender()
     return
   }
-  editMachine = m
-  const src = sourceById(config, editingSourceId)
+  ctx.editMachine = m
+  const src = sourceById(ctx.config, ctx.editingSourceId)
   if (src) {
     // テストした経路を urls に足す (上書きしない = 既存経路を温存し複数経路を束ねる)。
     if (!src.urls.includes(clean)) src.urls.push(clean)
@@ -2224,30 +2211,30 @@ async function runConnectionTest(): Promise<void> {
     src.label = m.label
     // machineId を反映して id を安定化する。同 machineId の既存 source への合流 / 旧 randomUUID の
     // id 付け替え / tombstone からの view 復元はすべて reconcileSourceMachine が担う。
-    const settled = reconcileSourceMachine(config, editingSourceId, m.machineId, clean)
-    if (settled) editingSourceId = settled.id // 合流/再 key で id が変わったら追従
+    const settled = reconcileSourceMachine(ctx.config, ctx.editingSourceId, m.machineId, clean)
+    if (settled) ctx.editingSourceId = settled.id // 合流/再 key で id が変わったら追従
   }
-  await saveConfig(config)
-  testState = 'ok'
-  setSourcesFromConfig(config) // store に新 URL を反映 → 取得 → onStoreUpdate で再描画
-  render()
+  await saveConfig(ctx.config)
+  ctx.testState = 'ok'
+  setSourcesFromConfig(ctx.config) // store に新 URL を反映 → 取得 → onStoreUpdate で再描画
+  requestRender()
 }
 
 function onStoreUpdate(): void {
   syncAll() // 新 group を config に取り込み (永続。group の lastLabel = merge identity もここで捕捉)
   // 衝突解決 (segment owner prefix の displayLabel) を確定 (変化時のみ保存)。
   // group 見出しの衝突は永続リネームせず render-time マージ (display-identity の merge unit) で解く。
-  if (applyDisplayLabels()) void saveConfig(config)
+  if (applyDisplayLabels()) void saveConfig(ctx.config)
   maybeGeofenceAutoSwitch() // #43 現在地 place 変化で auto モードの preset へ自動切替(view 非依存=glass にも効く)
   // 構成 (status の有無で変わる) が変化したときだけ再描画。値だけの更新では再描画しない
   // (毎 poll の innerHTML churn が iOS WebContent jettison を招くため。issue #4)。
-  if (view === 'home') {
+  if (ctx.view === 'home') {
     // 接続状態の変化で提案を再計算しバナーを更新する (dismiss 済みは recomputeSuggestion 内で除外)。
     const suggestionChanged = recomputeSuggestion()
-    if (suggestionChanged || visibleSig() !== lastVisibleSig) render()
-  } else if (view === 'source-detail') {
+    if (suggestionChanged || visibleSig() !== lastVisibleSig) requestRender()
+  } else if (ctx.view === 'source-detail') {
     // 新 segment 出現等の構成変化で Source Detail を描き直す (新 IA)。
-    if (visibleSig() !== lastVisibleSig) render()
+    if (visibleSig() !== lastVisibleSig) requestRender()
   }
 }
 
@@ -2295,7 +2282,7 @@ function fsChip(key: string, showGroup: boolean, rightSide: boolean): string {
 // グループ前置の判定 (showDefaultLabel。未設定は clock=false / 他=true)。
 function showsGroupLabel(key: string): boolean {
   const [sourceId, groupId] = key.split('|')
-  return activeView(config).groups[sourceId]?.[groupId]?.showDefaultLabel ?? groupId !== 'clock'
+  return activeView(ctx.config).groups[sourceId]?.[groupId]?.showDefaultLabel ?? groupId !== 'clock'
 }
 
 // 1 クラスタ (左 or 右) を描画。実機グラスと同じ run dedup: 直前と同じ group の連続では
@@ -2352,7 +2339,8 @@ function renderFsBodyHtml(): string {
   const sections = [...bySource.entries()]
     .map(([sid, keys]) => {
       const collapsed = fsCollapsedSources.has(sid)
-      const label = sid === FS_CUSTOM_SECTION ? 'Labels' : (sourceById(config, sid)?.label ?? sid)
+      const label =
+        sid === FS_CUSTOM_SECTION ? 'Labels' : (sourceById(ctx.config, sid)?.label ?? sid)
       const head =
         `<button class="fs-li-head" data-action="fs-toggle-source" data-src="${esc(sid)}">` +
         `${icon(collapsed ? 'chevron-right' : 'chevron-down', { size: 14 })}` +
@@ -2536,7 +2524,7 @@ function onFsPointerUp(e: PointerEvent): void {
     if (!Number.isInteger(row)) return
     moveFsKeyToZone(drag.key, row, zone.dataset.zone === 'right' ? 'right' : 'left')
   }
-  void saveConfig(config)
+  void saveConfig(ctx.config)
   refreshFsBody()
 }
 
@@ -2562,7 +2550,7 @@ function onFsClick(e: MouseEvent): void {
       removeFsKey(key)
       fsExpandSourceOf(key) // 折りたたみ中の source へ戻すと消えて見えるので開く
       normalizeFsRows()
-      void saveConfig(config)
+      void saveConfig(ctx.config)
       refreshFsBody()
     }
   }
@@ -2593,7 +2581,7 @@ function closeFsEditor(): void {
   fsRoot.remove()
   fsRoot = null
   document.body.style.overflow = '' // 背面スクロールロックを解除
-  render() // 通常画面のプレビューを最新化
+  requestRender() // 通常画面のプレビューを最新化
 }
 
 // ── デバッグコンソール本体 ──
@@ -2805,7 +2793,10 @@ function onInput(e: Event): void {
 }
 
 export async function mountCompanion(el: HTMLElement): Promise<void> {
-  root = el
+  // render port の実体登録は副作用 (イベント/購読) より前に置く (requestRender の空振り防止)。
+  registerRenderer(render)
+  registerPreviewUpdater(updatePreview)
+  ctx.root = el
   hookConsole() // 早期の console も拾えるよう最初に仕込む
   el.addEventListener('click', (e) => void onClick(e))
   el.addEventListener('change', (e) => void onChange(e)) // segment 条件 / 表示オプションの select/number
@@ -2817,20 +2808,22 @@ export async function mountCompanion(el: HTMLElement): Promise<void> {
   el.addEventListener('touchcancel', onSwipeEnd, { passive: true })
   subscribe(onStoreUpdate)
 
-  config = await loadConfig()
+  ctx.config = await loadConfig()
   // OD-4: dev (ブラウザ / 同一オリジン) のみ自動登録。prod (.ehpk) は location.origin が
   // glasses 側ループバックを指し Mac に届かないため登録せず、help.html の手順で LAN IP を入力させる。
-  if (import.meta.env.DEV && ensureDefaultServer(config, location.origin)) await saveConfig(config)
-  setSourcesFromConfig(config)
+  if (import.meta.env.DEV && ensureDefaultServer(ctx.config, location.origin))
+    await saveConfig(ctx.config)
+  setSourcesFromConfig(ctx.config)
   startPolling()
-  render() // 時刻 (clock) は glass-local タイマーが所有。companion は周期再描画しない
+  requestRender() // 時刻 (clock) は glass-local タイマーが所有。companion は周期再描画しない
 }
 
 // bridge 接続後: 永続 config を読み直して store に反映する。
 export async function onCompanionBridgeReady(): Promise<void> {
-  config = await loadConfig()
+  ctx.config = await loadConfig()
   // OD-4: 自動登録は dev のみ (prod は help.html の手順で LAN IP を入力させる)。
-  if (import.meta.env.DEV && ensureDefaultServer(config, location.origin)) await saveConfig(config)
-  setSourcesFromConfig(config)
-  render()
+  if (import.meta.env.DEV && ensureDefaultServer(ctx.config, location.origin))
+    await saveConfig(ctx.config)
+  setSourcesFromConfig(ctx.config)
+  requestRender()
 }
