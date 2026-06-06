@@ -81,6 +81,52 @@ function targetSelect(a: string, choices: SegChoice[], selected: string, selfId?
   return `<select class="vis-select" data-action="seg-vis-leaf-seg" ${a}>${opts}</select>`
 }
 
+// present leaf の params (兄弟 segment 必須)。
+function leafPresentParams(
+  a: string,
+  leaf: Extract<VisibilityLeaf, { kind: 'present' }>,
+  choices: SegChoice[],
+  sibs: SegChoice[],
+): string {
+  const opts = sibs.length ? sibs : choices.filter((c) => c.id === leaf.seg)
+  return `${targetSelect(a, opts, leaf.seg)}
+      <select class="vis-select" data-action="seg-vis-leaf-absent" ${a}>
+        <option value="present" ${leaf.absent ? '' : 'selected'}>has value</option>
+        <option value="absent" ${leaf.absent ? 'selected' : ''}>is empty</option>
+      </select>`
+}
+
+// threshold leaf の params。対象候補は percent を持つ segment (self/兄弟)。
+function leafThresholdParams(
+  a: string,
+  leaf: Extract<VisibilityLeaf, { kind: 'threshold' }>,
+  choices: SegChoice[],
+  selfId: string,
+): string {
+  // 保存済み対象は targetSelect が補完する。
+  const pctChoices = choices.filter((c) => c.hasPct)
+  const tsel =
+    pctChoices.length >= 2 || leaf.seg
+      ? targetSelect(a, pctChoices, leaf.seg ?? selfId, selfId)
+      : ''
+  return `${tsel}<select class="vis-select" data-action="seg-vis-leaf-op" ${a}>
+        <option value="gte" ${leaf.op === 'gte' ? 'selected' : ''}>≥</option>
+        <option value="lte" ${leaf.op === 'lte' ? 'selected' : ''}>≤</option>
+      </select>
+      <input class="vis-num" type="number" min="0" max="100" data-action="seg-vis-leaf-value" ${a} value="${leaf.value}" />%`
+}
+
+// onChange leaf の params。兄弟があれば対象 select を出す (省略=self)。
+function leafOnChangeParams(
+  a: string,
+  leaf: Extract<VisibilityLeaf, { kind: 'onChange' }>,
+  choices: SegChoice[],
+  selfId: string,
+): string {
+  const tsel = choices.length >= 2 ? targetSelect(a, choices, leaf.seg ?? selfId, selfId) : ''
+  return `${tsel}<input class="vis-num" type="number" min="1" max="60" data-action="seg-vis-leaf-hold" ${a} value="${Math.round(leaf.holdMs / 1000)}" />s`
+}
+
 // leaf の params (kind 別)。threshold/onChange は対象 (self/兄弟) を選べる。present は兄弟必須。
 function leafParams(
   a: string,
@@ -90,30 +136,9 @@ function leafParams(
   selfId: string,
 ): string {
   if (leaf.kind === 'inPlace') return leafInPlaceParams(a, leaf)
-  if (leaf.kind === 'present') {
-    const opts = sibs.length ? sibs : choices.filter((c) => c.id === leaf.seg)
-    return `${targetSelect(a, opts, leaf.seg)}
-      <select class="vis-select" data-action="seg-vis-leaf-absent" ${a}>
-        <option value="present" ${leaf.absent ? '' : 'selected'}>has value</option>
-        <option value="absent" ${leaf.absent ? 'selected' : ''}>is empty</option>
-      </select>`
-  }
-  if (leaf.kind === 'threshold') {
-    // 対象候補は percent を持つ segment (self/兄弟)。保存済み対象は targetSelect が補完する。
-    const pctChoices = choices.filter((c) => c.hasPct)
-    const tsel =
-      pctChoices.length >= 2 || leaf.seg
-        ? targetSelect(a, pctChoices, leaf.seg ?? selfId, selfId)
-        : ''
-    return `${tsel}<select class="vis-select" data-action="seg-vis-leaf-op" ${a}>
-        <option value="gte" ${leaf.op === 'gte' ? 'selected' : ''}>≥</option>
-        <option value="lte" ${leaf.op === 'lte' ? 'selected' : ''}>≤</option>
-      </select>
-      <input class="vis-num" type="number" min="0" max="100" data-action="seg-vis-leaf-value" ${a} value="${leaf.value}" />%`
-  }
-  // onChange: 兄弟があれば対象 select を出す (省略=self)。
-  const tsel = choices.length >= 2 ? targetSelect(a, choices, leaf.seg ?? selfId, selfId) : ''
-  return `${tsel}<input class="vis-num" type="number" min="1" max="60" data-action="seg-vis-leaf-hold" ${a} value="${Math.round(leaf.holdMs / 1000)}" />s`
+  if (leaf.kind === 'present') return leafPresentParams(a, leaf, choices, sibs)
+  if (leaf.kind === 'threshold') return leafThresholdParams(a, leaf, choices, selfId)
+  return leafOnChangeParams(a, leaf, choices, selfId)
 }
 
 // 1 leaf 行 (kind select + 対象/params + 削除ボタン)。threshold は同 group に percent を持つ segment が
@@ -143,6 +168,27 @@ function leafRow(
   return `<div class="vis-cond-row">${kindSel}${params}${del}</div>`
 }
 
+// 提示先行。条件があるときのみ。Inline=現状の常時表示 / Toast・Notification は成立時に提示し自動非表示 (排他)。
+// toast/notification とも自動消去するので秒数フィールドを出す (既定 DEFAULT_DISPLAY_SECS)。
+function segVisDisplayRow(seg2: string, sm: SegMeta, conditionsLength: number): string {
+  if (conditionsLength === 0) return ''
+  const display = sm.visibility?.display
+  const secs = display?.durationMs ? Math.round(display.durationMs / 1000) : DEFAULT_DISPLAY_SECS
+  return `<div class="vis-row" ${seg2}><span class="vis-label">Present</span>
+          <select class="vis-select" data-action="seg-vis-display-ui" ${seg2}>
+            <option value="" ${!display ? 'selected' : ''}>Inline (persistent)</option>
+            <option value="toast" ${display?.ui === 'toast' ? 'selected' : ''}>Toast</option>
+            <option value="notification" ${display?.ui === 'notification' ? 'selected' : ''}>Notification</option>
+          </select>
+          ${
+            display
+              ? `<input class="vis-num" type="number" min="1" max="60" data-action="seg-vis-display-secs" ${seg2} value="${secs}" title="Auto-hide seconds" />s
+                 <input class="vis-text" type="text" maxlength="80" placeholder="auto: label value" data-action="seg-vis-display-text" ${seg2} value="${esc(display.text ?? '')}" />`
+              : ''
+          }
+        </div>`
+}
+
 // segment 単位の表示タイミング条件エディタ (metric 行のサブ行)。対象は self または同 group 内の兄弟。
 // 条件は素材 (SegMeta.visibility。profile 非依存) を読み書きする。
 // leaf を AND/OR で複合。conditions 空 = 常時表示。2 件以上で combinator(All of/Any of) を出す。
@@ -165,28 +211,54 @@ function segVisEditor(key: string, sm: SegMeta): string {
     conditions.length < MAX_CONDS
       ? `<button class="vis-add" data-action="seg-vis-add" ${seg2}>${icon('plus', { size: 13 })} Add condition</button>`
       : ''
-  // 提示先。条件があるときのみ。Inline=現状の常時表示 / Toast・Notification は成立時に提示し自動非表示 (排他)。
-  // toast/notification とも自動消去するので秒数フィールドを出す (既定 DEFAULT_DISPLAY_SECS)。
-  const display = sm.visibility?.display
-  const secs = display?.durationMs ? Math.round(display.durationMs / 1000) : DEFAULT_DISPLAY_SECS
-  const displayRow =
-    conditions.length === 0
-      ? ''
-      : `<div class="vis-row" ${seg2}><span class="vis-label">Present</span>
-          <select class="vis-select" data-action="seg-vis-display-ui" ${seg2}>
-            <option value="" ${!display ? 'selected' : ''}>Inline (persistent)</option>
-            <option value="toast" ${display?.ui === 'toast' ? 'selected' : ''}>Toast</option>
-            <option value="notification" ${display?.ui === 'notification' ? 'selected' : ''}>Notification</option>
-          </select>
-          ${
-            display
-              ? `<input class="vis-num" type="number" min="1" max="60" data-action="seg-vis-display-secs" ${seg2} value="${secs}" title="Auto-hide seconds" />s
-                 <input class="vis-text" type="text" maxlength="80" placeholder="auto: label value" data-action="seg-vis-display-text" ${seg2} value="${esc(display.text ?? '')}" />`
-              : ''
-          }
-        </div>`
+  const displayRow = segVisDisplayRow(seg2, sm, conditions.length)
   return `<div class="vis-row" ${seg2}><span class="vis-label">Show</span>${head}</div>
     <div class="vis-conds">${rows}${add}</div>${displayRow}`
+}
+
+// select 型の表示オプション 1 フィールド。
+function optionSelectControl(
+  a: string,
+  f: Extract<OptionField, { kind: 'select' }>,
+  values: OptionValues,
+): string {
+  const cur = String(values[f.id] ?? f.default)
+  const opts = f.choices
+    .map(
+      (c) =>
+        `<option value="${esc(c.value)}" ${c.value === cur ? 'selected' : ''}>${esc(c.label)}</option>`,
+    )
+    .join('')
+  return `<label class="clock-fld">${esc(f.label)}<select class="format-select" ${a} data-field="${esc(f.id)}" data-kind="select">${opts}</select></label>`
+}
+
+// toggle 型の表示オプション 1 フィールド。
+function optionToggleControl(
+  a: string,
+  f: Extract<OptionField, { kind: 'toggle' }>,
+  values: OptionValues,
+): string {
+  const raw = values[f.id]
+  const on = typeof raw === 'boolean' ? raw : f.default
+  return `<label class="clock-fld">${esc(f.label)}<button class="tg sm ${on ? 'on' : ''}" ${a} data-field="${esc(f.id)}" data-kind="toggle" data-val="${on ? '0' : '1'}"></button></label>`
+}
+
+// number 型の表示オプション 1 フィールド。
+function optionNumberControl(
+  a: string,
+  f: Extract<OptionField, { kind: 'number' }>,
+  values: OptionValues,
+): string {
+  const cur = Number(values[f.id] ?? f.default)
+  const step = f.step ? `step="${f.step}"` : ''
+  return `<label class="clock-fld">${esc(f.label)}<input class="vis-num" type="number" min="${f.min}" max="${f.max}" ${step} ${a} data-field="${esc(f.id)}" data-kind="number" value="${cur}" />${f.unit ? esc(f.unit) : ''}</label>`
+}
+
+// 表示オプション 1 フィールド (kind 別ディスパッチ)。
+function optionFieldControl(a: string, f: OptionField, values: OptionValues): string {
+  if (f.kind === 'select') return optionSelectControl(a, f, values)
+  if (f.kind === 'toggle') return optionToggleControl(a, f, values)
+  return optionNumberControl(a, f, values)
 }
 
 // 表示オプションの汎用レンダラ (#36)。schema (OptionField[]) を select / toggle / number で描く。
@@ -202,27 +274,7 @@ function optionControls(
 ): string {
   if (!fields.length) return ''
   const a = `data-action="opt-set" data-key="${key}" data-seg="${esc(segId)}" data-scope="${scope}"`
-  const ctl = (f: OptionField): string => {
-    if (f.kind === 'select') {
-      const cur = String(values[f.id] ?? f.default)
-      const opts = f.choices
-        .map(
-          (c) =>
-            `<option value="${esc(c.value)}" ${c.value === cur ? 'selected' : ''}>${esc(c.label)}</option>`,
-        )
-        .join('')
-      return `<label class="clock-fld">${esc(f.label)}<select class="format-select" ${a} data-field="${esc(f.id)}" data-kind="select">${opts}</select></label>`
-    }
-    if (f.kind === 'toggle') {
-      const raw = values[f.id]
-      const on = typeof raw === 'boolean' ? raw : f.default
-      return `<label class="clock-fld">${esc(f.label)}<button class="tg sm ${on ? 'on' : ''}" ${a} data-field="${esc(f.id)}" data-kind="toggle" data-val="${on ? '0' : '1'}"></button></label>`
-    }
-    const cur = Number(values[f.id] ?? f.default)
-    const step = f.step ? `step="${f.step}"` : ''
-    return `<label class="clock-fld">${esc(f.label)}<input class="vis-num" type="number" min="${f.min}" max="${f.max}" ${step} ${a} data-field="${esc(f.id)}" data-kind="number" value="${cur}" />${f.unit ? esc(f.unit) : ''}</label>`
-  }
-  return `<div class="clock-ctl">${fields.map(ctl).join('')}</div>`
+  return `<div class="clock-ctl">${fields.map((f) => optionFieldControl(a, f, values)).join('')}</div>`
 }
 
 // sourceId 内で headingKey (正規化済み見出し) が一致する別 group のうち、いずれかの profile の
@@ -259,6 +311,102 @@ export function groupHeadingCollides(sourceId: string, groupId: string): boolean
   return headingCollidesInSomeProfile(sourceId, groupId, mine) !== null
 }
 
+// 1 segment の metric 行 (設定面)。live 未出現でも meta にあれば placeholder 値で描く。
+function metricRow(
+  key: string,
+  ref: GroupRef,
+  sm: SegMeta,
+  segById: Map<string, Segment>,
+  isBuiltin: boolean,
+  enabled: boolean,
+): string {
+  // Items は設定面なので、live status に未出現の segment も meta にあれば行を描く
+  // (placeholder 値 '—')。トグル/並べ替え/配置/表示条件を事前設定できる。値は status のみ。
+  const live = segById.get(sm.id)
+  const seg: Segment = live ?? { id: sm.id, label: sm.displayLabel ?? '', value: '—' }
+  const missing = !live
+  // segment 単位の表示オプション (#36)。clock の Time/Date/順序 もこの schema 経由で描く。
+  const segFields = segmentOptionSchema(ref.sourceId, ref.groupId, sm.id)
+  const segOpts = segFields.length
+    ? optionControls(
+        key,
+        sm.id,
+        'segment',
+        segFields,
+        resolveSegmentOptions(ctx.config, ref.sourceId, ref.groupId, sm.id),
+      )
+    : ''
+  return `<div class="metric${missing ? ' missing' : ''}"><div class="metric-row"><span class="mgrip">${icon('grip', { size: 16 })}</span>
+              <span class="mname">${esc(isBuiltin ? (BUILTIN_SEG_LABELS[seg.id] ?? seg.id) : seg.label || seg.id)}</span>
+              <span class="mval">${esc(seg.value)}</span>
+              <button class="tg sm ${enabled ? 'on' : ''}" data-action="toggle-seg" data-key="${key}" data-seg="${esc(sm.id)}"></button></div>
+            ${segOpts}
+            ${segVisEditor(key, sm)}</div>`
+}
+
+// group 展開時の segment metric 行群 (.src-metrics コンテナ含む)。
+function groupMetricsHtml(
+  key: string,
+  ref: GroupRef,
+  meta: { segments: SegMeta[] },
+  segById: Map<string, Segment>,
+  isBuiltin: boolean,
+  vg: { segments: Record<string, boolean | undefined> },
+): string {
+  // segment の並びは素材 (meta.segments)、ON/OFF・条件は view/素材から引く。
+  // source 単位の表示オプション (#36)。素材 = 全 profile 共有。スキーマが空なら描かない。
+  // srcOpts は .src-metrics の「外」(直前) に出す。.src-metrics は SortableJS の segment 並べ替え
+  // コンテナで、onSegReorder が e.oldIndex(= 全直接子の index) を meta.segments index として使うため、
+  // 非 segment ノードを中に混ぜると index が +1 ずれて別 segment を動かす (silent なデータ破損)。
+  const srcFields = sourceOptionSchema(ref.sourceId)
+  const srcOpts = srcFields.length
+    ? optionControls(key, '', 'source', srcFields, resolveSourceOptions(ctx.config, ref.sourceId))
+    : ''
+  const rows = meta.segments
+    .map((sm) => metricRow(key, ref, sm, segById, isBuiltin, vg.segments[sm.id] ?? true))
+    .join('')
+  return `${srcOpts}<div class="src-metrics" data-key="${key}">${rows}</div>`
+}
+
+// group 行の provider 由来タグ (非 builtin で source label を併記)。
+function groupSrcTag(isBuiltin: boolean, src: SourceDef | undefined, ref: GroupRef): string {
+  if (isBuiltin) return ''
+  if (!src || src.id !== ref.sourceId) return ''
+  return `<span class="src-note">${esc(src.label)}</span>`
+}
+
+// group 行ヘッダ HTML (caret / 名前 / 衝突タグ / 操作ボタン)。
+function groupRowHead(
+  key: string,
+  ref: GroupRef,
+  title: string,
+  caret: string,
+  src: SourceDef | undefined,
+  isBuiltin: boolean,
+  vg: { enabled: boolean; showDefaultLabel?: boolean },
+): string {
+  const srcTag = groupSrcTag(isBuiltin, src, ref)
+  // 同 source 内で同名の group は glass で 1 unit にマージされる。管理面は per-group なので
+  // どの provider 由来か分かるよう group id を淡色併記する (衝突時のみ)。
+  const gidTag = groupHeadingCollides(ref.sourceId, ref.groupId)
+    ? `<span class="src-note">${esc(ref.groupId)}</span>`
+    : ''
+  // default-label トグル (glass で group 名を前置するか)。位置/上詰めは Glass layout で決める。
+  const showsLabel = vg.showDefaultLabel ?? ref.groupId !== 'clock'
+  const labelBtn = `<button class="label-btn ${showsLabel ? 'on' : ''}" data-action="toggle-grouplabel" data-key="${key}" title="${showsLabel ? 'Group label shown on glass' : 'Group label hidden'}">${icon('tag', { size: 15 })}</button>`
+  // group 名のリネーム (Source Detail)。同 source 内で同名の group は glass で 1 unit にマージ表示される。
+  const renameBtn = `<button class="label-btn" data-action="edit-groupname" data-key="${key}" title="Rename group" aria-label="Rename group">${icon('pencil', { size: 14 })}</button>`
+  // owner は Source Detail ヘッダで編集 / glass picker でバッジ表示する (表示モデル新 IA)。group 行には出さない。
+  return `<div class="src-head"><span class="src-grip">${icon('grip', { size: 16 })}</span>
+    <span class="src-caret" data-action="expand" data-key="${key}">${caret}</span>
+    <span class="src-name" data-action="expand" data-key="${key}">${esc(title)}</span>
+    ${gidTag}
+    ${srcTag}
+    ${renameBtn}
+    ${labelBtn}
+    <button class="tg ${vg.enabled ? 'on' : ''}" data-action="toggle-group" data-key="${key}"></button></div>`
+}
+
 function groupRow(ref: GroupRef): string {
   const g = statusGroup(ref.sourceId, ref.groupId)
   const meta = ctx.config.groups[ref.sourceId]?.[ref.groupId]
@@ -274,70 +422,9 @@ function groupRow(ref: GroupRef): string {
   const title = meta.displayName ?? baseTitle
   const caret = icon(vg.expanded ? 'chevron-down' : 'chevron-right', { size: 16 })
   const segById = new Map(g.segments.map((s) => [s.id, s]))
-  // segment の並びは素材 (meta.segments)、ON/OFF・条件は view/素材から引く。
-  // source 単位の表示オプション (#36)。素材 = 全 profile 共有。スキーマが空なら描かない。
-  // srcOpts は .src-metrics の「外」(直前) に出す。.src-metrics は SortableJS の segment 並べ替え
-  // コンテナで、onSegReorder が e.oldIndex(= 全直接子の index) を meta.segments index として使うため、
-  // 非 segment ノードを中に混ぜると index が +1 ずれて別 segment を動かす (silent なデータ破損)。
-  const srcFields = sourceOptionSchema(ref.sourceId)
-  const srcOpts = srcFields.length
-    ? optionControls(key, '', 'source', srcFields, resolveSourceOptions(ctx.config, ref.sourceId))
-    : ''
-  const metrics = vg.expanded
-    ? `${srcOpts}<div class="src-metrics" data-key="${key}">${meta.segments
-        .map((sm) => {
-          // Items は設定面なので、live status に未出現の segment も meta にあれば行を描く
-          // (placeholder 値 '—')。トグル/並べ替え/配置/表示条件を事前設定できる。値は status のみ。
-          const live = segById.get(sm.id)
-          const seg: Segment = live ?? { id: sm.id, label: sm.displayLabel ?? '', value: '—' }
-          const missing = !live
-          const enabled = vg.segments[sm.id] ?? true
-          // segment 単位の表示オプション (#36)。clock の Time/Date/順序 もこの schema 経由で描く。
-          const segFields = segmentOptionSchema(ref.sourceId, ref.groupId, sm.id)
-          const segOpts = segFields.length
-            ? optionControls(
-                key,
-                sm.id,
-                'segment',
-                segFields,
-                resolveSegmentOptions(ctx.config, ref.sourceId, ref.groupId, sm.id),
-              )
-            : ''
-          return `<div class="metric${missing ? ' missing' : ''}"><div class="metric-row"><span class="mgrip">${icon('grip', { size: 16 })}</span>
-              <span class="mname">${esc(isBuiltin ? (BUILTIN_SEG_LABELS[seg.id] ?? seg.id) : seg.label || seg.id)}</span>
-              <span class="mval">${esc(seg.value)}</span>
-              <button class="tg sm ${enabled ? 'on' : ''}" data-action="toggle-seg" data-key="${key}" data-seg="${esc(sm.id)}"></button></div>
-            ${segOpts}
-            ${segVisEditor(key, sm)}</div>`
-        })
-        .join('')}</div>`
-    : ''
-  const srcTag = isBuiltin
-    ? ''
-    : src && src.id !== ref.sourceId
-      ? ''
-      : src
-        ? `<span class="src-note">${esc(src.label)}</span>`
-        : ''
-  // 同 source 内で同名の group は glass で 1 unit にマージされる。管理面は per-group なので
-  // どの provider 由来か分かるよう group id を淡色併記する (衝突時のみ)。
-  const gidTag = groupHeadingCollides(ref.sourceId, ref.groupId)
-    ? `<span class="src-note">${esc(ref.groupId)}</span>`
-    : ''
-  // default-label トグル (glass で group 名を前置するか)。位置/上詰めは Glass layout で決める。
-  const showsLabel = vg.showDefaultLabel ?? ref.groupId !== 'clock'
-  const labelBtn = `<button class="label-btn ${showsLabel ? 'on' : ''}" data-action="toggle-grouplabel" data-key="${key}" title="${showsLabel ? 'Group label shown on glass' : 'Group label hidden'}">${icon('tag', { size: 15 })}</button>`
-  // group 名のリネーム (Source Detail)。同 source 内で同名の group は glass で 1 unit にマージ表示される。
-  const renameBtn = `<button class="label-btn" data-action="edit-groupname" data-key="${key}" title="Rename group" aria-label="Rename group">${icon('pencil', { size: 14 })}</button>`
-  // owner は Source Detail ヘッダで編集 / glass picker でバッジ表示する (表示モデル新 IA)。group 行には出さない。
-  return `<div class="src" data-key="${key}"><div class="src-head"><span class="src-grip">${icon('grip', { size: 16 })}</span>
-    <span class="src-caret" data-action="expand" data-key="${key}">${caret}</span>
-    <span class="src-name" data-action="expand" data-key="${key}">${esc(title)}</span>
-    ${gidTag}
-    ${srcTag}
-    ${renameBtn}
-    ${labelBtn}
-    <button class="tg ${vg.enabled ? 'on' : ''}" data-action="toggle-group" data-key="${key}"></button></div>${metrics}</div>`
+  const metrics = vg.expanded ? groupMetricsHtml(key, ref, meta, segById, isBuiltin, vg) : ''
+  const head = groupRowHead(key, ref, title, caret, src, isBuiltin, vg)
+  return `<div class="src" data-key="${key}">${head}${metrics}</div>`
 }
 
 // 1 source の group 行群 (Source Detail 用)。group の横断並べ替えは Glass Layout が持つので
@@ -348,23 +435,23 @@ export function renderSourceGroups(sourceId: string): string {
   return refs.map((r) => groupRow(r)).join('')
 }
 
-// ── source 行 (3 文脈: Home=preset 内 / Sources 一覧 / preset へ追加) ──
-// 接続状態 dot と note (online=緑 / stale=琥珀 / offline=灰+"Last seen…")。
-// transport が online でもソースが degraded を報告していれば琥珀 + message を出す (2 軸)。
-export function sourceDotNote(s: SourceDef): { dotCls: string; note: string } {
+// client source (weather 等) の dot/note。URL は無く現在地ベース。
+function clientSourceDotNote(s: SourceDef): { dotCls: string; note: string } {
   const health = getSourceHealth(s.id)
-  // client (weather): URL は無く現在地ベース。health と reported state で位置の note を出す。
-  if (s.kind === 'client') {
-    if (health === 'offline') return { dotCls: 'off', note: 'Uses device location' }
-    const reported = worstReportedState(s.id)
-    if (reported.state === 'error') {
-      return { dotCls: 'off', note: reported.message ?? 'Location unavailable' }
-    }
-    if (reported.state === 'stale' || health === 'stale') {
-      return { dotCls: 'stale', note: 'Cached weather' }
-    }
-    return { dotCls: '', note: 'Device location' }
+  if (health === 'offline') return { dotCls: 'off', note: 'Uses device location' }
+  const reported = worstReportedState(s.id)
+  if (reported.state === 'error') {
+    return { dotCls: 'off', note: reported.message ?? 'Location unavailable' }
   }
+  if (reported.state === 'stale' || health === 'stale') {
+    return { dotCls: 'stale', note: 'Cached weather' }
+  }
+  return { dotCls: '', note: 'Device location' }
+}
+
+// server / その他 source の dot/note (transport health + reported state)。
+function serverSourceDotNote(s: SourceDef): { dotCls: string; note: string } {
+  const health = getSourceHealth(s.id)
   if (health === 'offline') return { dotCls: 'off', note: lastSeenText(s.id) }
   if (health === 'online') {
     const reported = worstReportedState(s.id)
@@ -374,6 +461,14 @@ export function sourceDotNote(s: SourceDef): { dotCls: string; note: string } {
   }
   const dotCls = health === 'stale' ? 'stale' : ''
   return { dotCls, note: sourceUrl(s) ?? 'Not set' }
+}
+
+// ── source 行 (3 文脈: Home=preset 内 / Sources 一覧 / preset へ追加) ──
+// 接続状態 dot と note (online=緑 / stale=琥珀 / offline=灰+"Last seen…")。
+// transport が online でもソースが degraded を報告していれば琥珀 + message を出す (2 軸)。
+export function sourceDotNote(s: SourceDef): { dotCls: string; note: string } {
+  if (s.kind === 'client') return clientSourceDotNote(s)
+  return serverSourceDotNote(s)
 }
 
 // Home の provenance セクション (view 限定の grouping。データモデルに tier 実体は足さない)。
