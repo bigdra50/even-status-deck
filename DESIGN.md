@@ -175,6 +175,15 @@ Source Edit : 接続先 URL（複数可） + 接続テスト + 「ローカル�
 - 入力: swipe up/down = `textEvent`（scroll）、single/double click = `sysEvent`。double-tap で `shutDownPageContainer(1)`（戻り/終了）。
 - レイアウトは `@evenrealities/pretext` でピクセル精度（line height 27px）に算出。
 
+### group 見出しのマージ（merge unit）
+
+- 同一 source 内で見出し（`displayName` || builtin コード所有ラベル || `lastLabel`）が一致する group は、glass で 1 つの表示単位（merge unit）に統合する: summary 1 行・auto detail 1 ページ・custom layout のラベル前置 dedup。例: builtin `claude-code` と外部 provider `claude-limits` は両方 'Claude' → 1 行。
+- unit 構成は config のみで決まる（`GroupMeta.lastLabel` を sync 時に内部記録 = merge identity）。offline/disable で unit 構成・位置・align（= groupOrder 先頭の静的代表に従う）は揺れない。member は segment を供出しなくなるだけ。
+- cross-source はマージしない（別マシンの同名 group は別物）。空見出しもマージしない。見出しの等価判定は NFC + trim（case 区別）。
+- リネームとの関係: group を別名にすればマージ解除、同 source の既存 group と同名にすれば意図的マージ（companion が confirm を出す）。旧方式（衝突を 'Claude (limits)' に自動リネームして永続化）は廃止し、migrate で `displayNameSource==='auto'` の命名を一掃する。
+- summary 行は segment 境界で物理 1 行に clamp し、超過は `… +N`（全データは detail ページ）。autoSummary の top/bottom gap 計算が論理行数ベースのため、折り返しで 10 行予算を破らないための保証。
+- 管理面（companion）は per-group のまま: 同名が並ぶ行だけ group id を淡色併記して provider 出自を区別する。
+
 ## 7. メトリック定義
 
 | Source 種別 | Source | Group/Metric | 取得元 |
