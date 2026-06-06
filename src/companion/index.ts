@@ -1,5 +1,5 @@
 import Sortable from 'sortablejs'
-import { localStatus } from './builtins'
+import { localStatus } from '../builtins'
 import {
   activeProfile,
   activeView,
@@ -52,24 +52,24 @@ import {
   sourceUrl,
   sourceUrls,
   syncSourceWithStatus,
-} from './config'
-import { fetchMachineFrom, type MachineInfo } from './data'
+} from '../config'
+import { fetchMachineFrom, type MachineInfo } from '../data'
 import {
   collisionCategories,
   effectiveGroupHeading,
   effectiveOwner,
   normalizeHeading,
   resolveDisplayLabels,
-} from './display-identity'
-import { esc } from './escape'
+} from '../display-identity'
+import { esc } from '../escape'
 import {
   type GlassData,
   layoutRowClusters,
   MAX_ROWS,
   splitRowClusters,
   summarySections,
-} from './glass-render'
-import { icon } from './icons'
+} from '../glass-render'
+import { icon } from '../icons'
 import {
   type OptionField,
   type OptionScope,
@@ -79,9 +79,9 @@ import {
   setSegmentOption,
   setSourceOption,
   sourceOptionSchema,
-} from './options'
-import { getCurrentPlaceId } from './places'
-import type { Group, Segment, SourceState } from './status-types'
+} from '../options'
+import { getCurrentPlaceId } from '../places'
+import type { Group, Segment, SourceState } from '../status-types'
 import {
   getAllStatuses,
   getLastSuccessAt,
@@ -93,9 +93,9 @@ import {
   setSourcesFromConfig,
   startPolling,
   subscribe,
-} from './store'
-import { type ProfileSuggestion, suggestProfile, suggestProfileByGeofence } from './suggest'
-import { createVisibilityRuntime, type DisplayUi, segKey, type VisibilityLeaf } from './visibility'
+} from '../store'
+import { type ProfileSuggestion, suggestProfile, suggestProfileByGeofence } from '../suggest'
+import { createVisibilityRuntime, type DisplayUi, segKey, type VisibilityLeaf } from '../visibility'
 
 // 1 segment が持てる条件 leaf の上限 (UI が破綻しない緩い上限)。
 const MAX_CONDS = 4
