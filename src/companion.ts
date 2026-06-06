@@ -54,12 +54,7 @@ import {
   syncSourceWithStatus,
 } from './config'
 import { fetchMachineFrom, type MachineInfo } from './data'
-import {
-  collisionCategories,
-  effectiveOwner,
-  resolveDisplayLabels,
-  resolveGroupDisplayNames,
-} from './display-identity'
+import { collisionCategories, effectiveOwner, resolveDisplayLabels } from './display-identity'
 import { esc } from './escape'
 import {
   type GlassData,
@@ -189,33 +184,6 @@ function applyDisplayLabels(): boolean {
           delete sm.displayLabel
           changed = true
         }
-      }
-    }
-  }
-  return changed
-}
-
-// 表示モデル: 同 source 内の group label 衝突を解決し GroupMeta.displayName を確定する(永続)。
-// displayNameSource==='user'(ユーザーがリネーム)は自動上書きしない。offline group は触らない。変化時 true。
-function applyGroupDisplayNames(): boolean {
-  const statuses = { ...getRenderableStatuses(), [BUILTIN_SOURCE_ID]: localStatus(config) }
-  const desired = resolveGroupDisplayNames(config, statuses)
-  let changed = false
-  for (const [sourceId, groups] of Object.entries(config.groups)) {
-    for (const [gid, meta] of Object.entries(groups)) {
-      if (meta.displayNameSource === 'user') continue // 手動命名は保持
-      const want = desired.get(`${sourceId}|${gid}`)
-      if (want === undefined) continue // offline/未取得は維持 (map に無い)
-      if (want) {
-        if (meta.displayName !== want || meta.displayNameSource !== 'auto') {
-          meta.displayName = want
-          meta.displayNameSource = 'auto'
-          changed = true
-        }
-      } else if (meta.displayName !== undefined) {
-        delete meta.displayName
-        delete meta.displayNameSource
-        changed = true
       }
     }
   }
@@ -534,7 +502,7 @@ function groupRow(ref: GroupRef): string {
   // default-label トグル (glass で group 名を前置するか)。位置/上詰めは Glass layout で決める。
   const showsLabel = vg.showDefaultLabel ?? ref.groupId !== 'clock'
   const labelBtn = `<button class="label-btn ${showsLabel ? 'on' : ''}" data-action="toggle-grouplabel" data-key="${key}" title="${showsLabel ? 'Group label shown on glass' : 'Group label hidden'}">${icon('tag', { size: 15 })}</button>`
-  // group 名のリネーム (Source Detail)。衝突自動命名 ('Claude (limits)') を上書きできる。user 命名は自動再付与しない。
+  // group 名のリネーム (Source Detail)。同 source 内で同名の group は glass で 1 unit にマージ表示される。
   const renameBtn = `<button class="label-btn" data-action="edit-groupname" data-key="${key}" title="Rename group" aria-label="Rename group">${icon('pencil', { size: 14 })}</button>`
   // owner は Source Detail ヘッダで編集 / glass picker でバッジ表示する (表示モデル新 IA)。group 行には出さない。
   return `<div class="src" data-key="${key}"><div class="src-head"><span class="src-grip">${icon('grip', { size: 16 })}</span>
@@ -1732,7 +1700,8 @@ async function onClick(e: MouseEvent): Promise<void> {
       break
     }
     case 'edit-groupname': {
-      // group 名のリネーム (素材・全 preset 共有)。衝突自動命名 ('Claude (limits)') を上書きできる。
+      // group 名のリネーム (素材・全 preset 共有)。同 source 内で同名にすると glass で 1 unit に
+      // マージ表示され、別名にすると解除される (display-identity の merge unit)。
       const ref = parseKey(t.dataset.key ?? '')
       const meta = config.groups[ref.sourceId]?.[ref.groupId]
       if (meta) {
@@ -1745,13 +1714,9 @@ async function onClick(e: MouseEvent): Promise<void> {
         if (next !== null) {
           const v = next.trim()
           if (v && v !== base) {
-            meta.displayName = v // 手動命名 (自動衝突解決に上書きされない)
-            meta.displayNameSource = 'user'
+            meta.displayName = v // 手動命名 (glass の見出しと merge 判定を上書き)
           } else {
-            // 空 or base と同じ → 自動衝突解決に戻す
-            delete meta.displayName
-            delete meta.displayNameSource
-            applyGroupDisplayNames()
+            delete meta.displayName // 空 or base と同じ → producer の label に戻す
           }
           void saveConfig(config)
           render()
@@ -2196,11 +2161,10 @@ async function runConnectionTest(): Promise<void> {
 }
 
 function onStoreUpdate(): void {
-  syncAll() // 新 group を config に取り込み (永続)
-  // 衝突解決 (segment owner prefix の displayLabel + group の displayName) を確定 (変化時のみ保存)。
-  const dlChanged = applyDisplayLabels()
-  const gnChanged = applyGroupDisplayNames()
-  if (dlChanged || gnChanged) void saveConfig(config)
+  syncAll() // 新 group を config に取り込み (永続。group の lastLabel = merge identity もここで捕捉)
+  // 衝突解決 (segment owner prefix の displayLabel) を確定 (変化時のみ保存)。
+  // group 見出しの衝突は永続リネームせず render-time マージ (display-identity の merge unit) で解く。
+  if (applyDisplayLabels()) void saveConfig(config)
   maybeGeofenceAutoSwitch() // #43 現在地 place 変化で auto モードの preset へ自動切替(view 非依存=glass にも効く)
   // 構成 (status の有無で変わる) が変化したときだけ再描画。値だけの更新では再描画しない
   // (毎 poll の innerHTML churn が iOS WebContent jettison を招くため。issue #4)。
