@@ -32,7 +32,7 @@ bun run test:sim      # evenhub-simulator のグラス表示 e2e (e2e-sim/run.ts
 - `lint:deps` — dependency-cruiser
 - `knip` — 未使用 export / dep
 - `lint:dup` — jscpd 重複率 3% 未満
-- `lint:fta` — FTA score-cap 170
+- `lint:fta` — FTA score-cap 170（`src/companion/` は再肥大防止のため 120）
 - `test:coverage` + Codecov — `bun test --coverage`（patch は informational）
 
 | workflow | トリガ | 内容 |
@@ -61,7 +61,7 @@ bun run test:sim      # evenhub-simulator のグラス表示 e2e (e2e-sim/run.ts
 | `src/config.ts` | config v4（素材 sources/groups + 表示プリセット profiles / 移行）|
 | `src/glass-render.ts` | グラス描画の純粋ロジック（横断描画・行予算）|
 | `src/glass.ts` | glass の bridge 配線・購読・電池・keep-alive |
-| `src/companion.ts` | スマホ UI（ソース管理 + 横断 segment 設定 + プレビュー）|
+| `src/companion/` | スマホ UI（ソース管理 + 横断 segment 設定 + プレビュー）。`index.ts`=起点/render 配線、`state.ts`=共有状態 ctx、`actions.ts`=click ハンドラ、`views.ts`/`rows.ts`=画面/行 render、`glass-edit.ts`/`fs-editor.ts`=配置エディタ、`conditions-ui.ts`=change ハンドラ、`sync.ts`=同期ヘルパ、`debug-console.ts` |
 | `src/status-types.ts` | プロトコル型 + `parseStatusDoc` |
 | `server/` | standalone サーバー（provider 群 claude/codex/system + subprocess + http-server + vite dev middleware）|
 | `vite.config.ts` | `server/vite-plugin` を dev に挿すだけ（9 行）|
