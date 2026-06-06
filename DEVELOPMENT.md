@@ -41,6 +41,7 @@ bun run test:sim      # evenhub-simulator のグラス表示 e2e (e2e-sim/run.ts
 | `e2e.yml` | push main / PR | playwright e2e |
 | `sim-e2e.yml` | push main / dispatch | simulator E2E（ジョブが重いので PR では回さない） |
 | `pack.yml` | tag `v*` / dispatch | `.ehpk` を artifact / Release 化（[RELEASE.md](./RELEASE.md) 参照） |
+| `badges.yml` | push main / dispatch | jscpd 重複率と FTA score のバッジ JSON を badges ブランチへ push |
 
 ## 実機への載せ方
 

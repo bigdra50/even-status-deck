@@ -1,5 +1,10 @@
 # Status Deck
 
+![CI](https://github.com/bigdra50/even-status-deck/actions/workflows/ci.yml/badge.svg)
+[![codecov](https://codecov.io/gh/bigdra50/even-status-deck/graph/badge.svg)](https://codecov.io/gh/bigdra50/even-status-deck)
+![duplication](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fbigdra50%2Feven-status-deck%2Fbadges%2Fjscpd.json)
+![fta](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fbigdra50%2Feven-status-deck%2Fbadges%2Ffta.json)
+
 Even Realities G2 スマートグラスに、時刻 / 電池 / 各種ステータスを HUD 表示する companion アプリ。
 複数のデータソース（時刻・日付、グラスの電池、PC のシステム情報、AI ツールの利用状況など）を 1 つのグラス表示に集約し、
 Mac のメニューバーのように視界の端へ最小表示する。

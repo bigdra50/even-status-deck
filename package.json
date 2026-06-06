@@ -16,6 +16,7 @@
     "server": "bun run server/index.ts",
     "provider": "bun run server/index.ts provider",
     "build:server": "bun run scripts/build-server.mjs",
+    "badges": "bun run scripts/badges.mjs",
     "sim": "evenhub-simulator http://localhost:5173",
     "sim:auto": "evenhub-simulator http://localhost:5173 --automation-port 9898",
     "test:sim": "bun run e2e-sim/run.ts",
