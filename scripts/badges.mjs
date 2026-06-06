@@ -100,15 +100,16 @@ function jscpdColor(pct) {
   return 'red'
 }
 
+// しきい値は lint:fta の score-cap 120 に連動 (cap 変更時はここも揃える)。
 function ftaColor(score) {
-  if (score < 120) return 'brightgreen'
-  if (score < 150) return 'yellow'
-  if (score < 170) return 'orange'
+  if (score < 85) return 'brightgreen'
+  if (score < 105) return 'yellow'
+  if (score < 120) return 'orange'
   return 'red'
 }
 
 const dupMsg = `${duplicationPct.toFixed(1)}%`
-const ftaMsg = `${ftaWorst.toFixed(1)} / 170`
+const ftaMsg = `${ftaWorst.toFixed(1)} / 120`
 
 const jscpdBadge = {
   schemaVersion: 1,
