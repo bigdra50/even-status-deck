@@ -1,24 +1,15 @@
 import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
-import { MAX_ROWS } from '../glass-types'
 import { defaultImuConfig, type ImuConfig } from '../imu'
 import type { StatusDoc } from '../status-types'
 import { defaultCategory } from '../taxonomy'
-import {
-  type CondDisplay,
-  type DisplayUi,
-  segKey,
-  type VisibilityCond,
-  type VisibilityLeaf,
-} from '../visibility/keys'
+import type { CondDisplay, DisplayUi, VisibilityCond, VisibilityLeaf } from '../visibility/keys'
 import {
   AIRQUALITY_SOURCE_ID,
   BUILTIN_SOURCE_ID,
   CONFIG_VERSION,
-  DEFAULT_PLACE_RADIUS_M,
   DEFAULT_PROFILE_ID,
   GEOCODE_SOURCE_ID,
   GEOINFO_SOURCE_ID,
-  LABEL_SEG,
   LOCAL_SOURCE_ID,
   LOCATION_PLACE_GROUP_ID,
   LOCATION_SOURCE_ID,
@@ -26,24 +17,18 @@ import {
   PLACES_SOURCE_ID,
   WEATHER_SOURCE_ID,
 } from './constants'
-import {
-  defaultShowGroupLabel,
-  deriveSourceId,
-  disambiguateSourceId,
-  genPlaceId,
-  genProfileId,
-  genSourceId,
-  isRightDivider,
-} from './ids'
+import { emptyConfig, ensureBuiltin, ensureClientLocation } from './defaults'
+import { defaultShowGroupLabel, deriveSourceId, disambiguateSourceId, genSourceId } from './ids'
+import { backfillPages, consolidateClock, normalizeGlassLayout } from './layout'
+import { normalizePlaces, PLACES_GROUP_ID } from './places'
+import { activeProfile, activeView, emptyDefaultProfile, emptyProfileView } from './profiles'
 import type {
   Config,
   GAlign,
   GlassLayout,
-  GlassPage,
   GroupMeta,
   GroupRef,
   OptionValues,
-  Place,
   Profile,
   ProfileView,
   RemovedSourceView,
@@ -73,6 +58,7 @@ export {
   RIGHT_DIVIDER,
   WEATHER_SOURCE_ID,
 } from './constants'
+export { emptyConfig } from './defaults'
 export {
   customLabelId,
   customLabelKey,
@@ -90,6 +76,30 @@ export {
   sourceUrl,
   sourceUrls,
 } from './ids'
+export { generateGlassLayout } from './layout'
+export {
+  addPlace,
+  removePlace,
+  renamePlace,
+  setPlaceRadius,
+  updatePlaceLocation,
+} from './places'
+export {
+  activeProfile,
+  activeView,
+  addProfile,
+  duplicateActiveProfile,
+  enabledSources,
+  groupDisplayName,
+  isSourceEnabled,
+  removeProfile,
+  renameProfile,
+  resolvePages,
+  setActiveProfile,
+  setProfileGeofence,
+  setSourceEnabled,
+  sourceById,
+} from './profiles'
 export type {
   Config,
   GAlign,
@@ -128,315 +138,6 @@ let saveChain: Promise<void> = Promise.resolve()
 
 export function setConfigBridge(b: EvenAppBridge): void {
   bridge = b
-}
-
-// ── profile アクセサ ──
-// active profile を返す (見つからなければ先頭、それも無ければ Default を生成して補う)。
-export function activeProfile(cfg: Config): Profile {
-  const found = cfg.profiles.find((p) => p.id === cfg.activeProfileId)
-  if (found) return found
-  if (cfg.profiles.length) return cfg.profiles[0] as Profile
-  const def = emptyDefaultProfile()
-  cfg.profiles.push(def)
-  cfg.activeProfileId = def.id
-  return def
-}
-
-export function activeView(cfg: Config): ProfileView {
-  return activeProfile(cfg).view
-}
-
-// explicit デッキを解決する。pages 優先、無ければ glassLayout を 1 枚として吸収、両方無しは空 (=auto デッキ)。
-// auto デッキ (summary+detail) は render-time 仮想ページなので呼び出し側 (buildRuntimePages) が生成する。
-export function resolvePages(view: ProfileView): GlassPage[] {
-  if (view.pages?.length) return view.pages
-  if (view.glassLayout) return [{ id: 'page-1', name: 'Page 1', layout: view.glassLayout }]
-  return []
-}
-
-// active profile の enabledSourceIds に含まれる source (builtin 含む) だけを返す (fetch 範囲)。
-// store はこれを fetch 対象にする。MVP は Default=全 source なので結果は cfg.sources と同じ。
-export function enabledSources(cfg: Config): SourceDef[] {
-  const enabled = new Set(activeProfile(cfg).enabledSourceIds)
-  return cfg.sources.filter((s) => s.id === BUILTIN_SOURCE_ID || enabled.has(s.id))
-}
-
-// active profile で source が有効か (fetch/表示対象か)。builtin は常に true (fetch 範囲に必須)。
-export function isSourceEnabled(cfg: Config, sourceId: string): boolean {
-  if (sourceId === BUILTIN_SOURCE_ID) return true
-  return activeProfile(cfg).enabledSourceIds.includes(sourceId)
-}
-
-// active profile での source の有効/無効を切り替える。builtin は常に有効 (変更不可)。
-// OFF にした source は fetch されず glass/Items から消えるが、view (並び/可視性) は保持する
-// (再 ON や profile 切替で復元)。これが「業務 profile は私用 Mac を fetch しない」を実現する。
-export function setSourceEnabled(cfg: Config, sourceId: string, enabled: boolean): void {
-  if (sourceId === BUILTIN_SOURCE_ID) return
-  const prof = activeProfile(cfg)
-  const has = prof.enabledSourceIds.includes(sourceId)
-  if (enabled && !has) prof.enabledSourceIds.push(sourceId)
-  else if (!enabled && has) {
-    prof.enabledSourceIds = prof.enabledSourceIds.filter((id) => id !== sourceId)
-  }
-}
-
-// source の主 URL (urls 先頭、無ければ後方互換 url)。鮮度 diff / 表示に使う。
-
-function emptyProfileView(): ProfileView {
-  return { groups: {}, groupOrder: [] }
-}
-
-function emptyDefaultProfile(): Profile {
-  return { id: DEFAULT_PROFILE_ID, name: 'Default', enabledSourceIds: [], view: emptyProfileView() }
-}
-
-// builtin local ソース (時刻/電池) を必ず先頭に持たせる。label はコード所有なので
-// 既存エントリにも毎回上書きし、永続化された旧ラベル ('本体(時刻/電池)' 等) を消す。
-function ensureBuiltin(cfg: Config): void {
-  const existing = cfg.sources.find((s) => s.id === BUILTIN_SOURCE_ID)
-  if (existing) {
-    existing.kind = 'builtin'
-    existing.label = 'Device' // SOURCES には出さない (companion 側で builtin を除外)。内部表示用
-    existing.urls ??= []
-    existing.displayOwner = 'Glass' // 主要衝突源 (g2 電池 vs PC 電池) の出自。コード所有
-    existing.origin = 'app_bundled' // 同梱 source (Home の Included セクション)
-  } else {
-    cfg.sources.unshift({
-      id: BUILTIN_SOURCE_ID,
-      kind: 'builtin',
-      label: 'Device',
-      urls: [],
-      displayOwner: 'Glass',
-      origin: 'app_bundled',
-    })
-  }
-  if (!cfg.groups[BUILTIN_SOURCE_ID]) cfg.groups[BUILTIN_SOURCE_ID] = {}
-  // builtin は全 profile の enabledSourceIds に必ず含める (fetch 範囲に builtin を残す)。
-  for (const p of cfg.profiles) {
-    if (!p.enabledSourceIds.includes(BUILTIN_SOURCE_ID))
-      p.enabledSourceIds.unshift(BUILTIN_SOURCE_ID)
-  }
-  migrateBuiltinGroups(cfg)
-  ensureBuiltinSegments(cfg)
-}
-
-// 統合 client source "Location" (現在地ベース)。SDK に GPS が無いため位置は companion WebView の
-// geolocation で取得する。既定は無効 (opt-in): enabledSourceIds に入れず、ユーザーが "Add source" で
-// 有効化したとき初めて位置許可を求める。素材 group(weather/place)は status sync が補充する。
-// 旧 5 source(weather/geoinfo/airquality/geocode/places)は migrateLocationSourcesMerge で本 source へ畳む。
-function ensureClientLocation(cfg: Config): void {
-  const existing = cfg.sources.find((s) => s.id === LOCATION_SOURCE_ID)
-  if (existing) {
-    existing.kind = 'client'
-    existing.label = 'Location'
-    existing.urls ??= []
-    existing.origin = 'app_bundled'
-  } else {
-    cfg.sources.push({
-      id: LOCATION_SOURCE_ID,
-      kind: 'client',
-      label: 'Location',
-      urls: [],
-      origin: 'app_bundled',
-    })
-  }
-  cfg.groups[LOCATION_SOURCE_ID] ??= {}
-  cfg.places ??= []
-}
-
-// 旧地点ナビ source(client.places)の group id (#42)。距離ナビ撤廃後は LOCATION_MERGE_MAP の
-// legacy 移行(旧 nav group → place group)でのみ参照する内部定数(export 不要)。
-const PLACES_GROUP_ID = 'nav'
-const MAX_PLACES = 16 // 保存地点の上限(glass 行数 + UI が現実的な範囲)
-const MAX_PLACE_LABEL = 24
-const MIN_PLACE_RADIUS_M = 20
-const MAX_PLACE_RADIUS_M = 50_000
-
-function clampRadius(r: unknown): number {
-  if (typeof r !== 'number' || !Number.isFinite(r)) return DEFAULT_PLACE_RADIUS_M
-  return Math.min(MAX_PLACE_RADIUS_M, Math.max(MIN_PLACE_RADIUS_M, Math.round(r)))
-}
-
-// 保存地点配列を sanitize する(壊れた places でクラッシュさせない)。id/label/緯度経度を検証し、上限で切る。
-function normalizePlaces(cfg: Config): void {
-  if (!Array.isArray(cfg.places)) {
-    cfg.places = []
-    return
-  }
-  const seen = new Set<string>()
-  const out: Place[] = []
-  for (const p of cfg.places) {
-    if (out.length >= MAX_PLACES) break
-    if (!p || typeof p !== 'object') continue
-    const id = typeof p.id === 'string' ? p.id : ''
-    const label = typeof p.label === 'string' ? p.label.slice(0, MAX_PLACE_LABEL) : ''
-    const lat = p.lat
-    const lon = p.lon
-    if (!id || seen.has(id)) continue
-    if (
-      typeof lat !== 'number' ||
-      typeof lon !== 'number' ||
-      !Number.isFinite(lat) ||
-      !Number.isFinite(lon)
-    )
-      continue
-    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) continue
-    seen.add(id)
-    out.push({ id, label: label || 'Place', lat, lon, radiusM: clampRadius(p.radiusM) })
-  }
-  cfg.places = out
-}
-
-// 保存地点 CRUD (companion から呼ぶ)。素材 segment は producer の status sync が補充するので、ここでは
-// places 配列のみ操作する。削除時だけ素材/view に残る孤立 segment を掃除する。
-export function addPlace(cfg: Config, label: string, lat: number, lon: number): Place {
-  cfg.places ??= []
-  const place: Place = {
-    id: genPlaceId(),
-    label: label.slice(0, MAX_PLACE_LABEL) || 'Place',
-    lat,
-    lon,
-    radiusM: DEFAULT_PLACE_RADIUS_M,
-  }
-  cfg.places.push(place)
-  return place
-}
-
-export function renamePlace(cfg: Config, id: string, label: string): boolean {
-  const p = cfg.places?.find((x) => x.id === id)
-  if (!p) return false
-  p.label = label.slice(0, MAX_PLACE_LABEL) || 'Place'
-  return true
-}
-
-// ジオフェンス半径(m)を設定する(#43)。範囲外は clamp。
-export function setPlaceRadius(cfg: Config, id: string, radiusM: number): boolean {
-  const p = cfg.places?.find((x) => x.id === id)
-  if (!p) return false
-  p.radiusM = clampRadius(radiusM)
-  return true
-}
-
-export function updatePlaceLocation(cfg: Config, id: string, lat: number, lon: number): boolean {
-  const p = cfg.places?.find((x) => x.id === id)
-  if (!p || !Number.isFinite(lat) || !Number.isFinite(lon)) return false
-  p.lat = lat
-  p.lon = lon
-  return true
-}
-
-export function removePlace(cfg: Config, id: string): boolean {
-  if (!cfg.places) return false
-  const before = cfg.places.length
-  cfg.places = cfg.places.filter((p) => p.id !== id)
-  if (cfg.places.length === before) return false
-  // 孤立 segment を掃除する(素材 + 全 profile view + glassLayout 配置)。さもないと削除後に
-  // layout editor が glassLayout.rows の stale chip を描き続ける(discardSource と同じ理由)。
-  // 保存地点 segment は統合後 client.location の 'place' group 配下(旧 client.places|nav から畳み済)。
-  const key = segKey(LOCATION_SOURCE_ID, LOCATION_PLACE_GROUP_ID, id)
-  const meta = cfg.groups[LOCATION_SOURCE_ID]?.[LOCATION_PLACE_GROUP_ID]
-  if (meta) meta.segments = meta.segments.filter((s) => s.id !== id)
-  for (const prof of cfg.profiles) {
-    const vg = prof.view.groups[LOCATION_SOURCE_ID]?.[LOCATION_PLACE_GROUP_ID]
-    if (vg) delete vg.segments[id]
-    const lay = prof.view.glassLayout
-    if (lay) lay.rows = lay.rows.map((row) => row.filter((k) => k !== key))
-    // explicit デッキ各ページからも削除 place chip を除去 (dangling 防止)。
-    for (const page of prof.view.pages ?? []) {
-      page.layout.rows = page.layout.rows.map((row) => row.filter((k) => k !== key))
-    }
-    // 削除 place に bind された preset の geofence 連動も外す(#43。dangling 参照を残さない)。
-    if (prof.geofence?.placeId === id) prof.geofence = undefined
-  }
-  // 全 segment の visibility から、削除 place を参照する inPlace leaf を除去する(#43)。残すと「At place:
-  // <deleted>」条件が常に圏外扱い(insidePlaceIds.has(deletedId)=false)になり segment が予期せず消え、
-  // editor の place select も誤表示になる。条件が空になったら visibility ごと外す(=常時表示へ戻す)。
-  for (const groups of Object.values(cfg.groups)) {
-    for (const m of Object.values(groups)) {
-      for (const sm of m.segments) {
-        const vis = sm.visibility
-        if (!vis) continue
-        const kept = vis.conditions.filter((c) => !(c.kind === 'inPlace' && c.placeId === id))
-        if (kept.length === vis.conditions.length) continue
-        if (kept.length === 0) sm.visibility = undefined
-        else vis.conditions = kept
-      }
-    }
-  }
-  return true
-}
-
-// 旧 builtin group 'hud' (時刻/電池を 1 group に詰めていた) を clock/g2 へ再構成する。
-// segment は id が変わる (g2→level, drain→rate, est→eta) ため旧トグルは引き継がず、
-// sync が status から既定 ON で補充する。builtin の表示順 (先頭) は維持する。
-function migrateBuiltinGroups(cfg: Config): void {
-  const bg = cfg.groups[BUILTIN_SOURCE_ID]
-  if (!bg?.hud) return
-  delete bg.hud
-  if (!bg.clock) bg.clock = { segments: [] }
-  if (!bg.g2) bg.g2 = { segments: [] }
-  const view = activeView(cfg)
-  view.groups[BUILTIN_SOURCE_ID] ??= {}
-  view.groups[BUILTIN_SOURCE_ID].clock ??= { enabled: true, showDefaultLabel: false, segments: {} }
-  view.groups[BUILTIN_SOURCE_ID].g2 ??= { enabled: true, showDefaultLabel: true, segments: {} }
-  const idx = view.groupOrder.findIndex((r) => r.sourceId === BUILTIN_SOURCE_ID)
-  view.groupOrder = view.groupOrder.filter((r) => r.sourceId !== BUILTIN_SOURCE_ID)
-  const refs: GroupRef[] = [
-    { sourceId: BUILTIN_SOURCE_ID, groupId: 'clock' },
-    { sourceId: BUILTIN_SOURCE_ID, groupId: 'g2' },
-  ]
-  if (idx >= 0) view.groupOrder.splice(idx, 0, ...refs)
-  else view.groupOrder.unshift(...refs)
-}
-
-// builtin (clock/g2) は code 所有の固定 capability。data 駆動の sync を待たず素材メタへ静的 seed する。
-// これにより companion Items が放電データ未蓄積でも rate/eta を発見・トグル・配置・条件設定でき、
-// glass は live status に存在する segment だけを描く責務分離を保つ (StatusDoc は実データのみ)。
-// idempotent: 既存 segment/順序は温存し、不足分のみ canonical 順で補う。category は sync と同じ
-// defaultCategory で seed (g2|level=battery / g2|rate=power_rate / g2|eta=duration)。
-const BUILTIN_SEG_SEED: ReadonlyArray<readonly [string, readonly string[]]> = [
-  ['clock', ['datetime']],
-  ['g2', ['level', 'rate', 'eta']],
-]
-function ensureBuiltinSegments(cfg: Config): void {
-  const groups = cfg.groups[BUILTIN_SOURCE_ID]
-  if (!groups) return
-  const view = activeView(cfg)
-  view.groups[BUILTIN_SOURCE_ID] ??= {}
-  const vgroups = view.groups[BUILTIN_SOURCE_ID]
-  const missing: GroupRef[] = []
-  for (const [gid, segIds] of BUILTIN_SEG_SEED) {
-    let gm = groups[gid]
-    if (!gm) {
-      gm = { segments: [] }
-      groups[gid] = gm
-    }
-    for (const sid of segIds) {
-      if (!gm.segments.some((s) => s.id === sid)) {
-        gm.segments.push({ id: sid, category: defaultCategory(gid, sid) })
-      }
-    }
-    vgroups[gid] ??= { enabled: true, showDefaultLabel: defaultShowGroupLabel(gid), segments: {} }
-    if (!view.groupOrder.some((r) => r.sourceId === BUILTIN_SOURCE_ID && r.groupId === gid)) {
-      missing.push({ sourceId: BUILTIN_SOURCE_ID, groupId: gid })
-    }
-  }
-  if (missing.length) view.groupOrder.unshift(...missing) // builtin は先頭。clock→g2 の順を維持
-}
-
-export function emptyConfig(): Config {
-  const c: Config = {
-    version: CONFIG_VERSION,
-    sources: [],
-    groups: {},
-    profiles: [emptyDefaultProfile()],
-    activeProfileId: DEFAULT_PROFILE_ID,
-    imu: defaultImuConfig(),
-  }
-  ensureBuiltin(c)
-  ensureClientLocation(c)
-  normalizePlaces(c)
-  return c
 }
 
 export async function loadConfig(): Promise<Config> {
@@ -1140,283 +841,6 @@ function normalizeProfileView(p: Profile): void {
       vg.showDefaultLabel ??= defaultShowGroupLabel(gid)
     }
   }
-}
-
-export function sourceById(cfg: Config, id: string): SourceDef | undefined {
-  return cfg.sources.find((s) => s.id === id)
-}
-
-// group の表示名 override (素材)。未設定は undefined。effective 名 = これ ?? liveLabel で解決する。
-export function groupDisplayName(
-  cfg: Config,
-  sourceId: string,
-  groupId: string,
-): string | undefined {
-  return cfg.groups[sourceId]?.[groupId]?.displayName
-}
-
-// ── profile 操作 (Phase 2: プリセット切替) ──
-// active profile を切替える (見つからなければ無視)。fetch 範囲 (enabledSources) が変わるため、
-// 呼び出し側で saveConfig → setSourcesFromConfig → render を続ける。
-export function setActiveProfile(cfg: Config, id: string): void {
-  if (cfg.profiles.some((p) => p.id === id)) cfg.activeProfileId = id
-}
-
-// 空 view の新規 profile を追加し、active にする。enabledSourceIds は builtin + 全 server を既定で
-// 有効化する(新規 profile でも何も出ないと混乱するため)。ただし client source(weather/geoinfo 等)は
-// opt-in なので含めない(さもないと preset 追加だけで位置許可ダイアログ/外部 fetch が走る)。追加した profile を返す。
-export function addProfile(cfg: Config, name: string): Profile {
-  const prof: Profile = {
-    id: genProfileId(),
-    name: name || 'New preset',
-    enabledSourceIds: cfg.sources.filter((s) => s.kind !== 'client').map((s) => s.id),
-    view: emptyProfileView(),
-  }
-  cfg.profiles.push(prof)
-  cfg.activeProfileId = prof.id
-  return prof
-}
-
-// active profile を複製して active にする。view は deep copy (参照共有しない = 独立に編集可能)。
-// enabledSourceIds も複製する (同じ fetch 範囲から始める)。
-export function duplicateActiveProfile(cfg: Config, name?: string): Profile {
-  const src = activeProfile(cfg)
-  const prof: Profile = {
-    id: genProfileId(),
-    name: name || `${src.name} copy`,
-    enabledSourceIds: [...src.enabledSourceIds],
-    view: cloneView(src.view),
-  }
-  cfg.profiles.push(prof)
-  cfg.activeProfileId = prof.id
-  return prof
-}
-
-// profile を削除する (Default は不可、最後の 1 個も不可)。active を消したら別 profile を active にする。
-// 削除したら true。
-export function removeProfile(cfg: Config, id: string): boolean {
-  if (id === DEFAULT_PROFILE_ID) return false
-  if (cfg.profiles.length <= 1) return false
-  const idx = cfg.profiles.findIndex((p) => p.id === id)
-  if (idx < 0) return false
-  cfg.profiles.splice(idx, 1)
-  if (cfg.activeProfileId === id) {
-    cfg.activeProfileId = cfg.profiles[0]?.id ?? DEFAULT_PROFILE_ID
-  }
-  return true
-}
-
-// profile 名を変更する (空名は無視)。
-export function renameProfile(cfg: Config, id: string, name: string): void {
-  const trimmed = name.trim()
-  if (!trimmed) return
-  const prof = cfg.profiles.find((p) => p.id === id)
-  if (prof) prof.name = trimmed
-}
-
-// preset のジオフェンス連動を設定する(#43)。placeId=null で解除。mode は suggest/auto。
-export function setProfileGeofence(
-  cfg: Config,
-  profileId: string,
-  placeId: string | null,
-  mode: 'suggest' | 'auto',
-): boolean {
-  const prof = cfg.profiles.find((p) => p.id === profileId)
-  if (!prof) return false
-  if (!placeId || !cfg.places?.some((pl) => pl.id === placeId)) {
-    prof.geofence = undefined
-  } else {
-    prof.geofence = { placeId, mode: mode === 'auto' ? 'auto' : 'suggest' }
-  }
-  return true
-}
-
-// GlassLayout を deep copy する (rows の各行配列と customLabels を新規化)。
-function cloneGlassLayout(lay: GlassLayout): GlassLayout {
-  const customLabels: Record<string, { text: string }> = {}
-  for (const [id, v] of Object.entries(lay.customLabels)) customLabels[id] = { text: v.text }
-  return { rows: lay.rows.map((r) => [...r]), customLabels }
-}
-
-// glassLayout を pages[0] へ additive 投影する。pages 既存なら id/name 補完・空 layout 除去・各 layout 正規化のみ。
-// 重要: 全 glassLayout remap (location merge / clock 統合 / mac→system 等) の「後」に呼ぶこと。
-// pages[0].layout は glassLayout の clone (参照共有しない = editor が両方を書き換える二重真実を防ぐ)。
-// glassLayout (legacy) は読込互換で残す。pages があれば以後 render は pages を見る (resolvePages)。
-function backfillPages(view: ProfileView): void {
-  if (view.pages?.length) {
-    const out: GlassPage[] = []
-    view.pages.forEach((p, i) => {
-      const layout = normalizeGlassLayout(p?.layout)
-      if (!layout) return
-      const id = typeof p?.id === 'string' && p.id ? p.id : `page-${i + 1}`
-      const name = typeof p?.name === 'string' && p.name ? p.name : `Page ${i + 1}`
-      out.push({ id, name, layout })
-    })
-    view.pages = out.length ? out : undefined
-    return
-  }
-  if (view.glassLayout) {
-    view.pages = [{ id: 'page-1', name: 'Page 1', layout: cloneGlassLayout(view.glassLayout) }]
-  }
-}
-
-// ProfileView を deep copy する (複製時の参照共有を断つ)。ViewGroup / GroupRef / GlassLayout / pages
-// すべて新規オブジェクトにし、複製後の編集が元 profile に波及しないようにする。
-function cloneView(view: ProfileView): ProfileView {
-  const groups: Record<string, Record<string, ViewGroup>> = {}
-  for (const [sid, gmap] of Object.entries(view.groups)) {
-    groups[sid] = {}
-    for (const [gid, vg] of Object.entries(gmap)) {
-      groups[sid][gid] = { ...vg, segments: { ...vg.segments } }
-    }
-  }
-  const next: ProfileView = {
-    groups,
-    groupOrder: view.groupOrder.map((r) => ({ ...r })),
-  }
-  if (view.glassLayout) next.glassLayout = cloneGlassLayout(view.glassLayout)
-  if (view.pages) {
-    next.pages = view.pages.map((p) => ({
-      id: p.id,
-      name: p.name,
-      layout: cloneGlassLayout(p.layout),
-    }))
-  }
-  return next
-}
-
-function emptyRows(): string[][] {
-  return Array.from({ length: MAX_ROWS }, () => [])
-}
-
-// glass layout を active profile の groupOrder + enabled segment から生成する (Customize 時の初期値)。
-// 1 group = 1 行を上から詰める。MAX_ROWS を超えた分は配置せず Unplaced 棚 (導出) に出る。
-export function generateGlassLayout(cfg: Config): GlassLayout {
-  const view = activeView(cfg)
-  const rows = emptyRows()
-  let i = 0
-  for (const ref of view.groupOrder) {
-    const vg = view.groups[ref.sourceId]?.[ref.groupId]
-    const meta = cfg.groups[ref.sourceId]?.[ref.groupId]
-    if (!vg?.enabled || !meta) continue
-    const items = meta.segments
-      .filter((s) => vg.segments[s.id] ?? true)
-      .map((s) => segKey(ref.sourceId, ref.groupId, s.id))
-    if (items.length && i < MAX_ROWS) rows[i++] = items
-  }
-  return { rows, customLabels: {} }
-}
-
-// 永続化された customLabels を検証する (id -> {text})。text 文字列のみ採用。
-function sanitizeCustomLabels(x: unknown): Record<string, { text: string }> {
-  const out: Record<string, { text: string }> = {}
-  if (x && typeof x === 'object') {
-    for (const [id, v] of Object.entries(x as Record<string, unknown>)) {
-      const t = (v as { text?: unknown })?.text
-      if (typeof t === 'string') out[id] = { text: t }
-    }
-  }
-  return out
-}
-
-// 永続化された glassLayout を新形式 (固定 MAX_ROWS 行) に正規化する。
-// 旧 anchor 形式 ({rows:[{anchor,items}]}) は絶対行へ移行 (top は上から / bottom は下から)。
-// 壊れていれば undefined (= 自動描画にフォールバック)。
-function normalizeGlassLayout(x: unknown): GlassLayout | undefined {
-  if (!x || typeof x !== 'object') return undefined
-  const rowsRaw = (x as { rows?: unknown }).rows
-  if (!Array.isArray(rowsRaw)) return undefined
-  // 旧 @label 配置 chip は廃止 (default-label が自動で group 名を出す) → rows から除去。
-  const strList = (v: unknown): string[] =>
-    Array.isArray(v)
-      ? v.filter((s): s is string => typeof s === 'string' && !s.endsWith(`|${LABEL_SEG}`))
-      : []
-  const customLabels = sanitizeCustomLabels((x as { customLabels?: unknown }).customLabels)
-  // 行内の @right は 1 個のみ有効 (最初を残し残りを除去)。前=左 / 後=右クラスタの区切り。
-  const onceDivider = (row: string[]): string[] => {
-    let seen = false
-    return row.filter((k) => {
-      if (!isRightDivider(k)) return true
-      if (seen) return false
-      seen = true
-      return true
-    })
-  }
-  // 新形式: rows が string[][]
-  if (rowsRaw.every((r) => Array.isArray(r))) {
-    const rows = emptyRows()
-    for (let i = 0; i < MAX_ROWS; i++) rows[i] = onceDivider(strList(rowsRaw[i]))
-    return { rows, customLabels }
-  }
-  // 旧 anchor 形式 → 絶対行 (top は上から / bottom は下から詰める)
-  const top: string[][] = []
-  const bottom: string[][] = []
-  for (const r of rowsRaw) {
-    if (!r || typeof r !== 'object') continue
-    const rr = r as { anchor?: unknown; items?: unknown }
-    const items = strList(rr.items)
-    if (!items.length) continue
-    ;(rr.anchor === 'bottom' ? bottom : top).push(items)
-  }
-  const rows = emptyRows()
-  let i = 0
-  for (const r of top) if (i < MAX_ROWS) rows[i++] = r
-  let j = MAX_ROWS - 1
-  for (let k = bottom.length - 1; k >= 0 && j >= i; k--) rows[j--] = bottom[k]
-  return { rows, customLabels }
-}
-
-// clock を単一 datetime segment に統合する (旧 time/date を廃止)。同バージョン additive 移行:
-// 素材 SegMeta から time/date を除去し datetime を確保、active view の segment 可視性と
-// glassLayout の旧キーを datetime へ remap する (重複は 1 つに)。
-function consolidateClock(c: Config): void {
-  const clock = c.groups[BUILTIN_SOURCE_ID]?.clock
-  if (clock) {
-    const timeSeg = clock.segments.find((s) => s.id === 'time')
-    const dateSeg = clock.segments.find((s) => s.id === 'date')
-    const dt = clock.segments.find((s) => s.id === 'datetime')
-    if (!dt) {
-      // 旧 time/date を 1 つの datetime に統合: format を合成 (区切り 2 スペース)。
-      const fmt = [timeSeg?.format ?? '', dateSeg?.format ?? ''].filter(Boolean).join('  ')
-      const sm: SegMeta = { id: 'datetime' }
-      if (fmt) sm.format = fmt
-      clock.segments.push(sm)
-    }
-    // 既存 datetime は format をそのまま保持 (上書きしない)
-    clock.segments = clock.segments.filter((s) => s.id !== 'time' && s.id !== 'date')
-  }
-  // 全 profile の view(segment 可視性 + glassLayout + pages)を datetime へ畳む。
-  // active 限定だと非 active profile に旧 time/date key が残り、切替時に時計 chip が消える。
-  for (const p of c.profiles) {
-    const vg = p.view.groups[BUILTIN_SOURCE_ID]?.clock
-    if (vg) {
-      const tEn = vg.segments.time
-      const dEn = vg.segments.date
-      vg.segments.datetime ??= tEn != null || dEn != null ? !!(tEn || dEn) : true
-      delete vg.segments.time
-      delete vg.segments.date
-    }
-    if (p.view.glassLayout) consolidateClockRows(p.view.glassLayout)
-    // backfill 前なので壊れた pages (layout=null 等) を含みうる。null は backfillPages が後段で除去する。
-    for (const page of p.view.pages ?? []) if (page?.layout) consolidateClockRows(page.layout)
-  }
-}
-
-// glassLayout の rows から旧 clock|time/date を datetime へ畳む (各 layout で 1 箇所のみ・重複排除)。
-function consolidateClockRows(lay: GlassLayout): void {
-  const oldKeys = new Set([`${BUILTIN_SOURCE_ID}|clock|time`, `${BUILTIN_SOURCE_ID}|clock|date`])
-  const dtKey = `${BUILTIN_SOURCE_ID}|clock|datetime`
-  let seen = false // datetime は 1 箇所のみ (旧 time/date が別行にあっても先頭へ集約)
-  lay.rows = lay.rows.map((row) =>
-    row.flatMap((k) => {
-      if (oldKeys.has(k) || k === dtKey) {
-        if (seen) return []
-        seen = true
-        return [dtKey]
-      }
-      return [k]
-    }),
-  )
 }
 
 // 新規 server ソースを不変 ID で追加する (ユーザー追加。ランダム ID)。
