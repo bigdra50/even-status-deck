@@ -202,7 +202,7 @@ function clampSummaryLine(heading: string, parts: string[]): string {
 
 // 文字列を px 幅 maxPx 以下へ code point 単位で切り詰め、削ったら '…' を付ける (サロゲートを割らない)。
 // clampSummaryLine の最終 fallback 専用 (劣化値が summary に来る病的ケースのみ走る)。
-// 注: 先頭 1 code point は必ず残すため、maxPx が 1 文字幅未満の極小値なら超過しうる
+// 注: 最小出力は「先頭 1 code point + '…'」なので、その合計幅未満の maxPx では超過しうる
 // (呼び出し元の maxPx は常に「安全幅 − '… +N' 幅」≒ 540px なので実際には到達しない)。
 function truncateToWidth(s: string, maxPx: number): string {
   if (getTextWidth(s) <= maxPx) return s
