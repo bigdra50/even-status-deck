@@ -816,4 +816,9 @@ test('syncSourceWithStatus: live group label を lastLabel に捕捉する (再 
   // 空 label は記録しない (builtin 等の見出し無し group)
   syncSourceWithStatus(cfg, src.id, labeledDoc('nolabel', ''))
   expect(cfg.groups[src.id]?.nolabel?.lastLabel).toBeUndefined()
+  // 非空→空への変化は lastLabel を削除 (旧見出しで誤マージし続けない)
+  expect(syncSourceWithStatus(cfg, src.id, labeledDoc('claude-limits', ''))).toBe(true)
+  expect(cfg.groups[src.id]?.['claude-limits']?.lastLabel).toBeUndefined()
+  // 空のまま再 sync しても no-op
+  expect(syncSourceWithStatus(cfg, src.id, labeledDoc('claude-limits', ''))).toBe(false)
 })

@@ -448,6 +448,8 @@ function optionControls(
 // ref と同じ source 内に merge 見出し (effectiveGroupHeading) が一致する別 group があるか。
 // glass はマージ表示するが管理 UI は per-group のままなので、同名行に group id を併記する判定に使う。
 // 描画 (computeGroupMergeUnits) と同じ resolver/正規化を共有 = 「表示はマージ・併記なし」のズレを防ぐ。
+// スコープは意図的に config.groups 全体 (active view の groupOrder ではない): 素材と rename は全
+// profile 共有なので、他 preset でだけ両方が表示されるとそこでマージが起きる。over-approximate が安全。
 function groupHeadingCollides(sourceId: string, groupId: string): boolean {
   const mine = normalizeHeading(effectiveGroupHeading(config, sourceId, groupId))
   if (!mine) return false
@@ -1744,6 +1746,7 @@ async function onClick(e: MouseEvent): Promise<void> {
           // 変更後の見出しが同 source の別 group と一致するならマージが起きる。暗黙に発動させず
           // confirm で意図を確認する (base へ戻した結果マージされるケースも同様)。
           // 判定は描画と同じ resolver: 変更後の effective 見出しを先に確定してから比較する。
+          // スコープは config.groups 全体 (groupHeadingCollides と同じ理由: rename は全 profile に効く)。
           const renamed = v !== '' && v !== base
           const nextHeading = renamed
             ? v

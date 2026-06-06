@@ -1970,8 +1970,14 @@ export function syncSourceWithStatus(cfg: Config, sourceId: string, status: Stat
     }
     // live label を merge identity として内部記録 (offline でも見出しマージが揺れないため)。
     // label は静的リテラル規約 (display-identity 参照) なので実質初回のみ書く = churn 無し。
-    if (g.label && gm.lastLabel !== g.label) {
-      gm.lastLabel = g.label
+    // 非空→空への変化は削除 (旧見出しで誤マージし続けない)。
+    if (g.label) {
+      if (gm.lastLabel !== g.label) {
+        gm.lastLabel = g.label
+        changed = true
+      }
+    } else if (gm.lastLabel !== undefined) {
+      delete gm.lastLabel
       changed = true
     }
     let vg = vgroups[g.id]

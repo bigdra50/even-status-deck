@@ -188,6 +188,37 @@ test('summarySections: 長い summary は物理 1 行に clamp して "… +N" �
   expect(getTextWidth(line)).toBeLessThanOrEqual(GLASS_WIDTH - 2 * GLASS_PADDING)
 })
 
+test('summarySections: 先頭 segment 単独で幅超過しても物理 1 行 (px 切り詰め)', () => {
+  const { d, sid } = makeServerData(3)
+  const doc = d.statuses[sid]
+  const cost = doc?.groups.find((g) => g.id === 'claude-code')?.segments[0]
+  if (cost) cost.value = 'x'.repeat(400) // 病的な劣化値 (1 part で 560px 超)
+  const { top } = summarySections(d)
+  const line = top[0] ?? ''
+  expect(getTextWidth(line)).toBeLessThanOrEqual(GLASS_WIDTH - 2 * GLASS_PADDING)
+  expect(line).toMatch(/…/) // 切り詰め + '… +N' が付く
+})
+
+test('layoutLines: 空見出しの別 group 同士は dedup されない (merge identity ベース)', () => {
+  // 見出し無し (label='') の server group 2 つ: groupLabelText は source label にフォールバックして
+  // 両方 'Mac' を出すが、merge unit は別物なので 2 つ目のラベルを抑止しない。
+  const config: Config = emptyConfig()
+  const src = addServer(config, 'Mac')
+  const doc: StatusDoc = {
+    version: 1,
+    ts: 0,
+    groups: [
+      { id: 'alpha', label: '', segments: [{ id: 'a', label: 'A', value: '1' }] },
+      { id: 'beta', label: '', segments: [{ id: 'b', label: 'B', value: '2' }] },
+    ],
+  }
+  syncSourceWithStatus(config, src.id, doc)
+  const d: GlassData = { config, statuses: { [src.id]: doc } }
+  const lay = { rows: emptyRows(), customLabels: {} as Record<string, { text: string }> }
+  lay.rows[0] = [`${src.id}|alpha|a`, `${src.id}|beta|b`]
+  expect(layoutLines(lay, d, undefined, MAX_ROWS)[0]).toBe('Mac A 1  Mac B 2')
+})
+
 test('renderDeckPage: bottom 配置の merged 行でも本文は MAX_ROWS に収まる', () => {
   const { d, sid } = makeServerData(12)
   const vg = activeView(d.config).groups[sid]?.['claude-code']

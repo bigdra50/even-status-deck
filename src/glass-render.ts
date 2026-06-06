@@ -17,7 +17,12 @@ import {
   resolvePages,
   type ViewGroup,
 } from './config'
-import { computeGroupMergeUnits, type GroupMergeUnit, normalizeHeading } from './display-identity'
+import {
+  computeGroupMergeUnits,
+  effectiveGroupHeading,
+  type GroupMergeUnit,
+  normalizeHeading,
+} from './display-identity'
 import { MAX_ROWS } from './glass-types'
 import { sanitizeGlyphs } from './glyphs'
 import type { Group, StatusDoc } from './status-types'
@@ -190,9 +195,18 @@ function clampSummaryLine(heading: string, parts: string[]): string {
     const line = `${join(parts.slice(0, keep))}  … +${parts.length - keep}`
     if (getTextWidth(line) <= safe) return line
   }
-  // 見出し + 先頭 1 part でも超える極端例。'… +N' は付けたまま折り返しに任せる (情報を黙って捨てない)。
-  if (parts.length === 1) return join(parts)
-  return `${join(parts.slice(0, 1))}  … +${parts.length - 1}`
+  // 見出し + 先頭 1 part 単独でも超える極端例: 文字単位の px 切り詰めで物理 1 行を絶対保証する。
+  const tail = parts.length > 1 ? `  … +${parts.length - 1}` : ''
+  return truncateToWidth(join(parts.slice(0, 1)), safe - getTextWidth(tail)) + tail
+}
+
+// 文字列を px 幅 maxPx 以下へ code point 単位で切り詰め、削ったら '…' を付ける (サロゲートを割らない)。
+// clampSummaryLine の最終 fallback 専用 (劣化値が summary に来る病的ケースのみ走る)。
+function truncateToWidth(s: string, maxPx: number): string {
+  if (getTextWidth(s) <= maxPx) return s
+  const cps = [...s]
+  while (cps.length > 1 && getTextWidth(`${cps.join('')}…`) > maxPx) cps.pop()
+  return `${cps.join('')}…`
 }
 
 // group ラベルテキスト。衝突解決/手動の displayName(素材) を最優先し、無ければ
@@ -251,16 +265,27 @@ function renderKeys(
     if (!seg) continue // status 欠落 (missing) → 描画時 skip (rows からは消さない)
     const v = formatSegmentValue(seg.value, seg.widthChars, seg.isNumeric ?? false)
     const body = seg.label ? `${seg.label} ${v}` : v
-    const gl = groupLabelText(d, sourceId, groupId)
-    const headKey = `${sourceId} ${normalizeHeading(gl)}` // 区切りは sourceId に現れない NUL
+    // run の識別は merge identity (effectiveGroupHeading)。表示フォールバック (groupLabelText の
+    // source label / groupId) を混ぜると、空見出しの別 group 同士が誤って dedup される。
+    // 空見出しは merge unit と同じく決して他 group と dedup しない (per-group キー)。
+    const headingKey = normalizeHeading(effectiveGroupHeading(d.config, sourceId, groupId))
+    const headKey = headingKey
+      ? `h:${sourceId}\u0000${headingKey}`
+      : `g:${sourceId}\u0000${groupId}`
     if (headKey !== runKey) {
       runKey = headKey
       runLabeled = false
     }
-    // default-label: ON かつこの run でまだ見出しを出していなければ前置
-    if (showsGroupLabel(vg, groupId) && !runLabeled && gl) {
-      parts.push(`${gl} ${body}`)
-      runLabeled = true
+    // default-label: ON かつこの run でまだ見出しを出していなければ前置 (ラベル文言は表示用の
+    // groupLabelText。解決は出すときだけ = label OFF の segment で余計な status 検索をしない)
+    if (showsGroupLabel(vg, groupId) && !runLabeled) {
+      const gl = groupLabelText(d, sourceId, groupId)
+      if (gl) {
+        parts.push(`${gl} ${body}`)
+        runLabeled = true
+      } else {
+        parts.push(body)
+      }
     } else {
       parts.push(body)
     }
