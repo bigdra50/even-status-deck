@@ -2,7 +2,7 @@
 // 距離計算の純ロジックは geo.test.ts、preset 提案は suggest.test.ts が担う。ここは
 // 「保存地点が無ければ位置を取らない」「現在地キャッシュ更新後に圏内判定できる」を検証する。
 // 実行: bun test src/places.test.ts
-import { expect, test } from 'bun:test'
+import { afterAll, expect, test } from 'bun:test'
 import type { Place } from './config'
 import {
   getCurrentPlaceId,
@@ -28,6 +28,10 @@ function setGeo(pos: { lat: number; lon: number } | null): void {
     },
   }
 }
+
+// モックは process 共有の globalThis に載るため、後続テストファイル(location.test.ts 等の
+// 「navigator 不在で即 degrade」前提)へリークしないよう必ず外す。
+afterAll(() => setGeo(null))
 
 // 注: lastPos はモジュール singleton。以下のテストは順に実行され、各々が refresh で lastPos を確定させる。
 test('refreshGeofencePosition: 保存地点が無ければ位置を取らない(getCurrentPlaceId は null)', async () => {
