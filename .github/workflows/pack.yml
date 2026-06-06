@@ -46,7 +46,7 @@ jobs:
       # git tag v* の push 時のみ: GitHub Release を作成（無ければ）して .ehpk を添付する。
       - name: Attach .ehpk to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: status-deck.ehpk
           fail_on_unmatched_files: true
