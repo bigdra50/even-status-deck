@@ -88,6 +88,48 @@ function appendDbgLineToDom(e: DbgEntry): void {
   scrollDbgBottom()
 }
 
+type SelectionSnapshot = {
+  prevActive: Element | null
+  prevInput: HTMLInputElement | HTMLTextAreaElement | null
+  inputSel: { start: number | null; end: number | null } | null
+  sel: Selection | null
+  ranges: Range[]
+}
+
+// execCommand フォールバック前の focus/選択範囲を保存する。
+function saveSelection(): SelectionSnapshot {
+  const prevActive = document.activeElement
+  const prevInput =
+    prevActive instanceof HTMLInputElement || prevActive instanceof HTMLTextAreaElement
+      ? prevActive
+      : null
+  const inputSel = prevInput
+    ? { start: prevInput.selectionStart, end: prevInput.selectionEnd }
+    : null
+  const sel = window.getSelection()
+  const ranges: Range[] = sel
+    ? Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i))
+    : []
+  return { prevActive, prevInput, inputSel, sel, ranges }
+}
+
+// 保存した focus/選択範囲を復元する (ta.remove の後に呼ぶ)。
+function restoreSelection(snapshot: SelectionSnapshot): void {
+  const { prevActive, prevInput, inputSel, sel, ranges } = snapshot
+  if (sel) {
+    sel.removeAllRanges()
+    for (const r of ranges) sel.addRange(r)
+  }
+  if (prevActive instanceof HTMLElement) prevActive.focus()
+  if (prevInput && inputSel && inputSel.start != null && inputSel.end != null) {
+    try {
+      prevInput.setSelectionRange(inputSel.start, inputSel.end)
+    } catch {
+      // 一部の input type は setSelectionRange 非対応 (無視)
+    }
+  }
+}
+
 // クリップボードへ書き込む。Clipboard API → 失敗時は textarea+execCommand にフォールバック
 // (WKWebView や非セキュアコンテキストで API が使えない場合に備える)。
 async function writeClipboard(text: string): Promise<boolean> {
@@ -102,18 +144,7 @@ async function writeClipboard(text: string): Promise<boolean> {
   // textarea+execCommand フォールバック。select() が現在の focus/選択を奪うため、
   // 直前の active 要素・入力カーソル・document 選択範囲を保存し finally で復元する。
   // textarea 除去も finally に置き、例外時に DOM へ残らないようにする。
-  const prevActive = document.activeElement
-  const prevInput =
-    prevActive instanceof HTMLInputElement || prevActive instanceof HTMLTextAreaElement
-      ? prevActive
-      : null
-  const inputSel = prevInput
-    ? { start: prevInput.selectionStart, end: prevInput.selectionEnd }
-    : null
-  const sel = window.getSelection()
-  const ranges: Range[] = sel
-    ? Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i))
-    : []
+  const snapshot = saveSelection()
   const ta = document.createElement('textarea')
   try {
     ta.value = text
@@ -126,18 +157,7 @@ async function writeClipboard(text: string): Promise<boolean> {
     return false
   } finally {
     ta.remove()
-    if (sel) {
-      sel.removeAllRanges()
-      for (const r of ranges) sel.addRange(r)
-    }
-    if (prevActive instanceof HTMLElement) prevActive.focus()
-    if (prevInput && inputSel && inputSel.start != null && inputSel.end != null) {
-      try {
-        prevInput.setSelectionRange(inputSel.start, inputSel.end)
-      } catch {
-        // 一部の input type は setSelectionRange 非対応 (無視)
-      }
-    }
+    restoreSelection(snapshot)
   }
 }
 

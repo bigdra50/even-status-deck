@@ -53,6 +53,43 @@ export function syncAll(): boolean {
   return changed
 }
 
+// segment の displayLabel を desired に合わせて更新。変化時 true。
+function applySegmentLabel(
+  sm: { displayLabel?: string },
+  key: string,
+  desired: Map<string, string | null>,
+): boolean {
+  if (!desired.has(key)) return false // offline/未取得は維持
+  const want = desired.get(key)
+  if (want) {
+    if (sm.displayLabel !== want) {
+      sm.displayLabel = want
+      return true
+    }
+    return false
+  }
+  if (sm.displayLabel !== undefined) {
+    delete sm.displayLabel
+    return true
+  }
+  return false
+}
+
+// group 内の全 segment に displayLabel を適用。いずれか変化時 true。
+function applyGroupLabels(
+  srcId: string,
+  gid: string,
+  meta: { segments: { id: string; displayLabel?: string }[] },
+  desired: Map<string, string | null>,
+): boolean {
+  let changed = false
+  for (const sm of meta.segments) {
+    const key = segKey(srcId, gid, sm.id)
+    if (applySegmentLabel(sm, key, desired)) changed = true
+  }
+  return changed
+}
+
 // 表示モデル Phase2: 同系統データ衝突を解決し SegMeta.displayLabel を素材へ確定する(永続)。
 // 衝突 category の segment に "owner label" を焼き込み、非衝突はクリアする(resolve は純関数)。
 // online/offline で揺れないよう offline source は触らない。getRenderableStatuses は offline を null 化
@@ -65,20 +102,7 @@ export function applyDisplayLabels(): boolean {
     const groups = ctx.config.groups[src.id]
     if (!groups) continue
     for (const [gid, meta] of Object.entries(groups)) {
-      for (const sm of meta.segments) {
-        const key = segKey(src.id, gid, sm.id)
-        if (!desired.has(key)) continue // offline/未取得は維持
-        const want = desired.get(key)
-        if (want) {
-          if (sm.displayLabel !== want) {
-            sm.displayLabel = want
-            changed = true
-          }
-        } else if (sm.displayLabel !== undefined) {
-          delete sm.displayLabel
-          changed = true
-        }
-      }
+      if (applyGroupLabels(src.id, gid, meta, desired)) changed = true
     }
   }
   return changed
