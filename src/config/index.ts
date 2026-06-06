@@ -1,238 +1,119 @@
 import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
-import { MAX_ROWS } from './glass-types'
-import { defaultImuConfig, type ImuConfig } from './imu'
-import type { StatusDoc } from './status-types'
-import { defaultCategory } from './taxonomy'
+import { MAX_ROWS } from '../glass-types'
+import { defaultImuConfig, type ImuConfig } from '../imu'
+import type { StatusDoc } from '../status-types'
+import { defaultCategory } from '../taxonomy'
 import {
   type CondDisplay,
   type DisplayUi,
   segKey,
   type VisibilityCond,
   type VisibilityLeaf,
-} from './visibility/keys'
+} from '../visibility/keys'
+import {
+  AIRQUALITY_SOURCE_ID,
+  BUILTIN_SOURCE_ID,
+  CONFIG_VERSION,
+  DEFAULT_PLACE_RADIUS_M,
+  DEFAULT_PROFILE_ID,
+  GEOCODE_SOURCE_ID,
+  GEOINFO_SOURCE_ID,
+  LABEL_SEG,
+  LOCAL_SOURCE_ID,
+  LOCATION_PLACE_GROUP_ID,
+  LOCATION_SOURCE_ID,
+  LOCATION_WEATHER_GROUP_ID,
+  PLACES_SOURCE_ID,
+  WEATHER_SOURCE_ID,
+} from './constants'
+import {
+  defaultShowGroupLabel,
+  deriveSourceId,
+  disambiguateSourceId,
+  genPlaceId,
+  genProfileId,
+  genSourceId,
+  isRightDivider,
+} from './ids'
+import type {
+  Config,
+  GAlign,
+  GlassLayout,
+  GlassPage,
+  GroupMeta,
+  GroupRef,
+  OptionValues,
+  Place,
+  Profile,
+  ProfileView,
+  RemovedSourceView,
+  SegMeta,
+  SourceDef,
+  SourceKind,
+  ViewGroup,
+} from './types'
+
+export {
+  AIRQUALITY_SOURCE_ID,
+  BUILTIN_GROUP_LABELS,
+  BUILTIN_SEG_LABELS,
+  BUILTIN_SOURCE_ID,
+  CONFIG_VERSION,
+  CUSTOM_LABEL_PREFIX,
+  DEFAULT_PLACE_RADIUS_M,
+  DEFAULT_PROFILE_ID,
+  GEOCODE_SOURCE_ID,
+  GEOINFO_SOURCE_ID,
+  LABEL_SEG,
+  LOCAL_SOURCE_ID,
+  LOCATION_PLACE_GROUP_ID,
+  LOCATION_SOURCE_ID,
+  LOCATION_WEATHER_GROUP_ID,
+  PLACES_SOURCE_ID,
+  RIGHT_DIVIDER,
+  WEATHER_SOURCE_ID,
+} from './constants'
+export {
+  customLabelId,
+  customLabelKey,
+  defaultShowGroupLabel,
+  genLabelId,
+  genPageId,
+  genPlaceId,
+  genProfileId,
+  genSourceId,
+  isCustomLabelKey,
+  isRightDivider,
+  promoteSourceUrl,
+  removeSourceUrl,
+  setSourceUrls,
+  sourceUrl,
+  sourceUrls,
+} from './ids'
+export type {
+  Config,
+  GAlign,
+  GlassLayout,
+  GlassPage,
+  GroupMeta,
+  GroupRef,
+  OptionValues,
+  Place,
+  Profile,
+  ProfileGeofence,
+  ProfileView,
+  RemovedSourceView,
+  RemovedView,
+  SegMeta,
+  SourceDef,
+  SourceKind,
+  ViewGroup,
+} from './types'
 
 // 設定 (v4): 素材 (sources / groups) とレシピ (profiles) の 2 層構成。
 // 素材 = 接続先と metric の素性 (存在・format・閾値条件) を状況に依らず 1 つだけ持つ。
 // レシピ = profile.view が「何を出すか・どう並べるか・10 行にどう置くか」を状況ごとに持つ。
 // Phase 1 (MVP) は Default profile 1 個 (id 'default') に v3 の全構成を収容し activeProfileId 固定。
-export const CONFIG_VERSION = 5
-export const BUILTIN_SOURCE_ID = 'builtin.local'
-// 暗黙の既定サーバ (同一オリジン) の決定的 ID。起動毎にランダム ID で再追加すると groupOrder が
-// 孤立蓄積するため、固定 ID にして二重 init / 再起動でも同一ソースに収束させる。
-export const LOCAL_SOURCE_ID = 'server.local'
-// 気象 client source の決定的 ID。位置は companion WebView の geolocation で取る(SDK に GPS 無し)。
-export const WEATHER_SOURCE_ID = 'client.weather'
-// 標高/タイムゾーン client source の決定的 ID (#45)。weather と同じ geolocation を使う別 source。
-export const GEOINFO_SOURCE_ID = 'client.geoinfo'
-// 空気質(AQI/PM/花粉) client source の決定的 ID (#41)。別ホスト(air-quality-api.open-meteo.com)を使う。
-export const AIRQUALITY_SOURCE_ID = 'client.airquality'
-// 地名(逆ジオコーディング) client source の決定的 ID (#37)。別ホスト(api.bigdatacloud.net)を使う。
-export const GEOCODE_SOURCE_ID = 'client.geocode'
-// 地点ナビ client source の決定的 ID (#42)。外部 fetch なし(geolocation + Config.places から純計算)。
-export const PLACES_SOURCE_ID = 'client.places'
-
-// 統合 client source の決定的 ID。位置由来の旧 5 source(weather/geoinfo/airquality/geocode/places)を
-// 1 source に畳み、内部は 2 group(weather=気象+大気質 / place=地名+標高/TZ+保存地点ナビ)に集約する。
-// 旧 5 SOURCE_ID は migration(migrateLocationSourcesMerge)でのみ参照する legacy 定数。
-export const LOCATION_SOURCE_ID = 'client.location'
-// 統合先の group id。weather group は WEATHER_GROUP_ID(weather.ts)と一致(suncountdown anchors の整合)。
-export const LOCATION_WEATHER_GROUP_ID = 'weather'
-export const LOCATION_PLACE_GROUP_ID = 'place'
-
-export const DEFAULT_PROFILE_ID = 'default'
-
-// glass layout の「ラベル chip」を表す予約 segId。items の key が `src|grp|@label` のとき、
-// その group のラベルテキスト (Claude 等) を glass に出す (自動接頭辞は廃止、配置式)。
-export const LABEL_SEG = '@label'
-
-// ユーザー定義の自由テキストラベル。rows には key `@customLabel:<id>` だけを置き、本文は
-// glassLayout.customLabels[id].text に持つ (key にテキストを入れない = '|' 衝突回避)。
-export const CUSTOM_LABEL_PREFIX = '@customLabel:'
-export function customLabelKey(id: string): string {
-  return CUSTOM_LABEL_PREFIX + id
-}
-export function isCustomLabelKey(key: string): boolean {
-  return key.startsWith(CUSTOM_LABEL_PREFIX)
-}
-export function customLabelId(key: string): string {
-  return key.slice(CUSTOM_LABEL_PREFIX.length)
-}
-export function genLabelId(): string {
-  return `cl_${genSourceId().slice(0, 8)}`
-}
-
-// 意図的マルチページの安定 page id (複製/並べ替え/インジケータ用)。backfill 既定は 'page-1'。
-export function genPageId(): string {
-  return `page_${genSourceId().slice(0, 8)}`
-}
-
-// 行内の左右クラスタ区切り (iOS ステータスバー型)。rows[i] にこの予約キーを 1 つ置くと
-// その前 = 左寄せ / 後 = 右寄せ。無ければ全て左寄せ (従来挙動・後方互換)。実機は
-// justify-between (pretext で px 計測し中央を space 充填)、companion は flex space-between。
-// segKey ('|' 区切り) とも customLabelKey ('@customLabel:' 前置) とも衝突しない。
-export const RIGHT_DIVIDER = '@right'
-export function isRightDivider(key: string): boolean {
-  return key === RIGHT_DIVIDER
-}
-
-// builtin の表示ラベルはコード所有 (localStorage に保存しない)。companion はこれで
-// group/segment の行名を出し、永続化された source label (旧: '本体(時刻/電池)') へ
-// フォールバックしない。glass は builtins.ts の短縮ラベルを使う。
-export const BUILTIN_GROUP_LABELS: Record<string, string> = {
-  clock: 'Clock',
-  g2: 'G2', // segment 'Bat' と重複しないよう短縮 ("G2 Bat 82%")
-}
-export const BUILTIN_SEG_LABELS: Record<string, string> = {
-  time: 'Time',
-  date: 'Date',
-  datetime: 'Date & Time',
-  level: 'Battery level',
-  rate: 'Rate',
-  eta: 'Estimated time left',
-}
-
-export type SourceKind = 'builtin' | 'server' | 'client'
-// 表示オプション値のバッグ (#36)。キー = OptionField.id、値はプリミティブのみ。
-// 宣言 (OptionField) と解決/書込ロジックは src/options.ts が所有する。config はここに永続型だけ置き、
-// options.ts を import しない (config ↔ options の循環依存を作らない)。
-export type OptionValues = Record<string, string | number | boolean>
-// urls: 複数経路 (LAN / VPN 等。到達順に試行、先頭優先)。MVP では urls を正とし、旧 url? は
-//   後方互換で読み migrate で urls[0] へ正規化する。machineId: 同一マシン判定キー (Phase 3 で採用)。
-// options: source 単位の表示オプション (単位/粒度 等。素材 = 全 profile 共有)。
-export type SourceDef = {
-  id: string
-  kind: SourceKind
-  label: string
-  url?: string // 後方互換 (読込専用)。新規書込は urls を使う
-  urls: string[]
-  machineId?: string
-  options?: OptionValues
-  // displayOwner: 表示用オーナー (例 'Glass' / 'Mac')。同系統データ衝突時に owner バッジ/prefix で
-  // 出自を区別する (tasks/display-model-spec.md)。Phase1 は型のみ (builtin g2 のみ seed)、
-  // 消費 (バッジ/displayLabel 焼込) は Phase2/3。
-  displayOwner?: string
-  // origin: source の出自。'app_bundled' = アプリ同梱(builtin Device / 統合 Location)、
-  // 'user_added' = ユーザーが追加(server / 将来の外部 client provider)。未設定は user_added 相当。
-  // companion の Home セクション分け(Included / Connected / 将来 Extensions)が kind と併せて読む。
-  origin?: 'app_bundled' | 'user_added'
-}
-
-// ── 素材 (共有資産) ──
-// metric の素性のみを持つ。format: clock segment の表示フォーマット (例 'HH:mm')、未設定はロケール既定。
-// visibility: 閾値/onChange 表示条件。表示系 (enabled/align 等) は profile.view へ分離する。
-// options: segment 単位の表示オプション (#36。clock は後方互換で format に合成するため options を使わない)。
-export type SegMeta = {
-  id: string
-  format?: string
-  options?: OptionValues
-  visibility?: VisibilityCond
-  // 表示 identity (tasks/display-model-spec.md)。素材 = profile 非依存。
-  // category: device_class ベースの leaf 語彙 (例 'battery' / 'temperature')。新規 segment は sync 時に
-  //   defaultCategory で seed、既存は migrate で backfill。「種類」軸として整列/衝突判定に使う。
-  // displayLabel: 衝突時に焼き込む静的ラベル (Phase3 で glass が読む)。Phase1 は書かない。
-  // tags: 横断フィルタ/preset 自動化の裏軸 (多対多・任意)。Phase1 は型と sanitize のみ (producer 出力なし)。
-  category?: string
-  displayLabel?: string
-  tags?: string[]
-}
-// 素材の group メタ。displayName: ユーザーが付けた group 表示名 (リネーム。見出しと merge 判定を上書き)。
-// lastLabel: 最後に観測した live group label の内部記録 (sync で捕捉)。同 source 内で見出しが一致する
-// group は glass で 1 unit にマージ表示するため、offline でも unit 構成/align が揺れない merge identity
-// として使う (UI には出さない)。effective 見出し = displayName || lastLabel || liveLabel。
-// 旧 displayNameSource ('auto'=衝突自動命名 'Claude (limits)' 世代) は廃止 — migrate で一掃する。
-export type GroupMeta = {
-  segments: SegMeta[]
-  displayName?: string
-  lastLabel?: string
-}
-
-export type GAlign = 'top' | 'bottom'
-export type GroupRef = { sourceId: string; groupId: string }
-
-// ── レシピ (profile 固有) ──
-// ViewGroup: profile ごとの可視性・展開・寄せ・group ラベル前置と segment 可視性 (segId -> boolean)。
-// align: glass summary での縦寄せ。未指定は 'top'。
-// showDefaultLabel: glass で各 segment の前に group ラベル (G2/Claude 等) を出すか (未指定 clock=false/他=true)。
-export type ViewGroup = {
-  enabled: boolean
-  expanded?: boolean
-  align?: GAlign
-  showDefaultLabel?: boolean
-  segments: Record<string, boolean>
-}
-
-// glass の行レイアウト (表示レシピ)。group (素材) とは独立した固定 MAX_ROWS 行スロット。
-// rows[i] = i 行目の segKey 並び (空行可)。どの行にも無い enabled segment は companion の
-// Unplaced 棚に自動表示。未設定 (undefined) の間は従来の group=1行 自動描画。
-export type GlassLayout = {
-  rows: string[][] // rows.length === MAX_ROWS。各要素 = key (segKey / @label / @customLabel:id)
-  customLabels: Record<string, { text: string }> // ユーザー定義ラベルの本文 (id -> text)
-}
-
-// 意図的マルチページ (explicit デッキ) の 1 ページ。layout = そのページの 10 行スロット。
-// id: 安定 id (複製/並べ替え/インジケータ用)。name: companion 表示用 (グラスには既定で出さない)。
-export type GlassPage = {
-  id: string
-  name: string
-  layout: GlassLayout
-}
-
-// profile の view (レシピ)。可視性・並び・10 行配置を状況ごとに持つ。
-export type ProfileView = {
-  groups: Record<string, Record<string, ViewGroup>> // sourceId -> groupId -> ViewGroup
-  groupOrder: GroupRef[] // 全ソース横断の表示順
-  glassLayout?: GlassLayout // legacy: 未設定なら group=1行 自動描画。pages 移行後は読込互換で残す
-  pages?: GlassPage[] // explicit デッキ (意図的マルチページ)。未設定 = auto デッキ or glassLayout 1 枚
-}
-
-// profile = 状況セット。enabledSourceIds は fetch/表示する source の範囲。
-// ジオフェンス連動(#43): 現在地が placeId の圏内のとき、suggest=バナー提案 / auto=自動切替。
-export type ProfileGeofence = { placeId: string; mode: 'suggest' | 'auto' }
-
-export type Profile = {
-  id: string
-  name: string
-  enabledSourceIds: string[]
-  view: ProfileView
-  geofence?: ProfileGeofence // #43 ジオフェンスで現在地に応じてこの preset を提案/自動切替
-}
-
-// 削除した source の表示レシピ snapshot (machineId 別)。Phase 3: 同一マシン再追加で
-// profile の可視性/並び/glassLayout を復元する tombstone。profileId -> その profile の view 断片 + enabled。
-// machineId をキーにし sourceId はキーにしない (id 生成規則を将来変えても復元できる)。
-export type RemovedSourceView = {
-  enabled: boolean // 削除前に enabledSourceIds に含まれていたか (fetch 範囲の復元)
-  groups: Record<string, ViewGroup> // groupId -> ViewGroup (可視性/展開/寄せ/segment 可視性)
-  groupRefs: string[] // groupOrder に含まれていた groupId 群 (順序復元用)
-  glassRows: Record<string, string[][]> | null // 旧 sourceId|grp|seg を含む glass 行 (再 key 用に旧 sourceId も保持)
-}
-export type RemovedView = {
-  at: number // 削除時刻 (古い tombstone を間引く)
-  oldSourceId: string // 削除時の id (glass row の旧 segKey を新 id へ remap する用)
-  profiles: Record<string, RemovedSourceView> // profileId -> view 断片
-}
-
-// IMU 方向検出は src/imu ライブラリが所有。Config は enable + キャリブの永続先として imu? を持つ。
-// recentlyRemoved: 削除済み source の表示レシピ tombstone (machineId -> snapshot)。additive optional。
-// 保存地点 (#42)。地点ナビが現在地からの距離・方位を出す対象。profile 非依存の素材。
-export type Place = {
-  id: string
-  label: string
-  lat: number
-  lon: number
-  radiusM?: number // ジオフェンス半径(m, #43)。未設定は既定 150m。この圏内を「ここに居る」とみなす。
-}
-
-export type Config = {
-  version: number
-  sources: SourceDef[]
-  groups: Record<string, Record<string, GroupMeta>> // sourceId -> groupId -> 素材 (segment 素性のみ)
-  profiles: Profile[]
-  activeProfileId: string
-  imu?: ImuConfig
-  recentlyRemoved?: Record<string, RemovedView>
-  places?: Place[] // #42 保存地点 (additive)
-}
 
 // tombstone の保持上限 (古いものから間引く)。無制限に溜めない。
 const MAX_REMOVED_VIEWS = 16
@@ -247,48 +128,6 @@ let saveChain: Promise<void> = Promise.resolve()
 
 export function setConfigBridge(b: EvenAppBridge): void {
   bridge = b
-}
-
-export function genSourceId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return `src-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-}
-
-export function genProfileId(): string {
-  return `prof_${genSourceId().slice(0, 8)}`
-}
-
-// machineId 派生の source id。hostname ベースの安定 ID を id 名前空間へ正規化する
-// (英数とハイフンのみ・小文字)。これにより削除→同一マシン再追加で同じ id に収束する。
-function deriveSourceId(machineId: string): string {
-  const norm = machineId
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 64)
-  return norm ? `host-${norm}` : ''
-}
-
-// 衝突時 (同一 hostname の別マシン等) の disambiguation。machineId 派生 id に url の
-// 短縮 hash を足して別ソース化する。url が無ければ短いランダム接尾辞で代替する。
-function urlHash(url: string): string {
-  let h = 2166136261 >>> 0 // FNV-1a 32bit
-  for (let i = 0; i < url.length; i++) {
-    h ^= url.charCodeAt(i)
-    h = Math.imul(h, 16777619) >>> 0
-  }
-  return h.toString(36).slice(0, 6)
-}
-function disambiguateSourceId(base: string, url?: string): string {
-  const suffix = url ? urlHash(url) : genSourceId().slice(0, 6)
-  return `${base}-${suffix}`
-}
-
-// group の default-label 既定値: builtin clock のみ OFF (時刻に 'Clock' は不要)、他は ON。
-export function defaultShowGroupLabel(groupId: string): boolean {
-  return groupId !== 'clock'
 }
 
 // ── profile アクセサ ──
@@ -342,41 +181,6 @@ export function setSourceEnabled(cfg: Config, sourceId: string, enabled: boolean
 }
 
 // source の主 URL (urls 先頭、無ければ後方互換 url)。鮮度 diff / 表示に使う。
-export function sourceUrl(s: SourceDef): string | undefined {
-  return s.urls?.[0] ?? s.url
-}
-
-// source の全経路 (到達順)。urls を正とし、後方互換 url が漏れていれば末尾に補う。
-// store の failover fetch はこの順に試す (先頭優先・失敗で次)。
-export function sourceUrls(s: SourceDef): string[] {
-  const list = Array.isArray(s.urls) ? [...s.urls] : []
-  if (s.url && !list.includes(s.url)) list.push(s.url)
-  return list
-}
-
-// 経路リストを正規化して書き戻す (URL 管理 UI 用)。dedupe し urls を正とし、
-// legacy url を先頭に同期する (url を残すと sourceUrls() が削除済み経路を再追加してしまう)。
-export function setSourceUrls(s: SourceDef, urls: string[]): void {
-  const deduped: string[] = []
-  for (const u of urls) if (u && !deduped.includes(u)) deduped.push(u)
-  s.urls = deduped
-  s.url = deduped[0] // 空なら undefined。legacy url は常に先頭経路に一致させる
-}
-
-// 経路を 1 つ削除する。legacy url を畳んだ正リストから除き、stale な再出現を防ぐ。
-export function removeSourceUrl(s: SourceDef, url: string): void {
-  setSourceUrls(
-    s,
-    sourceUrls(s).filter((u) => u !== url),
-  )
-}
-
-// 経路を主経路 (先頭 = 到達順の最優先) に昇格する。存在しなければ no-op。
-export function promoteSourceUrl(s: SourceDef, url: string): void {
-  const all = sourceUrls(s)
-  if (!all.includes(url)) return
-  setSourceUrls(s, [url, ...all.filter((u) => u !== url)])
-}
 
 function emptyProfileView(): ProfileView {
   return { groups: {}, groupOrder: [] }
@@ -445,7 +249,6 @@ function ensureClientLocation(cfg: Config): void {
 const PLACES_GROUP_ID = 'nav'
 const MAX_PLACES = 16 // 保存地点の上限(glass 行数 + UI が現実的な範囲)
 const MAX_PLACE_LABEL = 24
-export const DEFAULT_PLACE_RADIUS_M = 150 // ジオフェンス既定半径(m, #43)
 const MIN_PLACE_RADIUS_M = 20
 const MAX_PLACE_RADIUS_M = 50_000
 
@@ -482,10 +285,6 @@ function normalizePlaces(cfg: Config): void {
     out.push({ id, label: label || 'Place', lat, lon, radiusM: clampRadius(p.radiusM) })
   }
   cfg.places = out
-}
-
-export function genPlaceId(): string {
-  return `pl_${genSourceId().slice(0, 8)}`
 }
 
 // 保存地点 CRUD (companion から呼ぶ)。素材 segment は producer の status sync が補充するので、ここでは
