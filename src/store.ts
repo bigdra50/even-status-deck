@@ -13,7 +13,6 @@ import {
 } from './config'
 import { fetchStatusFromUrls } from './data'
 import { locationStatus } from './location'
-import { setSavedPlaces } from './places'
 import type { StatusDoc } from './status-types'
 
 type Listener = () => void
@@ -119,7 +118,6 @@ function scheduleRetry(def: SourceDef): void {
 // active profile の enabledSourceIds に含まれる source だけを fetch 対象にする (builtin 含む)。
 // 切替時 (Phase 2) や source 追加/削除のたびに companion/glass から呼ぶ。MVP は Default=全 source。
 export function setSourcesFromConfig(cfg: Config): void {
-  setSavedPlaces(cfg.places ?? []) // #43 geofence モジュールへ保存地点を供給(圏内判定用。config を直接参照させない)
   setSources(enabledSources(cfg))
 }
 

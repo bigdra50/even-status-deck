@@ -130,7 +130,7 @@ test('group reorder via grip drag still works (touch-action does not break drag)
 })
 
 // スクロール不能不具合の layout 回帰ガード。新 IA では Home の flat 展開リストは廃止され、
-// Source カード + Places + Glass プレビュー + auto 順序リスト + dbg console で縦に伸びる。
+// Source カード + Glass プレビュー + auto 順序リスト + dbg console で縦に伸びる。
 // 「Home がスクロール可能で最下部付近の glass preview に到達できる」健全性のみ保証する
 // (タッチ挙動の最終確認は実機 A/B)。
 test.describe('scrollability', () => {

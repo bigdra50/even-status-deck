@@ -7,7 +7,6 @@
 //   - glass:   createVisibilityRuntime({ wake: true })  (窓終了タイマーで再描画)
 //   - preview: createVisibilityRuntime({ wake: false }) (タイマー不要・store 更新で再評価)
 import type { Config } from '../config'
-import { getInsidePlaceIds } from '../places'
 import type { StatusDoc } from '../status-types'
 import { pokeListeners } from '../store'
 import { computeVisibleMap } from './conditions'
@@ -36,7 +35,7 @@ export function createVisibilityRuntime(opts: { wake?: boolean } = {}): Visibili
     statuses: Record<string, StatusDoc | null>,
     now: number = Date.now(),
   ): VisibilityComputeResult {
-    const r = computeVisibleMap(config, statuses, states, now, getInsidePlaceIds())
+    const r = computeVisibleMap(config, statuses, states, now)
     states = r.states
     if (wake) {
       if (wakeTimer) {

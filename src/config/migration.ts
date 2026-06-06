@@ -24,7 +24,6 @@ import {
   normalizeRemovedViews,
   normalizeSourceUrls,
 } from './normalize'
-import { normalizePlaces, PLACES_GROUP_ID } from './places'
 import { activeProfile, emptyDefaultProfile } from './profiles'
 import type {
   Config,
@@ -77,8 +76,8 @@ function migrateV5Same(c: Config): Config {
   ensureBuiltin(c)
   migrateLocationSourcesMerge(c) // 旧 5 location source → client.location(2 group)。ensureClientLocation を内包
   ensureClientLocation(c)
-  migrateDropPlaceNav(c) // 距離/方位ナビ(#42)撤廃: place group の pl_xxxx/here orphan を掃除(geofence は温存)
-  normalizePlaces(c)
+  migrateDropPlaceNav(c) // 距離/方位ナビ(#42)撤廃: place group の pl_xxxx/here orphan を掃除
+  cleanupPlacesGeofence(c) // 保存地点/geofence(#43)撤去: places/profile.geofence の残骸を削除
   c.imu ??= defaultImuConfig()
   delete (c as Record<string, unknown>).batteryRate
   delete (c as Record<string, unknown>).glassHints
@@ -152,6 +151,8 @@ function reKeyGroupId(key: string, sourceId: string, fromGid: string, toGid: str
 // 旧 location source(1 source=1 group) → 統合先 client.location の group へのマッピング。
 // weather + airquality → group 'weather'(気象+大気質)、geocode + geoinfo + places(nav) → group 'place'。
 // segment id は集約先で衝突しない(各 source の seg id は重複しない)。
+// PLACES_GROUP_ID は撤去済み places 機能(#42/#43)の legacy 移行語彙としてここに残す。
+const PLACES_GROUP_ID = 'nav'
 const LOCATION_MERGE_MAP: { src: string; grp: string; newGrp: string }[] = [
   { src: WEATHER_SOURCE_ID, grp: 'weather', newGrp: LOCATION_WEATHER_GROUP_ID },
   { src: AIRQUALITY_SOURCE_ID, grp: 'airquality', newGrp: LOCATION_WEATHER_GROUP_ID },
@@ -277,12 +278,18 @@ function migrateLocationSourcesMerge(c: Config): void {
 
 // 距離/方位ナビ(#42)撤廃に伴う orphan 掃除。既存 user config の place group に焼かれた nav 動的 segment
 // (保存地点ごと id=pl_xxxx)と presence segment(id=here)を、素材・全 profile の view・glassLayout から除去する。
-// geofence(#43)用の Config.places / profile.geofence / 他 segment の inPlace visibility 条件は温存する
-// (地点定義と圏内判定は残す)。migrateLocationSourcesMerge の「後」に呼ぶ(旧 places が place group へ畳まれた後)。
+// migrateLocationSourcesMerge の「後」に呼ぶ(旧 places が place group へ畳まれた後)。places フィールドは
+// 型からは撤去済み(#43 geofence 撤去)なので legacy raw として読む。cleanupPlacesGeofence はこの後に呼ぶこと
+// (保存地点 id を nav segment 判定に使うため)。
 // 冪等: 対象 segment が無ければ no-op。CONFIG_VERSION 据え置き(additive 同様、毎 load 実行で安全)。
 function migrateDropPlaceNav(c: Config): void {
   const gid = LOCATION_PLACE_GROUP_ID
-  const savedIds = new Set((c.places ?? []).map((p) => p.id))
+  const rawPlaces = (c as Record<string, unknown>).places
+  const savedIds = new Set(
+    (Array.isArray(rawPlaces) ? rawPlaces : [])
+      .map((p) => (p as { id?: unknown }).id)
+      .filter((id): id is string => typeof id === 'string'),
+  )
   // place group の表示 segment のうち nav 由来(pl_ 前置 / here / 保存地点 id)を判定する。
   // 地名/標高/TZ の固定 seg(city/area/region/country/elev/tz/zone)は対象外。
   const isNavSeg = (id: string): boolean =>
@@ -313,6 +320,15 @@ function migrateDropPlaceNav(c: Config): void {
     delete src.options.distUnit
     delete src.options.bearingStyle
   }
+}
+
+// 保存地点/geofence(#43)撤去に伴う cleanup。CONFIG_VERSION 据え置き(batteryRate delete と同型)。
+// inPlace visibility 条件は sanitizeLeaf が未知 kind を null で落とすことで自動削除されるため、
+// ここでは places / profile.geofence の残骸のみ明示削除する(両フィールドとも型からは撤去済み)。
+// migrateDropPlaceNav が places の id を読むので、必ずその「後」に呼ぶ。冪等。
+function cleanupPlacesGeofence(c: Config): void {
+  delete (c as Record<string, unknown>).places
+  for (const p of c.profiles) delete (p as unknown as Record<string, unknown>).geofence
 }
 
 // v3 (素材と表示が混在・単一構成) -> v5。全構成を Default profile の view + enabledSourceIds へ収容する。
@@ -358,8 +374,8 @@ function migrateV3ToV5(old: V3Config): Config {
   ensureBuiltin(cfg)
   migrateLocationSourcesMerge(cfg) // 旧 location source があれば畳む(v3 は通常無いが冪等・防御的)
   ensureClientLocation(cfg)
-  migrateDropPlaceNav(cfg) // 距離/方位ナビ(#42)撤廃: place group の pl_xxxx/here orphan を掃除(geofence は温存)
-  normalizePlaces(cfg)
+  migrateDropPlaceNav(cfg) // 距離/方位ナビ(#42)撤廃: place group の pl_xxxx/here orphan を掃除
+  cleanupPlacesGeofence(cfg) // 保存地点/geofence(#43)撤去
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
   consolidateClock(cfg)
@@ -430,8 +446,8 @@ function migrateLegacyToV5(parsed: Record<string, unknown>): Config {
   ensureBuiltin(cfg)
   migrateLocationSourcesMerge(cfg) // 旧 location source があれば畳む(legacy は通常無いが冪等・防御的)
   ensureClientLocation(cfg)
-  migrateDropPlaceNav(cfg) // 距離/方位ナビ(#42)撤廃: place group の pl_xxxx/here orphan を掃除(geofence は温存)
-  normalizePlaces(cfg)
+  migrateDropPlaceNav(cfg) // 距離/方位ナビ(#42)撤廃: place group の pl_xxxx/here orphan を掃除
+  cleanupPlacesGeofence(cfg) // 保存地点/geofence(#43)撤去
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
   normalizeDisplayMeta(cfg) // 表示モデル Phase1: legacy 経路でも category 等を seed (v5Same と同一)

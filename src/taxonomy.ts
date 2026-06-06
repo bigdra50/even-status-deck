@@ -46,7 +46,7 @@ const DEFAULT_CATEGORY: Record<string, string> = {
   'weather|pm10': 'pm10',
   'weather|pollen': 'pollen',
   // client.location group 'place' (地名 + 標高/TZ)。旧 geocode + geoinfo を集約。
-  // 距離/方位ナビ(#42 旧 places, pl_xxxx/here)は撤廃済(place 表示を全廃・geofence のみ存続)。
+  // 距離/方位ナビ(#42 旧 places, pl_xxxx/here)は撤廃済。
   'place|city': 'place_city',
   'place|area': 'place_area',
   'place|region': 'place_region',

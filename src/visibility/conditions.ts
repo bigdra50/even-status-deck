@@ -1,5 +1,5 @@
 // 表示タイミング条件の純粋コア。segment 単位で「条件を満たすときだけ表示」を判定する。
-// 条件は leaf(threshold/onChange/present/inPlace) の AND/OR 複合。
+// 条件は leaf(threshold/onChange/present) の AND/OR 複合。
 // threshold/onChange の対象は leaf.seg (同 group 内の兄弟 segment) を指定でき、省略時は self。
 // present は別 segment が値を持つか(absent=空か)。threshold は percent 比較、onChange は value 変化で
 // holdMs だけ表示。transient(onChange) の状態は呼び出し側 (runtime shell) が保持し、ここは pure に
@@ -68,7 +68,6 @@ export function computeVisibleMap(
   statuses: Record<string, StatusDoc | null>,
   prev: VisStates,
   now: number,
-  insidePlaceIds: Set<string> | null = null, // #43 現在ジオフェンス圏内の地点 id 集合。null=位置不明(na)
 ): { map: VisibleMap; truthMap: ConditionTruthMap; states: VisStates; wakeAt: number | null } {
   const map: VisibleMap = new Map()
   const truthMap: ConditionTruthMap = new Map() // 条件付き segment の strict 評価 (発火判定用)
@@ -87,11 +86,6 @@ export function computeVisibleMap(
       if (!seg) continue
       const key = segKey(ref.sourceId, ref.groupId, sm.id)
       const results: LeafResult[] = cond.conditions.map((leaf, i) => {
-        if (leaf.kind === 'inPlace') {
-          if (insidePlaceIds === null) return 'na' // 位置不明 → 中立(fail-open)
-          const inside = insidePlaceIds.has(leaf.placeId)
-          return leaf.outside ? !inside : inside
-        }
         if (leaf.kind === 'present') {
           // 同 group 内の対象 segment が live で値を持つか。不在検出が目的なので常に bool(na にしない)。
           const t = group.segments.find((s) => s.id === leaf.seg)

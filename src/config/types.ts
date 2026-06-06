@@ -96,15 +96,11 @@ export type ProfileView = {
 }
 
 // profile = 状況セット。enabledSourceIds は fetch/表示する source の範囲。
-// ジオフェンス連動(#43): 現在地が placeId の圏内のとき、suggest=バナー提案 / auto=自動切替。
-export type ProfileGeofence = { placeId: string; mode: 'suggest' | 'auto' }
-
 export type Profile = {
   id: string
   name: string
   enabledSourceIds: string[]
   view: ProfileView
-  geofence?: ProfileGeofence // #43 ジオフェンスで現在地に応じてこの preset を提案/自動切替
 }
 
 // 削除した source の表示レシピ snapshot (machineId 別)。Phase 3: 同一マシン再追加で
@@ -124,15 +120,6 @@ export type RemovedView = {
 
 // IMU 方向検出は src/imu ライブラリが所有。Config は enable + キャリブの永続先として imu? を持つ。
 // recentlyRemoved: 削除済み source の表示レシピ tombstone (machineId -> snapshot)。additive optional。
-// 保存地点 (#42)。地点ナビが現在地からの距離・方位を出す対象。profile 非依存の素材。
-export type Place = {
-  id: string
-  label: string
-  lat: number
-  lon: number
-  radiusM?: number // ジオフェンス半径(m, #43)。未設定は既定 150m。この圏内を「ここに居る」とみなす。
-}
-
 export type Config = {
   version: number
   sources: SourceDef[]
@@ -141,5 +128,4 @@ export type Config = {
   activeProfileId: string
   imu?: ImuConfig
   recentlyRemoved?: Record<string, RemovedView>
-  places?: Place[] // #42 保存地点 (additive)
 }

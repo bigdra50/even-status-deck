@@ -97,6 +97,3 @@ export function promoteSourceUrl(s: SourceDef, url: string): void {
   if (!all.includes(url)) return
   setSourceUrls(s, [url, ...all.filter((u) => u !== url)])
 }
-export function genPlaceId(): string {
-  return `pl_${genSourceId().slice(0, 8)}`
-}

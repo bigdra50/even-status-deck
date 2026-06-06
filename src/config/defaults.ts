@@ -7,7 +7,6 @@ import {
   LOCATION_SOURCE_ID,
 } from './constants'
 import { defaultShowGroupLabel } from './ids'
-import { normalizePlaces } from './places'
 import { activeView, emptyDefaultProfile } from './profiles'
 import type { Config, GroupRef } from './types'
 
@@ -62,7 +61,6 @@ export function ensureClientLocation(cfg: Config): void {
     })
   }
   cfg.groups[LOCATION_SOURCE_ID] ??= {}
-  cfg.places ??= []
 }
 
 // 旧 builtin group 'hud' (時刻/電池を 1 group に詰めていた) を clock/g2 へ再構成する。
@@ -134,6 +132,5 @@ export function emptyConfig(): Config {
   }
   ensureBuiltin(c)
   ensureClientLocation(c)
-  normalizePlaces(c)
   return c
 }

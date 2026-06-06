@@ -1,14 +1,11 @@
-// companion の画面/view 描画 (Home / Source Detail / Sources / Add Source / Places / Source Edit) と
-// プリセットバー・保存地点ユーティリティ。
+// companion の画面/view 描画 (Home / Source Detail / Sources / Add Source / Source Edit) と
+// プリセットバー。
 
 import {
   activeProfile,
   DEFAULT_PROFILE_ID,
   isSourceEnabled,
-  LOCATION_SOURCE_ID,
-  type Profile,
   type SourceDef,
-  saveConfig,
   sourceById,
   sourceUrl,
   sourceUrls,
@@ -16,12 +13,9 @@ import {
 import { effectiveOwner } from '../display-identity'
 import { esc } from '../escape'
 import { icon } from '../icons'
-import { refreshSourceById, setSourcesFromConfig } from '../store'
 import { renderDbgConsole } from './debug-console'
 import { renderGlassSection } from './glass-edit'
-import { requestRender } from './render-port'
 import {
-  placeManageRow,
   renderSourceGroups,
   SOURCE_SECTIONS,
   sourceAddRow,
@@ -39,13 +33,9 @@ function renderSuggestionBanner(): string {
   const s = ctx.currentSuggestion
   if (!s) return ''
   const detail =
-    s.reason === 'geofence'
-      ? s.placeName
-        ? `You're at ${esc(s.placeName)}.`
-        : "You're at a saved place."
-      : s.matchCount === 1
-        ? 'A connected source matches this preset.'
-        : `${s.matchCount} connected sources match this preset.`
+    s.matchCount === 1
+      ? 'A connected source matches this preset.'
+      : `${s.matchCount} connected sources match this preset.`
   return `
     <div class="suggest-banner" role="status">
       <span class="suggest-icon">${icon('sparkles', { size: 16 })}</span>
@@ -80,32 +70,7 @@ function renderProfileBar(): string {
       <button class="gear-btn" data-action="profile-duplicate" title="Duplicate preset" aria-label="Duplicate preset">${icon('copy', { size: 16 })}</button>
       <button class="gear-btn" data-action="profile-add" title="Add preset" aria-label="Add preset">${icon('plus', { size: 16 })}</button>
       <button class="gear-btn danger" data-action="profile-delete" title="Delete preset" aria-label="Delete preset" ${delAttr}>${icon('trash', { size: 16 })}</button>
-    </div>
-    ${renderProfileGeofence(active)}`
-}
-
-// #43 この preset をジオフェンス(保存地点)に連動させる UI。保存地点があるときだけ出す。
-// place=Off で解除、suggest=バナー提案 / auto=圏内で自動切替。Location source(place group)の位置を使う。
-function renderProfileGeofence(active: Profile): string {
-  const places = ctx.config.places ?? []
-  if (places.length === 0) return ''
-  const gf = active.geofence
-  const placeOpts =
-    `<option value="" ${gf ? '' : 'selected'}>Off</option>` +
-    places
-      .map(
-        (p) =>
-          `<option value="${esc(p.id)}" ${gf?.placeId === p.id ? 'selected' : ''}>${esc(p.label)}</option>`,
-      )
-      .join('')
-  return `<div class="profile-geofence">
-    <span class="cmp-sub">When at</span>
-    <select class="vis-select" data-action="profile-geofence-place" aria-label="Geofence place">${placeOpts}</select>
-    <select class="vis-select" data-action="profile-geofence-mode" aria-label="Geofence mode" ${gf ? '' : 'disabled'}>
-      <option value="suggest" ${gf?.mode === 'auto' ? '' : 'selected'}>Suggest</option>
-      <option value="auto" ${gf?.mode === 'auto' ? 'selected' : ''}>Auto-switch</option>
-    </select>
-  </div>`
+    </div>`
 }
 
 export function renderHome(): string {
@@ -129,9 +94,6 @@ export function renderHome(): string {
     ${sourcesHtml}
     <button class="save-btn sm" data-action="open-add-source">${icon('plus', { size: 14 })} Add source</button>
 
-    <div class="cmp-label cmp-label-row">Places<span class="cmp-actions"><button class="link-btn" data-action="manage-places">Manage</button></span></div>
-    <div class="cmp-sub">Saved places for geofencing: preset auto-switch and &ldquo;At place&rdquo; conditions.</div>
-
     ${renderGlassSection()}
 
     ${renderDbgConsole()}
@@ -141,8 +103,8 @@ export function renderHome(): string {
 // 画面2 (新 IA): Source Detail。1 source の group/segment トグル・表示オプション・条件を集約。
 // groupRow をそのまま再利用するので機能の取りこぼし無し。owner はヘッダで編集 (source 単位・全 preset 共有)。
 export function renderSourceDetail(): string {
-  // 存在 かつ 現 preset で有効 な source のみ detail を出す。profile 自動切替(geofence)や
-  // remove-from-preset/delete で無効/消滅したら Home へフォールバック (stale detail に居座らない)。
+  // 存在 かつ 現 preset で有効 な source のみ detail を出す。remove-from-preset/delete で
+  // 無効/消滅したら Home へフォールバック (stale detail に居座らない)。
   const s =
     ctx.detailSourceId && isSourceEnabled(ctx.config, ctx.detailSourceId)
       ? sourceById(ctx.config, ctx.detailSourceId)
@@ -203,43 +165,6 @@ export function renderAddSource(): string {
     <div class="cmp-label">New</div>
     <button class="save-btn sm" data-action="create-new-source">${icon('plus', { size: 14 })} Create new source</button>
   `
-}
-
-export function renderPlaces(): string {
-  const places = ctx.config.places ?? []
-  const html = places.length
-    ? places.map(placeManageRow).join('')
-    : '<div class="cmp-sub">No saved places yet. Save your current location to start.</div>'
-  return `
-    <div class="topbar"><button class="nav-btn" data-action="home">${icon('arrow-left', { size: 16 })} Home</button>
-      <span class="h-title">Places</span><span></span></div>
-    <div class="cmp-sub">Saved places drive geofencing — preset auto-switch/suggestions and &ldquo;At place&rdquo; visibility. Requires the Location source enabled.</div>
-    ${html}
-    <button class="save-btn sm" data-action="add-current-place">${icon('plus', { size: 14 })} Save current location</button>
-  `
-}
-
-// companion(iPhone WebView)で現在地を 1 回取得する。地点保存用なので高精度を要求する。
-export function getCompanionPosition(): Promise<{ lat: number; lon: number }> {
-  return new Promise((resolve, reject) => {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      reject(new Error('geolocation unavailable'))
-      return
-    }
-    navigator.geolocation.getCurrentPosition(
-      (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude }),
-      (e) => reject(new Error(`geolocation error ${e.code}`)),
-      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 },
-    )
-  })
-}
-
-// 保存地点変更後の共通処理: 永続化 → store へ反映(setSavedPlaces 経由) → Location 再 poll → 再描画。
-export function afterPlacesChange(): void {
-  void saveConfig(ctx.config)
-  setSourcesFromConfig(ctx.config) // store の savedPlaces を最新化(geofence の圏内判定に即反映)
-  refreshSourceById(LOCATION_SOURCE_ID) // Location が有効なら再 poll(refreshGeofencePosition で lastPos も更新)
-  requestRender()
 }
 
 // ── ソース編集 ──

@@ -9,13 +9,7 @@ import type { ProfileSuggestion } from '../suggest'
 
 // companion (スマホ WebView) の画面。source-detail: 新 IA のドリルダウン先
 // (その source の group/segment 設定。flat Items を置換)。
-export type CompanionScreen =
-  | 'home'
-  | 'source-detail'
-  | 'source-edit'
-  | 'sources'
-  | 'add-source'
-  | 'places'
+export type CompanionScreen = 'home' | 'source-detail' | 'source-edit' | 'sources' | 'add-source'
 
 export const ctx = {
   view: 'home' as CompanionScreen,
@@ -43,7 +37,4 @@ export const ctx = {
   dismissedSuggestions: new Set<string>(),
   // 現在表示中の提案 (無ければ null)。store の health 変化で再計算し、変化したときだけ Home を再描画する。
   currentSuggestion: null as ProfileSuggestion | null,
-
-  // #43 ジオフェンス自動切替で最後に入った place (flapping/手動操作の上書き防止に使う)。
-  lastGeofencePlace: null as string | null,
 }

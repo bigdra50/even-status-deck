@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 import { attachConsoleErrors, key, MACHINE, openSourceDetail, SERVER_ID, STATUS } from './fixtures'
 
 // companion.ts 分割リファクタの characterization テスト。既存 spec が触れていない
-// 周縁領域 (fullscreen エディタ / デバッグコンソール / geofence 連動 / 表示条件エディタ) の
+// 周縁領域 (fullscreen エディタ / デバッグコンソール / 表示条件エディタ) の
 // 最小経路を固定し、機械的移動での回帰を検知する。挙動仕様の正本ではなく現状の写し。
 
 let consoleErrors: string[]
@@ -42,41 +42,6 @@ test('debug console toggles open, captures logs, clears, and collapses', async (
   await expect(page.locator('#dbg-list')).toContainText('No logs')
   await page.locator('[data-action="console-toggle"]').click()
   await expect(page.locator('#dbg-list')).toHaveCount(0)
-})
-
-// ── geofence 連動 (places + profile-geofence-*) ──
-test.describe('geofence binding', () => {
-  test.use({ geolocation: { latitude: 35.681, longitude: 139.767 }, permissions: ['geolocation'] })
-
-  test('saving a place enables geofence bind and the binding persists', async ({ page }) => {
-    // Places 画面で現在地を保存 (prompt は地点名)
-    await page.locator('[data-action="manage-places"]').click()
-    page.once('dialog', (d) => void d.accept('Edge Home'))
-    await page.locator('[data-action="add-current-place"]').click()
-    await expect(page.locator('.src-name', { hasText: 'Edge Home' })).toBeVisible()
-    await expect(page.locator('[data-action="delete-place"]')).toHaveCount(1)
-
-    // Home へ戻ると保存地点があるので geofence UI が出る
-    await page.locator('[data-action="home"]').click()
-    const placeSel = page.locator('[data-action="profile-geofence-place"]')
-    await expect(placeSel).toBeVisible()
-    const modeSel = page.locator('[data-action="profile-geofence-mode"]')
-    await expect(modeSel).toBeDisabled() // 未連動時は mode 選択不可
-    await placeSel.selectOption({ label: 'Edge Home' })
-    await expect(page.locator('[data-action="profile-geofence-mode"]')).toBeEnabled()
-
-    // mode 変更で config-changed が発火し、再描画後も binding が保持される
-    // (bridge 不在の e2e 環境では saveConfig はメモリ保持のみ。reload 永続化は対象外)
-    const configChanged = page.evaluate(
-      () =>
-        new Promise<void>((res) =>
-          window.addEventListener('toolbar:config-changed', () => res(), { once: true }),
-        ),
-    )
-    await page.locator('[data-action="profile-geofence-mode"]').selectOption('auto')
-    await configChanged
-    await expect(page.locator('[data-action="profile-geofence-mode"]')).toHaveValue('auto')
-  })
 })
 
 // ── 表示条件エディタ (seg-vis-*) ──

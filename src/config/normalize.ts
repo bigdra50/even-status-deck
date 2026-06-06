@@ -25,11 +25,6 @@ function sanitizeLeaf(x: unknown): VisibilityLeaf | null {
     if (typeof o.seg === 'string' && o.seg !== '') leaf.seg = o.seg
     return leaf
   }
-  if (o.kind === 'inPlace' && typeof o.placeId === 'string' && o.placeId !== '') {
-    const leaf: VisibilityLeaf = { kind: 'inPlace', placeId: o.placeId }
-    if (o.outside === true) leaf.outside = true
-    return leaf
-  }
   if (o.kind === 'present' && typeof o.seg === 'string' && o.seg !== '') {
     const leaf: VisibilityLeaf = { kind: 'present', seg: o.seg }
     if (o.absent === true) leaf.absent = true
@@ -183,13 +178,6 @@ export function normalizeTagsAll(c: Config): void {
 export function normalizeProfileView(p: Profile): void {
   p.view ??= emptyProfileView()
   p.view.groups ??= {}
-  // geofence(#43): placeId が string で mode が suggest/auto のときだけ残す。不正は外す。
-  const gf = p.geofence
-  if (gf && typeof gf.placeId === 'string' && gf.placeId !== '') {
-    p.geofence = { placeId: gf.placeId, mode: gf.mode === 'auto' ? 'auto' : 'suggest' }
-  } else {
-    p.geofence = undefined
-  }
   if (!Array.isArray(p.view.groupOrder)) p.view.groupOrder = []
   // groupOrder は (sourceId,groupId) で一意。machineId remap や旧バージョン移行で混入した
   // 重複を除去する (重複すると同じ group が Items / glass に二重表示される)。最初の出現を残す。
