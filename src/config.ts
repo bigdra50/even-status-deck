@@ -135,12 +135,15 @@ export type SegMeta = {
   displayLabel?: string
   tags?: string[]
 }
-// 素材の group メタ。displayName: 同 source 内で label が衝突した group を区別する表示名 (例 'Claude (limits)')。
-// displayNameSource: 'auto'=衝突検出が自動付与 (再計算で上書き可) / 'user'=ユーザーがリネーム (自動上書きしない)。
-// label 自体は producer 由来(status)なので素材には持たず、effective 名 = displayName ?? liveLabel で解決する。
+// 素材の group メタ。displayName: ユーザーが付けた group 表示名 (リネーム。見出しと merge 判定を上書き)。
+// lastLabel: 最後に観測した live group label の内部記録 (sync で捕捉)。同 source 内で見出しが一致する
+// group は glass で 1 unit にマージ表示するため、offline でも unit 構成/align が揺れない merge identity
+// として使う (UI には出さない)。effective 見出し = displayName || lastLabel || liveLabel。
+// displayNameSource: 廃止フィールド (旧 'auto'=衝突自動命名 'Claude (limits)' 世代)。migrate で一掃する。
 export type GroupMeta = {
   segments: SegMeta[]
   displayName?: string
+  lastLabel?: string
   displayNameSource?: 'auto' | 'user'
 }
 
@@ -750,21 +753,26 @@ function normalizeDisplayMeta(c: Config): void {
   normalizeGroupDisplayNames(c) // group の displayName/displayNameSource を sanitize
 }
 
-// group displayName の sanitize。空/非文字列は外す。displayNameSource は 'auto'|'user' のみ許可
-// (不正は 'auto' 扱い)。衝突に基づく自動付与は companion(status を持つ層)が行う=ここでは整形のみ。
+// group displayName / lastLabel の sanitize。旧 'auto'(衝突自動命名 'Claude (limits)' 世代) は
+// displayName ごと一掃する (リネーム廃止→同見出し group はマージ表示へ移行)。'auto' 完全一致以外の
+// displayName はユーザー命名として保全し、廃止フィールド displayNameSource は常に落とす。
+// lastLabel は非文字列/空を外すだけ (sync が live label を再捕捉する)。冪等。
 function normalizeGroupDisplayNames(c: Config): void {
   for (const groups of Object.values(c.groups ?? {})) {
     for (const meta of Object.values(groups)) {
+      if (meta.displayNameSource === 'auto') delete meta.displayName
+      delete meta.displayNameSource
       if (
         meta.displayName !== undefined &&
         (typeof meta.displayName !== 'string' || meta.displayName === '')
       ) {
         delete meta.displayName
       }
-      if (meta.displayName === undefined) {
-        delete meta.displayNameSource // 名前が無いのに source だけ残らないように
-      } else if (meta.displayNameSource !== 'user') {
-        meta.displayNameSource = 'auto'
+      if (
+        meta.lastLabel !== undefined &&
+        (typeof meta.lastLabel !== 'string' || meta.lastLabel === '')
+      ) {
+        delete meta.lastLabel
       }
     }
   }
@@ -1958,6 +1966,12 @@ export function syncSourceWithStatus(cfg: Config, sourceId: string, status: Stat
     if (!gm) {
       gm = { segments: [] }
       meta[g.id] = gm
+      changed = true
+    }
+    // live label を merge identity として内部記録 (offline でも見出しマージが揺れないため)。
+    // label は静的リテラル規約 (display-identity 参照) なので実質初回のみ書く = churn 無し。
+    if (g.label && gm.lastLabel !== g.label) {
+      gm.lastLabel = g.label
       changed = true
     }
     let vg = vgroups[g.id]
