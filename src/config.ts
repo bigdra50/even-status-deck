@@ -3,13 +3,19 @@ import { MAX_ROWS } from './glass-types'
 import { defaultImuConfig, type ImuConfig } from './imu'
 import type { StatusDoc } from './status-types'
 import { defaultCategory } from './taxonomy'
-import { segKey, type VisibilityCond, type VisibilityLeaf } from './visibility/keys'
+import {
+  type CondDisplay,
+  type DisplayUi,
+  segKey,
+  type VisibilityCond,
+  type VisibilityLeaf,
+} from './visibility/keys'
 
 // 設定 (v4): 素材 (sources / groups) とレシピ (profiles) の 2 層構成。
 // 素材 = 接続先と metric の素性 (存在・format・閾値条件) を状況に依らず 1 つだけ持つ。
 // レシピ = profile.view が「何を出すか・どう並べるか・10 行にどう置くか」を状況ごとに持つ。
 // Phase 1 (MVP) は Default profile 1 個 (id 'default') に v3 の全構成を収容し activeProfileId 固定。
-export const CONFIG_VERSION = 4
+export const CONFIG_VERSION = 5
 export const BUILTIN_SOURCE_ID = 'builtin.local'
 // 暗黙の既定サーバ (同一オリジン) の決定的 ID。起動毎にランダム ID で再追加すると groupOrder が
 // 孤立蓄積するため、固定 ID にして二重 init / 再起動でも同一ソースに収束させる。
@@ -53,6 +59,11 @@ export function customLabelId(key: string): string {
 }
 export function genLabelId(): string {
   return `cl_${genSourceId().slice(0, 8)}`
+}
+
+// 意図的マルチページの安定 page id (複製/並べ替え/インジケータ用)。backfill 既定は 'page-1'。
+export function genPageId(): string {
+  return `page_${genSourceId().slice(0, 8)}`
 }
 
 // 行内の左右クラスタ区切り (iOS ステータスバー型)。rows[i] にこの予約キーを 1 つ置くと
@@ -156,11 +167,20 @@ export type GlassLayout = {
   customLabels: Record<string, { text: string }> // ユーザー定義ラベルの本文 (id -> text)
 }
 
+// 意図的マルチページ (explicit デッキ) の 1 ページ。layout = そのページの 10 行スロット。
+// id: 安定 id (複製/並べ替え/インジケータ用)。name: companion 表示用 (グラスには既定で出さない)。
+export type GlassPage = {
+  id: string
+  name: string
+  layout: GlassLayout
+}
+
 // profile の view (レシピ)。可視性・並び・10 行配置を状況ごとに持つ。
 export type ProfileView = {
   groups: Record<string, Record<string, ViewGroup>> // sourceId -> groupId -> ViewGroup
   groupOrder: GroupRef[] // 全ソース横断の表示順
-  glassLayout?: GlassLayout // 未設定なら group=1行 自動描画
+  glassLayout?: GlassLayout // legacy: 未設定なら group=1行 自動描画。pages 移行後は読込互換で残す
+  pages?: GlassPage[] // explicit デッキ (意図的マルチページ)。未設定 = auto デッキ or glassLayout 1 枚
 }
 
 // profile = 状況セット。enabledSourceIds は fetch/表示する source の範囲。
@@ -285,6 +305,14 @@ export function activeView(cfg: Config): ProfileView {
   return activeProfile(cfg).view
 }
 
+// explicit デッキを解決する。pages 優先、無ければ glassLayout を 1 枚として吸収、両方無しは空 (=auto デッキ)。
+// auto デッキ (summary+detail) は render-time 仮想ページなので呼び出し側 (buildRuntimePages) が生成する。
+export function resolvePages(view: ProfileView): GlassPage[] {
+  if (view.pages?.length) return view.pages
+  if (view.glassLayout) return [{ id: 'page-1', name: 'Page 1', layout: view.glassLayout }]
+  return []
+}
+
 // active profile の enabledSourceIds に含まれる source (builtin 含む) だけを返す (fetch 範囲)。
 // store はこれを fetch 対象にする。MVP は Default=全 source なので結果は cfg.sources と同じ。
 export function enabledSources(cfg: Config): SourceDef[] {
@@ -383,6 +411,7 @@ function ensureBuiltin(cfg: Config): void {
       p.enabledSourceIds.unshift(BUILTIN_SOURCE_ID)
   }
   migrateBuiltinGroups(cfg)
+  ensureBuiltinSegments(cfg)
 }
 
 // 統合 client source "Location" (現在地ベース)。SDK に GPS が無いため位置は companion WebView の
@@ -511,6 +540,10 @@ export function removePlace(cfg: Config, id: string): boolean {
     if (vg) delete vg.segments[id]
     const lay = prof.view.glassLayout
     if (lay) lay.rows = lay.rows.map((row) => row.filter((k) => k !== key))
+    // explicit デッキ各ページからも削除 place chip を除去 (dangling 防止)。
+    for (const page of prof.view.pages ?? []) {
+      page.layout.rows = page.layout.rows.map((row) => row.filter((k) => k !== key))
+    }
     // 削除 place に bind された preset の geofence 連動も外す(#43。dangling 参照を残さない)。
     if (prof.geofence?.placeId === id) prof.geofence = undefined
   }
@@ -553,6 +586,41 @@ function migrateBuiltinGroups(cfg: Config): void {
   ]
   if (idx >= 0) view.groupOrder.splice(idx, 0, ...refs)
   else view.groupOrder.unshift(...refs)
+}
+
+// builtin (clock/g2) は code 所有の固定 capability。data 駆動の sync を待たず素材メタへ静的 seed する。
+// これにより companion Items が放電データ未蓄積でも rate/eta を発見・トグル・配置・条件設定でき、
+// glass は live status に存在する segment だけを描く責務分離を保つ (StatusDoc は実データのみ)。
+// idempotent: 既存 segment/順序は温存し、不足分のみ canonical 順で補う。category は sync と同じ
+// defaultCategory で seed (g2|level=battery / g2|rate=power_rate / g2|eta=duration)。
+const BUILTIN_SEG_SEED: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ['clock', ['datetime']],
+  ['g2', ['level', 'rate', 'eta']],
+]
+function ensureBuiltinSegments(cfg: Config): void {
+  const groups = cfg.groups[BUILTIN_SOURCE_ID]
+  if (!groups) return
+  const view = activeView(cfg)
+  view.groups[BUILTIN_SOURCE_ID] ??= {}
+  const vgroups = view.groups[BUILTIN_SOURCE_ID]
+  const missing: GroupRef[] = []
+  for (const [gid, segIds] of BUILTIN_SEG_SEED) {
+    let gm = groups[gid]
+    if (!gm) {
+      gm = { segments: [] }
+      groups[gid] = gm
+    }
+    for (const sid of segIds) {
+      if (!gm.segments.some((s) => s.id === sid)) {
+        gm.segments.push({ id: sid, category: defaultCategory(gid, sid) })
+      }
+    }
+    vgroups[gid] ??= { enabled: true, showDefaultLabel: defaultShowGroupLabel(gid), segments: {} }
+    if (!view.groupOrder.some((r) => r.sourceId === BUILTIN_SOURCE_ID && r.groupId === gid)) {
+      missing.push({ sourceId: BUILTIN_SOURCE_ID, groupId: gid })
+    }
+  }
+  if (missing.length) view.groupOrder.unshift(...missing) // builtin は先頭。clock→g2 の順を維持
 }
 
 export function emptyConfig(): Config {
@@ -634,15 +702,16 @@ type OldMachine = {
   sources?: Record<string, { enabled?: boolean; expanded?: boolean; metrics?: OldSegCfg[] }>
 }
 
-// 任意 version の生 config を v4 へ移行する。export は単体テスト用(loadConfig は bridge 依存で叩けない)。
+// 任意 version の生 config を v5 へ移行する。export は単体テスト用(loadConfig は bridge 依存で叩けない)。
 export function migrate(parsed: Record<string, unknown>): Config {
-  if (parsed.version === CONFIG_VERSION) return migrateV4Same(parsed as unknown as Config)
-  if (parsed.version === 3) return migrateV3ToV4(parsed as unknown as V3Config)
-  return migrateLegacyToV4(parsed)
+  if (parsed.version === CONFIG_VERSION) return migrateV5Same(parsed as unknown as Config)
+  if (parsed.version === 4) return migrateV5Same(parsed as unknown as Config) // v4→v5 は additive 同型 (backfillPages が pages を生やす)
+  if (parsed.version === 3) return migrateV3ToV5(parsed as unknown as V3Config)
+  return migrateLegacyToV5(parsed)
 }
 
-// v4 同バージョン: additive 正規化を流す (素材/profile 構造は既に整っている前提)。
-function migrateV4Same(c: Config): Config {
+// v4/v5 同型: additive 正規化を流す (素材/profile 構造は既に整っている前提)。pages は backfillPages が補完。
+function migrateV5Same(c: Config): Config {
   c.profiles ??= []
   if (!c.profiles.length) c.profiles.push(emptyDefaultProfile())
   c.activeProfileId ??= c.profiles[0]?.id ?? DEFAULT_PROFILE_ID
@@ -664,7 +733,9 @@ function migrateV4Same(c: Config): Config {
   consolidateClock(c)
   normalizeRemovedViews(c) // tombstone を間引き (壊れていれば破棄)
   normalizeDisplayMeta(c) // 表示モデル Phase1。group id remap の「後」に呼ぶこと (下記ヘルパ参照)
-  pruneOrphans(c)
+  for (const p of c.profiles) backfillPages(p.view) // glassLayout→pages[0] 投影。全 glassLayout remap の後・prune の前
+  pruneOrphans(c) // pages[].layout の orphan source chip も掃除
+  c.version = CONFIG_VERSION
   return c
 }
 
@@ -933,7 +1004,7 @@ function normalizeRemovedViews(c: Config): void {
   else pruneRemovedViews(c)
 }
 
-// v3 (素材と表示が混在・単一構成) -> v4。全構成を Default profile の view + enabledSourceIds へ収容する。
+// v3 (素材と表示が混在・単一構成) -> v5。全構成を Default profile の view + enabledSourceIds へ収容する。
 type V3Config = {
   version: number
   sources?: Array<{ id: string; kind: SourceKind; label: string; url?: string }>
@@ -942,7 +1013,7 @@ type V3Config = {
   glassLayout?: unknown
   imu?: ImuConfig
 }
-function migrateV3ToV4(old: V3Config): Config {
+function migrateV3ToV5(old: V3Config): Config {
   const cfg = emptyConfig()
   cfg.imu = old.imu ?? cfg.imu
   // sources: url? を urls[0] へ正規化 (MVP は urls を正)。
@@ -981,7 +1052,8 @@ function migrateV3ToV4(old: V3Config): Config {
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
   consolidateClock(cfg)
-  normalizeDisplayMeta(cfg) // 表示モデル Phase1: clock 統合の後に category 等を seed (v4Same と同経路)
+  normalizeDisplayMeta(cfg) // 表示モデル Phase1: clock 統合の後に category 等を seed (v5Same と同経路)
+  for (const p of cfg.profiles) backfillPages(p.view) // glassLayout→pages[0] 投影
   pruneOrphans(cfg)
   return cfg
 }
@@ -1014,8 +1086,8 @@ function splitGroupsInto(
   }
 }
 
-// v1/v2 (machines マップ) -> v4。素材 + Default profile view を直接構築する。
-function migrateLegacyToV4(parsed: Record<string, unknown>): Config {
+// v1/v2 (machines マップ) -> v5。素材 + Default profile view を直接構築する。
+function migrateLegacyToV5(parsed: Record<string, unknown>): Config {
   const old = parsed as { machines?: Record<string, OldMachine> }
   const cfg = emptyConfig()
   const def = activeProfile(cfg)
@@ -1051,7 +1123,8 @@ function migrateLegacyToV4(parsed: Record<string, unknown>): Config {
   normalizePlaces(cfg)
   normalizeMetaVisibilityAll(cfg)
   for (const p of cfg.profiles) normalizeProfileView(p)
-  normalizeDisplayMeta(cfg) // 表示モデル Phase1: legacy 経路でも category 等を seed (v4Same と同一)
+  normalizeDisplayMeta(cfg) // 表示モデル Phase1: legacy 経路でも category 等を seed (v5Same と同一)
+  for (const p of cfg.profiles) backfillPages(p.view) // glassLayout→pages[0] 投影
   pruneOrphans(cfg)
   return cfg
 }
@@ -1067,28 +1140,64 @@ function sanitizeLeaf(x: unknown): VisibilityLeaf | null {
   if (!x || typeof x !== 'object') return null
   const o = x as Record<string, unknown>
   if (o.kind === 'threshold' && (o.op === 'lte' || o.op === 'gte') && typeof o.value === 'number') {
-    return { kind: 'threshold', op: o.op, value: o.value }
+    const leaf: VisibilityLeaf = { kind: 'threshold', op: o.op, value: o.value }
+    if (typeof o.seg === 'string' && o.seg !== '') leaf.seg = o.seg // 対象 = 同 group 内の兄弟。空=self
+    return leaf
   }
   if (o.kind === 'onChange' && typeof o.holdMs === 'number') {
-    return { kind: 'onChange', holdMs: o.holdMs }
+    const leaf: VisibilityLeaf = { kind: 'onChange', holdMs: o.holdMs }
+    if (typeof o.seg === 'string' && o.seg !== '') leaf.seg = o.seg
+    return leaf
   }
   if (o.kind === 'inPlace' && typeof o.placeId === 'string' && o.placeId !== '') {
     const leaf: VisibilityLeaf = { kind: 'inPlace', placeId: o.placeId }
     if (o.outside === true) leaf.outside = true
     return leaf
   }
+  if (o.kind === 'present' && typeof o.seg === 'string' && o.seg !== '') {
+    const leaf: VisibilityLeaf = { kind: 'present', seg: o.seg }
+    if (o.absent === true) leaf.absent = true
+    return leaf
+  }
   return null
+}
+
+const DISPLAY_UIS: ReadonlySet<string> = new Set(['toast', 'notification'])
+const MAX_DISPLAY_TEXT_LEN = 80
+const MIN_DISPLAY_MS = 1000
+const MAX_DISPLAY_MS = 60_000
+
+// 提示先 (display) を sanitize する。ui が既知でなければ undefined (= inline persistent に戻る)。
+// 旧 banner/dialog は許可リスト外なので落ち、inline に戻る。text は trim + 上限。
+// durationMs は 1..60s に clamp (自動非表示の秒数)。
+function sanitizeCondDisplay(x: unknown): CondDisplay | undefined {
+  if (!x || typeof x !== 'object') return undefined
+  const o = x as Record<string, unknown>
+  if (typeof o.ui !== 'string' || !DISPLAY_UIS.has(o.ui)) return undefined
+  const out: CondDisplay = { ui: o.ui as DisplayUi }
+  if (typeof o.text === 'string') {
+    const t = o.text.trim().slice(0, MAX_DISPLAY_TEXT_LEN)
+    if (t) out.text = t
+  }
+  if (typeof o.durationMs === 'number' && Number.isFinite(o.durationMs)) {
+    out.durationMs = Math.max(MIN_DISPLAY_MS, Math.min(Math.round(o.durationMs), MAX_DISPLAY_MS))
+  }
+  return out
 }
 
 // segment の visibility を複合形式へ正規化する。新形式は leaf を sanitize、空なら undefined。
 // 旧 single-cond ({kind:'always'|'threshold'|'onChange'}) は複合形式へ移行 (always=undefined)。
+// display は additive。条件が空のとき display は無意味なので落とす (= inline persistent)。
 function normalizeVisibility(v: unknown): VisibilityCond | undefined {
   if (!v || typeof v !== 'object') return undefined
   const o = v as Record<string, unknown>
   if (Array.isArray(o.conditions)) {
     const conditions = o.conditions.map(sanitizeLeaf).filter((l): l is VisibilityLeaf => l !== null)
     if (conditions.length === 0) return undefined
-    return { combinator: o.combinator === 'or' ? 'or' : 'and', conditions }
+    const out: VisibilityCond = { combinator: o.combinator === 'or' ? 'or' : 'and', conditions }
+    const display = sanitizeCondDisplay(o.display)
+    if (display) out.display = display
+    return out
   }
   if (o.kind === 'always') return undefined
   const leaf = sanitizeLeaf(o)
@@ -1315,7 +1424,36 @@ export function setProfileGeofence(
   return true
 }
 
-// ProfileView を deep copy する (複製時の参照共有を断つ)。ViewGroup / GroupRef / GlassLayout
+// GlassLayout を deep copy する (rows の各行配列と customLabels を新規化)。
+function cloneGlassLayout(lay: GlassLayout): GlassLayout {
+  const customLabels: Record<string, { text: string }> = {}
+  for (const [id, v] of Object.entries(lay.customLabels)) customLabels[id] = { text: v.text }
+  return { rows: lay.rows.map((r) => [...r]), customLabels }
+}
+
+// glassLayout を pages[0] へ additive 投影する。pages 既存なら id/name 補完・空 layout 除去・各 layout 正規化のみ。
+// 重要: 全 glassLayout remap (location merge / clock 統合 / mac→system 等) の「後」に呼ぶこと。
+// pages[0].layout は glassLayout の clone (参照共有しない = editor が両方を書き換える二重真実を防ぐ)。
+// glassLayout (legacy) は読込互換で残す。pages があれば以後 render は pages を見る (resolvePages)。
+function backfillPages(view: ProfileView): void {
+  if (view.pages?.length) {
+    const out: GlassPage[] = []
+    view.pages.forEach((p, i) => {
+      const layout = normalizeGlassLayout(p?.layout)
+      if (!layout) return
+      const id = typeof p?.id === 'string' && p.id ? p.id : `page-${i + 1}`
+      const name = typeof p?.name === 'string' && p.name ? p.name : `Page ${i + 1}`
+      out.push({ id, name, layout })
+    })
+    view.pages = out.length ? out : undefined
+    return
+  }
+  if (view.glassLayout) {
+    view.pages = [{ id: 'page-1', name: 'Page 1', layout: cloneGlassLayout(view.glassLayout) }]
+  }
+}
+
+// ProfileView を deep copy する (複製時の参照共有を断つ)。ViewGroup / GroupRef / GlassLayout / pages
 // すべて新規オブジェクトにし、複製後の編集が元 profile に波及しないようにする。
 function cloneView(view: ProfileView): ProfileView {
   const groups: Record<string, Record<string, ViewGroup>> = {}
@@ -1329,12 +1467,13 @@ function cloneView(view: ProfileView): ProfileView {
     groups,
     groupOrder: view.groupOrder.map((r) => ({ ...r })),
   }
-  if (view.glassLayout) {
-    const customLabels: Record<string, { text: string }> = {}
-    for (const [id, v] of Object.entries(view.glassLayout.customLabels)) {
-      customLabels[id] = { text: v.text }
-    }
-    next.glassLayout = { rows: view.glassLayout.rows.map((r) => [...r]), customLabels }
+  if (view.glassLayout) next.glassLayout = cloneGlassLayout(view.glassLayout)
+  if (view.pages) {
+    next.pages = view.pages.map((p) => ({
+      id: p.id,
+      name: p.name,
+      layout: cloneGlassLayout(p.layout),
+    }))
   }
   return next
 }
@@ -1425,8 +1564,6 @@ function normalizeGlassLayout(x: unknown): GlassLayout | undefined {
 // glassLayout の旧キーを datetime へ remap する (重複は 1 つに)。
 function consolidateClock(c: Config): void {
   const clock = c.groups[BUILTIN_SOURCE_ID]?.clock
-  const view = activeView(c)
-  const vg = view.groups[BUILTIN_SOURCE_ID]?.clock
   if (clock) {
     const timeSeg = clock.segments.find((s) => s.id === 'time')
     const dateSeg = clock.segments.find((s) => s.id === 'date')
@@ -1437,21 +1574,29 @@ function consolidateClock(c: Config): void {
       const sm: SegMeta = { id: 'datetime' }
       if (fmt) sm.format = fmt
       clock.segments.push(sm)
-      if (vg) {
-        const tEn = vg.segments.time
-        const dEn = vg.segments.date
-        vg.segments.datetime ??= tEn != null || dEn != null ? !!(tEn || dEn) : true
-      }
     }
     // 既存 datetime は format をそのまま保持 (上書きしない)
     clock.segments = clock.segments.filter((s) => s.id !== 'time' && s.id !== 'date')
   }
-  if (vg) {
-    delete vg.segments.time
-    delete vg.segments.date
+  // 全 profile の view(segment 可視性 + glassLayout + pages)を datetime へ畳む。
+  // active 限定だと非 active profile に旧 time/date key が残り、切替時に時計 chip が消える。
+  for (const p of c.profiles) {
+    const vg = p.view.groups[BUILTIN_SOURCE_ID]?.clock
+    if (vg) {
+      const tEn = vg.segments.time
+      const dEn = vg.segments.date
+      vg.segments.datetime ??= tEn != null || dEn != null ? !!(tEn || dEn) : true
+      delete vg.segments.time
+      delete vg.segments.date
+    }
+    if (p.view.glassLayout) consolidateClockRows(p.view.glassLayout)
+    // backfill 前なので壊れた pages (layout=null 等) を含みうる。null は backfillPages が後段で除去する。
+    for (const page of p.view.pages ?? []) if (page?.layout) consolidateClockRows(page.layout)
   }
-  const lay = view.glassLayout
-  if (!lay) return
+}
+
+// glassLayout の rows から旧 clock|time/date を datetime へ畳む (各 layout で 1 箇所のみ・重複排除)。
+function consolidateClockRows(lay: GlassLayout): void {
   const oldKeys = new Set([`${BUILTIN_SOURCE_ID}|clock|time`, `${BUILTIN_SOURCE_ID}|clock|date`])
   const dtKey = `${BUILTIN_SOURCE_ID}|clock|datetime`
   let seen = false // datetime は 1 箇所のみ (旧 time/date が別行にあっても先頭へ集約)
@@ -1516,6 +1661,10 @@ function discardSource(cfg: Config, id: string): void {
     p.view.groupOrder = p.view.groupOrder.filter((r) => r.sourceId !== id)
     const lay = p.view.glassLayout
     if (lay) lay.rows = lay.rows.map((row) => row.filter((k) => k.split('|')[0] !== id))
+    // explicit デッキ各ページからも当該 source chip を除去 (削除後の幽霊 chip を残さない)。
+    for (const page of p.view.pages ?? []) {
+      page.layout.rows = page.layout.rows.map((row) => row.filter((k) => k.split('|')[0] !== id))
+    }
   }
 }
 
@@ -1600,6 +1749,11 @@ function reKeySource(cfg: Config, oldId: string, newId: string): void {
     for (const r of p.view.groupOrder) if (r.sourceId === oldId) r.sourceId = newId
     const lay = p.view.glassLayout
     if (lay) lay.rows = lay.rows.map((row) => row.map((k) => reKeySegKey(k, oldId, newId)))
+    // explicit デッキ各ページの segKey も新 id へ付け替える (配置を保つ)。
+    for (const page of p.view.pages ?? []) {
+      if (!page?.layout) continue
+      page.layout.rows = page.layout.rows.map((row) => row.map((k) => reKeySegKey(k, oldId, newId)))
+    }
   }
 }
 
@@ -1640,6 +1794,7 @@ function mergeSourceViewInto(cfg: Config, fromId: string, toId: string): void {
       }
     }
     mergeGlassRows(p.view.glassLayout, fromId, toId)
+    for (const page of p.view.pages ?? []) mergeGlassRows(page.layout, fromId, toId)
   }
 }
 
@@ -1774,7 +1929,19 @@ function pruneOrphans(cfg: Config): void {
     for (const sid of Object.keys(p.view.groups)) {
       if (!ids.has(sid)) delete p.view.groups[sid]
     }
+    // explicit デッキ: pages[].layout の segKey が指す orphan source chip を掃除 (custom label/@right は残す)。
+    // glassLayout (legacy) の rows は従来どおり掃除しない (回帰最小。render は pages を見る)。
+    for (const page of p.view.pages ?? []) {
+      page.layout.rows = page.layout.rows.map((row) => row.filter((k) => keepLayoutKey(k, ids)))
+    }
   }
+}
+
+// layout row の key を残すか判定する。segKey (sourceId|...) は source 存在時のみ残す。
+// custom label (@customLabel:) / @right / 非 segKey は常に残す。
+function keepLayoutKey(key: string, sourceIds: Set<string>): boolean {
+  if (!key.includes('|')) return true
+  return sourceIds.has(key.split('|')[0] ?? '')
 }
 
 // status を該当ソースの素材 + active profile の view に反映する。新規 group/segment は素材へ追加し、

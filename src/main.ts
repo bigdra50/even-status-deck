@@ -1,5 +1,5 @@
 import { waitForEvenAppBridge } from '@evenrealities/even_hub_sdk'
-import { mountCompanion, onCompanionBridgeReady, setCompanionBridge } from './companion'
+import { mountCompanion, onCompanionBridgeReady } from './companion'
 import { setConfigBridge } from './config'
 import { initGlass } from './glass'
 import './styles.css'
@@ -14,7 +14,6 @@ async function main() {
   try {
     const bridge = await waitForEvenAppBridge()
     setConfigBridge(bridge)
-    setCompanionBridge(bridge) // User プローブ (getUserInfo) 用にコンソールへ渡す
     await onCompanionBridgeReady() // 永続 config を読み直し前回の接続先を復元
     await initGlass(bridge) // glass に summary/claude/codex を SDK 描画
   } catch {

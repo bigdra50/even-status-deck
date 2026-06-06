@@ -89,7 +89,14 @@ function dispatchOverlay(e: OverlayEvent, replyUrl: string): void {
       replyUrl,
     }
   } else {
-    detail = { kind: 'notification', app: e.app ?? '', sender: e.sender ?? '', body: e.body ?? '' }
+    // durationMs 指定の host 通知は自動消去させる (未指定=手動既読のまま)。
+    detail = {
+      kind: 'notification',
+      app: e.app ?? '',
+      sender: e.sender ?? '',
+      body: e.body ?? '',
+      durationMs: e.durationMs,
+    }
   }
   window.dispatchEvent(new CustomEvent('toolbar:overlay', { detail }))
 }

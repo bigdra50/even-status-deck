@@ -1,4 +1,3 @@
-import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
 import Sortable from 'sortablejs'
 import { localStatus } from './builtins'
 import {
@@ -19,9 +18,11 @@ import {
   emptyConfig,
   ensureDefaultServer,
   type GlassLayout,
+  type GlassPage,
   type GroupRef,
   generateGlassLayout,
   genLabelId,
+  genPageId,
   groupDisplayName,
   isCustomLabelKey,
   isRightDivider,
@@ -93,10 +94,11 @@ import {
   subscribe,
 } from './store'
 import { type ProfileSuggestion, suggestProfile, suggestProfileByGeofence } from './suggest'
-import { computeVisible, segKey, type VisibilityLeaf } from './visibility'
+import { createVisibilityRuntime, type DisplayUi, segKey, type VisibilityLeaf } from './visibility'
 
 // 1 segment が持てる条件 leaf の上限 (UI が破綻しない緩い上限)。
 const MAX_CONDS = 4
+const DEFAULT_DISPLAY_SECS = 5 // 提示 (toast/notification) の既定 自動非表示秒数
 
 // companion (スマホ WebView) の Home / Source 編集。複数ソースを横断して設定する。
 // source-detail: 新 IA のドリルダウン先 (その source の group/segment 設定。flat Items を置換)。
@@ -117,6 +119,8 @@ let testUrl = ''
 
 // glass layout の編集モード (GLASS PREVIEW を WYSIWYG 編集面にする / 普段は view)。
 let layoutEditing = false
+// explicit デッキ編集中の対象ページ index (pages[pageEditingIdx])。profile 跨ぎでリセット。
+let pageEditingIdx = 0
 
 // ── Phase 4: プリセット切替の提案 (接続検出ベース。自動適用はしない) ──
 // このセッション中に却下した提案 profileId。一度 dismiss した profile は同セッションで再提示しない。
@@ -134,12 +138,6 @@ const DBG_MAX = 500 // 保持する最大行数 (古いものから捨てる)
 let dbgOpen = false // 既定は折りたたみ
 let dbgFilter = ''
 let dbgHooked = false
-// User プローブ (bridge.getUserInfo) 用。bridge 接続後に main.ts から注入される。
-let probeBridge: EvenAppBridge | null = null
-
-export function setCompanionBridge(b: EvenAppBridge): void {
-  probeBridge = b
-}
 
 // builtin (clock/g2) は config の format/widthChars を反映した live 値で上書きする
 // (store の builtin は config 非依存の既定値なので、プレビュー/Items を選択に追従させる)。
@@ -227,18 +225,33 @@ function applyGroupDisplayNames(): boolean {
 // ── プレビュー ──
 // custom (glassLayout あり): 固定行を絶対位置で描画 (空行も保持。上詰め/下詰めは無い)。
 // auto (未カスタマイズ): 従来の group=1行 + top/bottom 詰め。glass には操作ヒントを出さない。
+// preview 専用の visibility runtime。glass と state/timer を分離する (edge 取りこぼし防止)。
+// wake=false: preview は store 更新で再評価されるので窓終了タイマーは張らない (二重 poke 回避)。
+const previewVisibility = createVisibilityRuntime({ wake: false })
+
+// 現在編集中ページ (pageEditingIdx) の layout。auto デッキ (pages 未設定) なら undefined。
+function editingLayout(): GlassLayout | undefined {
+  return activeView(config).pages?.[pageEditingIdx]?.layout
+}
+
+// 空の glass layout (新規ページ用。全行空・customLabels なし)。
+function emptyGlassLayout(): GlassLayout {
+  return { rows: Array.from({ length: MAX_ROWS }, () => []), customLabels: {} }
+}
+
 function glassPreviewHtml(): string {
-  const visible = computeVisible(config, getRenderableStatuses())
+  const visible = previewVisibility.compute(config, getRenderableStatuses()).map
   const d = glassData()
   const grow = (l: string) => `<span class="grow">${l ? esc(l) : '&nbsp;'}</span>`
-  if (activeView(config).glassLayout) {
+  const lay = editingLayout()
+  if (lay) {
     // 各行を左右クラスタで表示。右クラスタがあれば flex space-between で右端へ寄せる
     // (実機の space 近似と違い、プレビューは px 量子化せず正確に左右配置する)。
     const row = ({ left, right }: { left: string; right: string }) =>
       right
         ? `<div class="grow gjust"><span>${left ? esc(left) : ''}</span><span class="gj-r">${esc(right)}</span></div>`
         : grow(left)
-    return `<div class="glass-screen">${layoutRowClusters(d, visible, MAX_ROWS).map(row).join('')}</div>`
+    return `<div class="glass-screen">${layoutRowClusters(lay, d, visible, MAX_ROWS).map(row).join('')}</div>`
   }
   const { top, bottom } = summarySections(d, visible)
   if (top.length + bottom.length === 0) top.push('(no metric)')
@@ -285,37 +298,105 @@ function leafInPlaceParams(a: string, leaf: Extract<VisibilityLeaf, { kind: 'inP
     </select>`
 }
 
-// 1 leaf 行 (kind select + params + 削除ボタン)。threshold は percent を持つ segment のみ候補。
-// 既存 threshold leaf は percent が無くても候補に残す (data 移行後の編集を壊さない)。inPlace(#43) は保存地点がある時。
-function leafRow(seg2: string, leaf: VisibilityLeaf, i: number, hasPct: boolean): string {
+// 表示条件の対象 segment 候補 (同 group 内)。label は表示用、hasPct は live で percent を持つか
+// (threshold 候補の判定に使う)。母集合は素材 (meta.segments)、percent は live status から補う。
+type SegChoice = { id: string; label: string; hasPct: boolean }
+function segChoicesFor(ref: GroupRef): SegChoice[] {
+  const metaSegs = config.groups[ref.sourceId]?.[ref.groupId]?.segments ?? []
+  const liveG = statusGroup(ref.sourceId, ref.groupId)
+  const isB = ref.sourceId === BUILTIN_SOURCE_ID
+  return metaSegs.map((s) => {
+    const live = liveG?.segments.find((x) => x.id === s.id)
+    const label = isB ? (BUILTIN_SEG_LABELS[s.id] ?? s.id) : live?.label || s.id
+    return { id: s.id, label, hasPct: typeof live?.percent === 'number' }
+  })
+}
+
+// 対象 segment select。選択中 id が候補に無くても (live 消失等) option を補い選択を保持する。
+// selfId 指定時はその option に "(this)" を付す (self を選ぶと保存側は seg を省略する)。
+function targetSelect(a: string, choices: SegChoice[], selected: string, selfId?: string): string {
+  const list = choices.some((c) => c.id === selected)
+    ? choices
+    : [...choices, { id: selected, label: selected || '?', hasPct: false }]
+  const opts = list
+    .map(
+      (c) =>
+        `<option value="${esc(c.id)}" ${c.id === selected ? 'selected' : ''}>${esc(c.label)}${selfId && c.id === selfId ? ' (this)' : ''}</option>`,
+    )
+    .join('')
+  return `<select class="vis-select" data-action="seg-vis-leaf-seg" ${a}>${opts}</select>`
+}
+
+// leaf の params (kind 別)。threshold/onChange は対象 (self/兄弟) を選べる。present は兄弟必須。
+function leafParams(
+  a: string,
+  leaf: VisibilityLeaf,
+  choices: SegChoice[],
+  sibs: SegChoice[],
+  selfId: string,
+): string {
+  if (leaf.kind === 'inPlace') return leafInPlaceParams(a, leaf)
+  if (leaf.kind === 'present') {
+    const opts = sibs.length ? sibs : choices.filter((c) => c.id === leaf.seg)
+    return `${targetSelect(a, opts, leaf.seg)}
+      <select class="vis-select" data-action="seg-vis-leaf-absent" ${a}>
+        <option value="present" ${leaf.absent ? '' : 'selected'}>has value</option>
+        <option value="absent" ${leaf.absent ? 'selected' : ''}>is empty</option>
+      </select>`
+  }
+  if (leaf.kind === 'threshold') {
+    // 対象候補は percent を持つ segment (self/兄弟)。保存済み対象は targetSelect が補完する。
+    const pctChoices = choices.filter((c) => c.hasPct)
+    const tsel =
+      pctChoices.length >= 2 || leaf.seg
+        ? targetSelect(a, pctChoices, leaf.seg ?? selfId, selfId)
+        : ''
+    return `${tsel}<select class="vis-select" data-action="seg-vis-leaf-op" ${a}>
+        <option value="gte" ${leaf.op === 'gte' ? 'selected' : ''}>≥</option>
+        <option value="lte" ${leaf.op === 'lte' ? 'selected' : ''}>≤</option>
+      </select>
+      <input class="vis-num" type="number" min="0" max="100" data-action="seg-vis-leaf-value" ${a} value="${leaf.value}" />%`
+  }
+  // onChange: 兄弟があれば対象 select を出す (省略=self)。
+  const tsel = choices.length >= 2 ? targetSelect(a, choices, leaf.seg ?? selfId, selfId) : ''
+  return `${tsel}<input class="vis-num" type="number" min="1" max="60" data-action="seg-vis-leaf-hold" ${a} value="${Math.round(leaf.holdMs / 1000)}" />s`
+}
+
+// 1 leaf 行 (kind select + 対象/params + 削除ボタン)。threshold は同 group に percent を持つ segment が
+// ある時のみ候補。present は対象に別 segment が要るので兄弟がある時のみ。既存 leaf は条件を満たさなくても
+// 自分の kind を候補に残す (data 移行後の編集を壊さない)。inPlace(#43) は保存地点がある時。
+function leafRow(
+  seg2: string,
+  leaf: VisibilityLeaf,
+  i: number,
+  choices: SegChoice[],
+  selfId: string,
+  groupHasPct: boolean,
+): string {
   const a = `${seg2} data-idx="${i}"`
-  const allowThreshold = hasPct || leaf.kind === 'threshold'
+  const sibs = choices.filter((c) => c.id !== selfId)
+  const allowThreshold = groupHasPct || leaf.kind === 'threshold'
   const allowInPlace = (config.places?.length ?? 0) > 0 || leaf.kind === 'inPlace'
+  const allowPresent = sibs.length > 0 || leaf.kind === 'present'
   const kindSel = `<select class="vis-select" data-action="seg-vis-leaf-kind" ${a}>
     ${allowThreshold ? `<option value="threshold" ${leaf.kind === 'threshold' ? 'selected' : ''}>When…</option>` : ''}
     <option value="onChange" ${leaf.kind === 'onChange' ? 'selected' : ''}>On update</option>
+    ${allowPresent ? `<option value="present" ${leaf.kind === 'present' ? 'selected' : ''}>Has value</option>` : ''}
     ${allowInPlace ? `<option value="inPlace" ${leaf.kind === 'inPlace' ? 'selected' : ''}>At place</option>` : ''}
   </select>`
-  const params =
-    leaf.kind === 'threshold'
-      ? `<select class="vis-select" data-action="seg-vis-leaf-op" ${a}>
-          <option value="gte" ${leaf.op === 'gte' ? 'selected' : ''}>≥</option>
-          <option value="lte" ${leaf.op === 'lte' ? 'selected' : ''}>≤</option>
-        </select>
-        <input class="vis-num" type="number" min="0" max="100" data-action="seg-vis-leaf-value" ${a} value="${leaf.value}" />%`
-      : leaf.kind === 'inPlace'
-        ? leafInPlaceParams(a, leaf)
-        : `<input class="vis-num" type="number" min="1" max="60" data-action="seg-vis-leaf-hold" ${a} value="${Math.round(leaf.holdMs / 1000)}" />s`
+  const params = leafParams(a, leaf, choices, sibs, selfId)
   const del = `<button class="vis-del" data-action="seg-vis-remove" ${a} title="Remove" aria-label="Remove">${icon('x', { size: 14 })}</button>`
   return `<div class="vis-cond-row">${kindSel}${params}${del}</div>`
 }
 
-// segment 単位の表示タイミング条件エディタ (metric 行のサブ行)。metric は self (その segment 自身)。
+// segment 単位の表示タイミング条件エディタ (metric 行のサブ行)。対象は self または同 group 内の兄弟。
 // 条件は素材 (SegMeta.visibility。profile 非依存) を読み書きする。
 // leaf を AND/OR で複合。conditions 空 = 常時表示。2 件以上で combinator(All of/Any of) を出す。
-function segVisEditor(key: string, sm: SegMeta, seg: Segment): string {
+function segVisEditor(key: string, sm: SegMeta): string {
   const seg2 = `data-key="${key}" data-seg="${esc(sm.id)}"`
-  const hasPct = typeof seg.percent === 'number'
+  const ref = parseKey(key)
+  const choices = segChoicesFor(ref)
+  const groupHasPct = choices.some((c) => c.hasPct)
   const conditions = sm.visibility?.conditions ?? []
   const combinator = sm.visibility?.combinator ?? 'and'
   const head =
@@ -325,13 +406,33 @@ function segVisEditor(key: string, sm: SegMeta, seg: Segment): string {
           <option value="or" ${combinator === 'or' ? 'selected' : ''}>Any of</option>
         </select>`
       : `<span class="vis-always">${conditions.length === 0 ? 'always' : 'when'}</span>`
-  const rows = conditions.map((l, i) => leafRow(seg2, l, i, hasPct)).join('')
+  const rows = conditions.map((l, i) => leafRow(seg2, l, i, choices, sm.id, groupHasPct)).join('')
   const add =
     conditions.length < MAX_CONDS
       ? `<button class="vis-add" data-action="seg-vis-add" ${seg2}>${icon('plus', { size: 13 })} Add condition</button>`
       : ''
+  // 提示先。条件があるときのみ。Inline=現状の常時表示 / Toast・Notification は成立時に提示し自動非表示 (排他)。
+  // toast/notification とも自動消去するので秒数フィールドを出す (既定 DEFAULT_DISPLAY_SECS)。
+  const display = sm.visibility?.display
+  const secs = display?.durationMs ? Math.round(display.durationMs / 1000) : DEFAULT_DISPLAY_SECS
+  const displayRow =
+    conditions.length === 0
+      ? ''
+      : `<div class="vis-row" ${seg2}><span class="vis-label">Present</span>
+          <select class="vis-select" data-action="seg-vis-display-ui" ${seg2}>
+            <option value="" ${!display ? 'selected' : ''}>Inline (persistent)</option>
+            <option value="toast" ${display?.ui === 'toast' ? 'selected' : ''}>Toast</option>
+            <option value="notification" ${display?.ui === 'notification' ? 'selected' : ''}>Notification</option>
+          </select>
+          ${
+            display
+              ? `<input class="vis-num" type="number" min="1" max="60" data-action="seg-vis-display-secs" ${seg2} value="${secs}" title="Auto-hide seconds" />s
+                 <input class="vis-text" type="text" maxlength="80" placeholder="auto: label value" data-action="seg-vis-display-text" ${seg2} value="${esc(display.text ?? '')}" />`
+              : ''
+          }
+        </div>`
   return `<div class="vis-row" ${seg2}><span class="vis-label">Show</span>${head}</div>
-    <div class="vis-conds">${rows}${add}</div>`
+    <div class="vis-conds">${rows}${add}</div>${displayRow}`
 }
 
 // 表示オプションの汎用レンダラ (#36)。schema (OptionField[]) を select / toggle / number で描く。
@@ -397,8 +498,11 @@ function groupRow(ref: GroupRef): string {
   const metrics = vg.expanded
     ? `${srcOpts}<div class="src-metrics" data-key="${key}">${meta.segments
         .map((sm) => {
-          const seg = segById.get(sm.id)
-          if (!seg) return ''
+          // Items は設定面なので、live status に未出現の segment も meta にあれば行を描く
+          // (placeholder 値 '—')。トグル/並べ替え/配置/表示条件を事前設定できる。値は status のみ。
+          const live = segById.get(sm.id)
+          const seg: Segment = live ?? { id: sm.id, label: sm.displayLabel ?? '', value: '—' }
+          const missing = !live
           const enabled = vg.segments[sm.id] ?? true
           // segment 単位の表示オプション (#36)。clock の Time/Date/順序 もこの schema 経由で描く。
           const segFields = segmentOptionSchema(ref.sourceId, ref.groupId, sm.id)
@@ -411,12 +515,12 @@ function groupRow(ref: GroupRef): string {
                 resolveSegmentOptions(config, ref.sourceId, ref.groupId, sm.id),
               )
             : ''
-          return `<div class="metric"><div class="metric-row"><span class="mgrip">${icon('grip', { size: 16 })}</span>
+          return `<div class="metric${missing ? ' missing' : ''}"><div class="metric-row"><span class="mgrip">${icon('grip', { size: 16 })}</span>
               <span class="mname">${esc(isBuiltin ? (BUILTIN_SEG_LABELS[seg.id] ?? seg.id) : seg.label || seg.id)}</span>
               <span class="mval">${esc(seg.value)}</span>
               <button class="tg sm ${enabled ? 'on' : ''}" data-action="toggle-seg" data-key="${key}" data-seg="${esc(sm.id)}"></button></div>
             ${segOpts}
-            ${segVisEditor(key, sm, seg)}</div>`
+            ${segVisEditor(key, sm)}</div>`
         })
         .join('')}</div>`
     : ''
@@ -597,7 +701,7 @@ function allPlaceableKeys(): string[] {
     }
   }
   // ユーザー定義の custom ラベル
-  for (const id of Object.keys(view.glassLayout?.customLabels ?? {})) keys.push(customLabelKey(id))
+  for (const id of Object.keys(editingLayout()?.customLabels ?? {})) keys.push(customLabelKey(id))
   return keys
 }
 
@@ -612,7 +716,7 @@ function rowOverflow(items: string[]): boolean {
   let prevGroup: string | null = null
   for (const key of items) {
     if (isCustomLabelKey(key)) {
-      const text = view.glassLayout?.customLabels[customLabelId(key)]?.text ?? ''
+      const text = editingLayout()?.customLabels[customLabelId(key)]?.text ?? ''
       if (!text) continue
       total += text.length
       prevGroup = null
@@ -649,7 +753,7 @@ function wysChip(key: string): string {
   // custom ラベル: × は削除 (customLabels から除去)。値 chip の × は unplace。
   if (isCustomLabelKey(key)) {
     const id = customLabelId(key)
-    const text = activeView(config).glassLayout?.customLabels[id]?.text ?? ''
+    const text = editingLayout()?.customLabels[id]?.text ?? ''
     const del = `<button class="wys-x" data-action="label-delete" data-label-id="${esc(id)}" title="Delete label" aria-label="Delete label">${icon('x', { size: 10 })}</button>`
     return `<span class="wys-chip wys-label-chip wys-custom-chip" data-segkey="${esc(key)}" title="${esc(text)}">${grip}<span class="wys-txt">${esc(text)}</span>${del}</span>`
   }
@@ -738,10 +842,37 @@ function renderGlassAutoOrder(): string {
     <div id="source-list">${refs.map(groupOrderRow).join('')}</div>`
 }
 
-// Glass セクション: プレビュー一本。view は実機同等の連結テキスト、edit は WYSIWYG。
+// ページ tab 列: [Page1][Page2]…[+]。選択中をハイライト。クリックで選択 / + で追加。
+function renderPageTabs(pages: GlassPage[]): string {
+  const tabs = pages
+    .map((p, i) => {
+      const active = i === pageEditingIdx ? ' page-tab-active' : ''
+      return `<button class="page-tab${active}" data-action="page-select" data-page-idx="${i}" title="${esc(p.name)}">${esc(p.name)}</button>`
+    })
+    .join('')
+  const add = `<button class="page-tab page-add" data-action="page-add" title="Add page" aria-label="Add page">${icon('plus', { size: 14 })}</button>`
+  return `<div class="page-tabs">${tabs}${add}</div>`
+}
+
+// 編集中ページ (pageEditingIdx) の操作行: 名前 rename / 左右移動 / 削除。
+function renderPageControls(pages: GlassPage[]): string {
+  const cur = pages[pageEditingIdx]
+  if (!cur) return ''
+  const up = pageEditingIdx === 0 ? 'disabled' : ''
+  const down = pageEditingIdx >= pages.length - 1 ? 'disabled' : ''
+  const del = pages.length <= 1 ? 'disabled' : ''
+  return `<div class="page-ctl">
+      <input class="page-name-input" type="text" maxlength="24" value="${esc(cur.name)}" data-action="page-rename" data-page-idx="${pageEditingIdx}" placeholder="Page name" aria-label="Page name" />
+      <button class="gear-btn" data-action="page-move-up" title="Move left" aria-label="Move left" ${up}>${icon('chevron-left', { size: 14 })}</button>
+      <button class="gear-btn" data-action="page-move-down" title="Move right" aria-label="Move right" ${down}>${icon('chevron-right', { size: 14 })}</button>
+      <button class="gear-btn danger" data-action="page-remove" title="Delete page" aria-label="Delete page" ${del}>${icon('trash', { size: 14 })}</button>
+    </div>`
+}
+
+// Glass セクション: auto デッキ (pages 未設定) は従来 UI、explicit デッキはページ tab + 選択ページ編集。
 function renderGlassSection(): string {
-  const lay = activeView(config).glassLayout
-  if (!lay) {
+  const pages = activeView(config).pages
+  if (!pages?.length) {
     return `<div class="cmp-label cmp-label-row">Glass<span class="cmp-actions">
         <button class="gear-btn" data-action="layout-customize" title="Customize layout" aria-label="Customize layout">${icon('layout', { size: 16 })}</button>
         <button class="gear-btn" data-action="fs-open" title="Fullscreen edit (beta)" aria-label="Fullscreen edit">${icon('maximize', { size: 16 })}</button>
@@ -751,14 +882,20 @@ function renderGlassSection(): string {
       <div class="cmp-sub">One row per group. Customize layout to place items freely on the preview.</div>
       ${renderGlassAutoOrder()}`
   }
+  if (pageEditingIdx >= pages.length) pageEditingIdx = 0
+  const lay = pages[pageEditingIdx]?.layout ?? pages[0].layout
+  const multi = pages.length > 1
   if (layoutEditing) {
-    return `<div class="cmp-label cmp-label-row">Glass layout<button class="gear-btn" data-action="layout-edit-toggle" title="Done" aria-label="Done">${icon('check', { size: 16 })}</button></div>
+    return `<div class="cmp-label cmp-label-row">Glass pages<button class="gear-btn" data-action="layout-edit-toggle" title="Done" aria-label="Done">${icon('check', { size: 16 })}</button></div>
+      ${renderPageTabs(pages)}
+      ${renderPageControls(pages)}
       <div class="cmp-sub">Drag items to rows (1–${MAX_ROWS}) or the Unplaced shelf. Row number = position from top of glass.</div>
       ${renderGlassEdit(lay)}`
   }
-  return `<div class="cmp-label cmp-label-row">Glass<span class="cmp-actions"><button class="gear-btn" data-action="layout-edit-toggle" title="Edit layout" aria-label="Edit layout">${icon('layout', { size: 16 })}</button><button class="gear-btn" data-action="fs-open" title="Fullscreen edit" aria-label="Fullscreen edit">${icon('maximize', { size: 16 })}</button></span></div>
-    <div class="gpv"><div class="gpv-cap">G2 576×288</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
-    <div class="cmp-sub">Glass gestures: tap = summary / swipe = switch view / double-tap = exit</div>`
+  return `<div class="cmp-label cmp-label-row">Glass pages<span class="cmp-actions"><button class="gear-btn" data-action="layout-edit-toggle" title="Edit layout" aria-label="Edit layout">${icon('layout', { size: 16 })}</button><button class="gear-btn" data-action="fs-open" title="Fullscreen edit" aria-label="Fullscreen edit">${icon('maximize', { size: 16 })}</button></span></div>
+    ${renderPageTabs(pages)}
+    <div class="gpv"><div class="gpv-cap">G2 576×288${multi ? ` — page ${pageEditingIdx + 1}/${pages.length}` : ''}</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
+    <div class="cmp-sub">Glass gestures: swipe = next/prev page / tap = first page / double-tap = exit</div>`
 }
 
 // ── Phase 4: プリセット切替の提案 (バナー) ──
@@ -1271,8 +1408,8 @@ function attachSortables(): void {
 // 右ゾーンに chip があれば左ゾーンとの間に @right 区切りを挿む (前=左/後=右クラスタ)。
 // 棚 (data-shelf) の chip はどの行にも無い = 未配置 (次の描画で棚に導出される)。
 function recomputeWysFromDom(): void {
-  const view = activeView(config)
-  if (!view.glassLayout) return
+  const lay = editingLayout()
+  if (!lay) return
   const readZone = (i: number, zone: 'left' | 'right'): string[] => {
     const el = document.querySelector<HTMLElement>(
       `.wys-cell[data-row="${i}"][data-zone="${zone}"]`,
@@ -1287,7 +1424,8 @@ function recomputeWysFromDom(): void {
     const right = readZone(i, 'right')
     return right.length ? [...left, RIGHT_DIVIDER, ...right] : left
   })
-  view.glassLayout = { rows, customLabels: view.glassLayout.customLabels }
+  const page = activeView(config).pages?.[pageEditingIdx]
+  if (page) page.layout = { rows, customLabels: lay.customLabels }
   void saveConfig(config)
   render()
 }
@@ -1331,6 +1469,7 @@ function onSegReorder(key: string, oldIndex?: number, newIndex?: number): void {
 //   ここで明示的に active view へ反映してから描画する)。
 function applyProfileChange(): void {
   layoutEditing = false
+  pageEditingIdx = 0
   void saveConfig(config)
   syncAll() // 切替先 view を cached status から補充 (変化あれば内部で保存)
   setSourcesFromConfig(config)
@@ -1680,23 +1819,34 @@ async function onClick(e: MouseEvent): Promise<void> {
       layoutEditing = !layoutEditing
       render()
       break
-    case 'layout-customize':
-      activeView(config).glassLayout = generateGlassLayout(config)
+    case 'layout-customize': {
+      // auto → explicit: 現在の groupOrder から 1 ページ目を生成して編集モードへ。
+      activeView(config).pages = [
+        { id: genPageId(), name: 'Page 1', layout: generateGlassLayout(config) },
+      ]
+      pageEditingIdx = 0
       layoutEditing = true // 生成と同時に編集モードへ
       void saveConfig(config)
       render()
       break
-    case 'layout-reset':
-      activeView(config).glassLayout = undefined
+    }
+    case 'layout-reset': {
+      // explicit → auto: 全ページと legacy glassLayout を破棄して自動デッキへ戻す。
+      const view = activeView(config)
+      view.pages = undefined
+      view.glassLayout = undefined
+      pageEditingIdx = 0
       layoutEditing = false
       void saveConfig(config)
       render()
       break
+    }
     case 'fs-open': {
-      // フルスクリーン WYSIWYG エディタ (実験的)。custom layout 未生成なら生成して開く。
+      // フルスクリーン WYSIWYG エディタ (実験的)。explicit デッキ未生成なら 1 ページ目を作って開く。
       const view = activeView(config)
-      if (!view.glassLayout) {
-        view.glassLayout = generateGlassLayout(config)
+      if (!view.pages?.length) {
+        view.pages = [{ id: genPageId(), name: 'Page 1', layout: generateGlassLayout(config) }]
+        pageEditingIdx = 0
         void saveConfig(config)
       }
       openFsEditor()
@@ -1705,7 +1855,7 @@ async function onClick(e: MouseEvent): Promise<void> {
     case 'layout-item-remove': {
       // segment を全行から外す → 未配置 (Unplaced 棚) に導出される。
       const key = t.dataset.segkey
-      const lay = activeView(config).glassLayout
+      const lay = editingLayout()
       if (lay && key) {
         lay.rows = lay.rows.map((r) => r.filter((k) => k !== key))
         void saveConfig(config)
@@ -1717,7 +1867,7 @@ async function onClick(e: MouseEvent): Promise<void> {
       // 任意テキストのラベルを作成 (未配置棚に出る)。inline input から読む。
       const input = root?.querySelector<HTMLInputElement>('.lay-add-input')
       const text = (input?.value ?? '').trim().slice(0, 64)
-      const lay = activeView(config).glassLayout
+      const lay = editingLayout()
       if (lay && text) {
         lay.customLabels[genLabelId()] = { text }
         void saveConfig(config)
@@ -1728,11 +1878,72 @@ async function onClick(e: MouseEvent): Promise<void> {
     case 'label-delete': {
       // custom ラベルを完全削除 (customLabels から除去 + 全 rows の参照を除去)。
       const id = t.dataset.labelId
-      const lay = activeView(config).glassLayout
+      const lay = editingLayout()
       if (lay && id) {
         delete lay.customLabels[id]
         const k = customLabelKey(id)
         lay.rows = lay.rows.map((r) => r.filter((x) => x !== k))
+        void saveConfig(config)
+        render()
+      }
+      break
+    }
+    case 'page-select': {
+      const i = Number(t.dataset.pageIdx)
+      const pages = activeView(config).pages
+      if (pages && Number.isInteger(i) && i >= 0 && i < pages.length) {
+        pageEditingIdx = i
+        render()
+      }
+      break
+    }
+    case 'page-add': {
+      const view = activeView(config)
+      view.pages ??= []
+      view.pages.push({
+        id: genPageId(),
+        name: `Page ${view.pages.length + 1}`,
+        layout: emptyGlassLayout(),
+      })
+      pageEditingIdx = view.pages.length - 1
+      layoutEditing = true
+      void saveConfig(config)
+      render()
+      break
+    }
+    case 'page-remove': {
+      const pages = activeView(config).pages
+      if (pages && pages.length > 1 && pageEditingIdx < pages.length) {
+        pages.splice(pageEditingIdx, 1)
+        if (pageEditingIdx >= pages.length) pageEditingIdx = pages.length - 1
+        void saveConfig(config)
+        render()
+      }
+      break
+    }
+    case 'page-move-up': {
+      const pages = activeView(config).pages
+      const i = pageEditingIdx
+      const a = pages?.[i - 1]
+      const b = pages?.[i]
+      if (pages && a && b && i > 0) {
+        pages[i - 1] = b
+        pages[i] = a
+        pageEditingIdx = i - 1
+        void saveConfig(config)
+        render()
+      }
+      break
+    }
+    case 'page-move-down': {
+      const pages = activeView(config).pages
+      const i = pageEditingIdx
+      const a = pages?.[i]
+      const b = pages?.[i + 1]
+      if (pages && a && b && i < pages.length - 1) {
+        pages[i] = b
+        pages[i + 1] = a
+        pageEditingIdx = i + 1
         void saveConfig(config)
         render()
       }
@@ -1756,15 +1967,6 @@ async function onClick(e: MouseEvent): Promise<void> {
       updateDbgListDom()
       updateDbgCount()
       break
-    case 'probe-userinfo':
-      await probeUserInfo()
-      break
-    case 'probe-geo':
-      probeGeo()
-      break
-    case 'probe-ip':
-      await probeIp()
-      break
     default:
       break
   }
@@ -1779,7 +1981,20 @@ function onChange(e: Event): void {
   else if (action === 'opt-set') onOptionChange(e)
   else if (action === 'profile-geofence-place' || action === 'profile-geofence-mode')
     onGeofenceBindChange()
+  else if (action === 'page-rename') onPageRename(e)
   else onSegVisChange(e)
+}
+
+// ページ名の変更 (rename input の change)。現在編集中ページ (pageEditingIdx) に作用する。
+// render() しない (input フォーカスを保つ。値は DOM が保持)。
+function onPageRename(e: Event): void {
+  const t = e.target as HTMLInputElement
+  const raw = Number(t.dataset.pageIdx)
+  const i = Number.isInteger(raw) ? raw : pageEditingIdx
+  const page = activeView(config).pages?.[i]
+  if (!page) return
+  page.name = t.value.trim().slice(0, 24) || `Page ${i + 1}`
+  void saveConfig(config)
 }
 
 // #43 active preset のジオフェンス連動(place + mode)を保存する。place/mode の両 select を読む。
@@ -1851,6 +2066,29 @@ function applyOptionChange(ds: DOMStringMap, rawValue: unknown): void {
   render()
 }
 
+// kind 切替時の新 leaf 既定値。present は兄弟必須なので最初の兄弟を対象にする。
+// threshold は host が percent を持たない場合、同 group の percent を持つ兄弟を既定対象にする
+// (self だと percent 欠落で常に na になり機能しないため)。
+function newLeafOfKind(kind: string, ref: GroupRef, hostId: string): VisibilityLeaf {
+  if (kind === 'inPlace') return { kind: 'inPlace', placeId: config.places?.[0]?.id ?? '' }
+  if (kind === 'present') {
+    const sib = (config.groups[ref.sourceId]?.[ref.groupId]?.segments ?? [])
+      .map((s) => s.id)
+      .find((id) => id !== hostId)
+    return { kind: 'present', seg: sib ?? '' }
+  }
+  if (kind === 'threshold') {
+    const choices = segChoicesFor(ref)
+    const leaf: VisibilityLeaf = { kind: 'threshold', op: 'gte', value: 80 }
+    if (!choices.find((c) => c.id === hostId)?.hasPct) {
+      const tgt = choices.find((c) => c.hasPct && c.id !== hostId)?.id
+      if (tgt) leaf.seg = tgt
+    }
+    return leaf
+  }
+  return { kind: 'onChange', holdMs: 5000 }
+}
+
 function onSegVisChange(e: Event): void {
   const t = e.target as HTMLInputElement | HTMLSelectElement
   const action = t.dataset.action
@@ -1864,18 +2102,26 @@ function onSegVisChange(e: Event): void {
   const val = t.value
   if (action === 'seg-vis-combinator') {
     vis.combinator = val === 'or' ? 'or' : 'and'
+  } else if (action === 'seg-vis-display-ui') {
+    // 提示先: Inline(空) = display 削除 / それ以外 = ui 設定 (text/durationMs は保持)。
+    const uis: ReadonlySet<string> = new Set(['toast', 'notification'])
+    if (uis.has(val)) vis.display = { ...vis.display, ui: val as DisplayUi }
+    else delete vis.display
+  } else if (action === 'seg-vis-display-text') {
+    if (vis.display) {
+      const text = val.trim().slice(0, 80)
+      if (text) vis.display.text = text
+      else delete vis.display.text
+    }
+  } else if (action === 'seg-vis-display-secs') {
+    if (vis.display) vis.display.durationMs = clamp(Number(val), 1, 60) * 1000
   } else {
     const idx = Number(t.dataset.idx)
     const leaf = vis.conditions[idx]
     if (!leaf) return
     switch (action) {
       case 'seg-vis-leaf-kind':
-        vis.conditions[idx] =
-          val === 'threshold'
-            ? { kind: 'threshold', op: 'gte', value: 80 }
-            : val === 'inPlace'
-              ? { kind: 'inPlace', placeId: config.places?.[0]?.id ?? '' }
-              : { kind: 'onChange', holdMs: 5000 }
+        vis.conditions[idx] = newLeafOfKind(val, ref, segId)
         break
       case 'seg-vis-leaf-op':
         if (leaf.kind === 'threshold') leaf.op = val === 'lte' ? 'lte' : 'gte'
@@ -1885,6 +2131,17 @@ function onSegVisChange(e: Event): void {
         break
       case 'seg-vis-leaf-hold':
         if (leaf.kind === 'onChange') leaf.holdMs = clamp(Number(val), 1, 60) * 1000
+        break
+      case 'seg-vis-leaf-seg':
+        // 対象 segment を切替。self を選んだら省略形に戻す (後方互換・config churn 回避)。
+        if (leaf.kind === 'present') leaf.seg = val
+        else if (leaf.kind === 'threshold' || leaf.kind === 'onChange') {
+          if (val === segId) delete leaf.seg
+          else leaf.seg = val
+        }
+        break
+      case 'seg-vis-leaf-absent':
+        if (leaf.kind === 'present') leaf.absent = val === 'absent'
         break
       case 'seg-vis-leaf-place':
         if (leaf.kind === 'inPlace') leaf.placeId = val
@@ -1980,8 +2237,7 @@ const fsCollapsedSources = new Set<string>() // 折りたたみ中の source(edi
 
 // チップの表示文字列 (実機の値。custom ラベルは本文)。
 function fsChipText(key: string): string {
-  if (isCustomLabelKey(key))
-    return activeView(config).glassLayout?.customLabels[customLabelId(key)]?.text ?? ''
+  if (isCustomLabelKey(key)) return editingLayout()?.customLabels[customLabelId(key)]?.text ?? ''
   const [sourceId, groupId, segId] = key.split('|')
   const sg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
   const { seg } = segLabelParts(key)
@@ -2033,7 +2289,7 @@ function fsListItem(key: string): string {
 
 // プレビュー本体 (10 行 × 左/右ゾーン) + 右ペインの未配置 list(source 別折りたたみ) の HTML。
 function renderFsBodyHtml(): string {
-  const lay = activeView(config).glassLayout
+  const lay = editingLayout()
   if (!lay) return ''
   const rows: string[] = []
   for (let i = 0; i < MAX_ROWS; i++) {
@@ -2091,7 +2347,7 @@ function refreshFsBody(): void {
 
 // 各行を split→join で正規化し、空になった右クラスタの @right を落とす。
 function normalizeFsRows(): void {
-  const lay = activeView(config).glassLayout
+  const lay = editingLayout()
   if (!lay) return
   lay.rows = lay.rows.map((r) => {
     const { left, right } = splitRowClusters(r)
@@ -2100,12 +2356,12 @@ function normalizeFsRows(): void {
 }
 
 function removeFsKey(key: string): void {
-  const lay = activeView(config).glassLayout
+  const lay = editingLayout()
   if (lay) lay.rows = lay.rows.map((r) => r.filter((k) => k !== key))
 }
 
 function moveFsKeyToZone(key: string, rowIdx: number, side: 'left' | 'right'): void {
-  const lay = activeView(config).glassLayout
+  const lay = editingLayout()
   if (!lay) return
   removeFsKey(key) // 重複配置を防ぐ (どこから来ても 1 箇所だけ)
   const { left, right } = splitRowClusters(lay.rows[rowIdx] ?? [])
@@ -2231,7 +2487,7 @@ function onFsPointerUp(e: PointerEvent): void {
   fsDrag = null
   drag?.ghost.remove()
   fsClearHot()
-  if (!drag || !activeView(config).glassLayout) return
+  if (!drag || !editingLayout()) return
   const zone = fsZoneAt(e)
   if (!zone) return
   if (zone.classList.contains('fs-tray')) {
@@ -2265,7 +2521,7 @@ function onFsClick(e: MouseEvent): void {
   }
   if (t.dataset.action === 'fs-unplace') {
     const key = t.dataset.segkey
-    if (key && activeView(config).glassLayout) {
+    if (key && editingLayout()) {
       removeFsKey(key)
       fsExpandSourceOf(key) // 折りたたみ中の source へ戻すと消えて見えるので開く
       normalizeFsRows()
@@ -2311,23 +2567,6 @@ function dbgTime(t: number): string {
 }
 
 const MAX_DBG_LINE = 2000 // 1 ログ行の最大文字数 (巨大オブジェクト/長文での DOM・stringify 肥大を防ぐ)
-// token/secret 等を含むキーを伏せる (プローブが生レスポンスを UI に出すため redaction する)。
-const SENSITIVE_KEY =
-  /token|secret|password|passwd|api[-_]?key|authorization|auth|cookie|session|credential/i
-
-// オブジェクトを浅くクローンしつつ、機微なキーの値を伏せる。ログ前の生レスポンスに適用する。
-function redact(value: unknown, depth = 0): unknown {
-  if (depth > 4) return '«depth»'
-  if (Array.isArray(value)) return value.map((v) => redact(v, depth + 1))
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = SENSITIVE_KEY.test(k) ? '«redacted»' : redact(v, depth + 1)
-    }
-    return out
-  }
-  return value
-}
 
 // console.* の可変長引数を 1 行テキストにする。Error は stack、オブジェクトは JSON。1 行上限で truncate。
 function dbgFormat(args: unknown[]): string {
@@ -2471,9 +2710,6 @@ function renderDbgConsole(): string {
   const caret = icon(dbgOpen ? 'chevron-down' : 'chevron-right', { size: 16 })
   const actions = dbgOpen
     ? `<span class="cmp-actions">
-        <button class="link-btn" data-action="probe-userinfo" title="bridge.getUserInfo()">User</button>
-        <button class="link-btn" data-action="probe-geo" title="navigator.geolocation">Geo</button>
-        <button class="link-btn" data-action="probe-ip" title="IP ジオロケーション">IP</button>
         <button class="link-btn" data-action="console-copy" title="表示中のログをコピー">Copy</button>
         <button class="link-btn" data-action="console-clear">Clear</button>
       </span>`
@@ -2520,69 +2756,6 @@ function hookConsole(): void {
   window.addEventListener('unhandledrejection', (ev) =>
     dbgPush('error', `[unhandledrejection] ${dbgFormat([ev.reason])}`),
   )
-}
-
-// ── 検証プローブ (結果は console.* 経由でパネルへ) ──
-async function probeUserInfo(): Promise<void> {
-  if (!probeBridge) {
-    console.warn('[probe] bridge 未接続 — Even App / simulator 上で実行してください')
-    return
-  }
-  try {
-    const u = await probeBridge.getUserInfo()
-    console.log('[probe] getUserInfo →', redact(u.toJson())) // PII を含むため機微キーは伏せる
-  } catch (err) {
-    console.error('[probe] getUserInfo 失敗', err)
-  }
-}
-
-function probeGeo(): void {
-  if (!('geolocation' in navigator)) {
-    console.warn('[probe] navigator.geolocation が無い')
-    return
-  }
-  console.log('[probe] geolocation 要求中 (許可ダイアログが出る場合あり)…')
-  navigator.geolocation.getCurrentPosition(
-    (pos) =>
-      console.log('[probe] geolocation →', {
-        lat: pos.coords.latitude,
-        lon: pos.coords.longitude,
-        accuracyM: pos.coords.accuracy,
-      }),
-    (err) => console.error(`[probe] geolocation 失敗 code=${err.code} ${err.message}`),
-    { enableHighAccuracy: false, timeout: 10_000, maximumAge: 0 },
-  )
-}
-
-async function probeIp(): Promise<void> {
-  // 外部サービスへ IP を送るため、クリック時に明示同意を取る (プライバシー)。
-  if (
-    !window.confirm(
-      'IP ジオロケーション検証のため、外部サービス(ipapi.co 等)にあなたの IP を送信します。続行しますか？',
-    )
-  ) {
-    console.log('[probe] IP geo: キャンセル')
-    return
-  }
-  // キー不要の IP ジオロケーションを順に試す (CORS 許可のあるもの優先)。
-  // credentials 無し・referrer 無しで最小限の送信に留める。
-  const endpoints = [
-    'https://ipapi.co/json/',
-    'https://ipwho.is/',
-    'https://get.geojs.io/v1/ip/geo.json',
-  ]
-  for (const url of endpoints) {
-    try {
-      console.log('[probe] IP geo fetch:', url)
-      const res = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer' })
-      const json = (await res.json()) as unknown
-      console.log('[probe] IP geo →', redact(json)) // 機微キーは伏せる
-      return
-    } catch (err) {
-      console.warn(`[probe] IP geo 失敗 ${url}:`, err instanceof Error ? err.message : err)
-    }
-  }
-  console.error('[probe] IP geo: すべての候補が失敗')
 }
 
 // フィルタ入力 (live)。リストだけ差し替えて入力 focus を保つ。

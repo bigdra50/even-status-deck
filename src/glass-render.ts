@@ -6,11 +6,14 @@ import {
   type Config,
   customLabelId,
   defaultShowGroupLabel,
+  type GlassLayout,
+  type GlassPage,
   type GroupMeta,
   type GroupRef,
   isCustomLabelKey,
   isRightDivider,
   LABEL_SEG,
+  resolvePages,
   type ViewGroup,
 } from './config'
 import { MAX_ROWS } from './glass-types'
@@ -23,7 +26,12 @@ import { isVisible, segKey, type VisibleMap } from './visibility'
 // HUD (時刻/電池) は builtin local の group (clock / g2) として groupOrder に含まれる。
 // 素材 (config.groups: GroupMeta) が segment の存在・順序・format を持ち、可視性 (enabled /
 // segment ON-OFF / align / showDefaultLabel) は active profile の view (ViewGroup) を読む。
-export type GView = 'summary' | GroupRef
+// 描画時の仮想/実ページ。auto デッキ (autoSummary/autoDetail) は render-time に組み永続化しない。
+// custom は view.pages のユーザー定義をそのまま描く。scroll はこの列を巡回する。
+export type RuntimePage =
+  | { kind: 'autoSummary' }
+  | { kind: 'autoDetail'; ref: GroupRef }
+  | { kind: 'custom'; page: GlassPage }
 export type GlassData = {
   config: Config
   statuses: Record<string, StatusDoc | null>
@@ -163,13 +171,18 @@ function showsGroupLabel(vg: ViewGroup, groupId: string): boolean {
 // items を解決して 1 クラスタの文字列を連結する。各 segment は値 (segLabel value) を出し、group の
 // default-label が ON なら group 名を前置する。隣接する同 group の run では先頭 1 回だけ
 // (dedup)。custom テキストラベルは独立要素で run を切る。enabled/表示条件/status でフィルタ。
-function renderKeys(items: string[], d: GlassData, visible?: VisibleMap): string {
+function renderKeys(
+  items: string[],
+  d: GlassData,
+  customLabels: Record<string, { text: string }>,
+  visible?: VisibleMap,
+): string {
   const view = activeView(d.config)
   const parts: string[] = []
   let prevGroup: string | null = null // 直前に出力した segment の groupId (custom label / 行頭で null)
   for (const key of items) {
     if (isCustomLabelKey(key)) {
-      const text = view.glassLayout?.customLabels[customLabelId(key)]?.text
+      const text = customLabels[customLabelId(key)]?.text
       if (text) {
         parts.push(text) // ユーザー定義の自由テキストラベル
         prevGroup = null // run を切る (後続の同 group はラベル再表示)
@@ -214,21 +227,31 @@ export function splitRowClusters(row: string[]): { left: string[]; right: string
 export type RowClusters = { left: string; right: string }
 
 // 1 行の左右クラスタを描画文字列にする (companion プレビューが flex で左右配置に使う)。
-function rowClusters(row: string[], d: GlassData, visible?: VisibleMap): RowClusters {
+function rowClusters(
+  row: string[],
+  d: GlassData,
+  customLabels: Record<string, { text: string }>,
+  visible?: VisibleMap,
+): RowClusters {
   const { left, right } = splitRowClusters(row)
-  return { left: renderKeys(left, d, visible), right: renderKeys(right, d, visible) }
+  return {
+    left: renderKeys(left, d, customLabels, visible),
+    right: renderKeys(right, d, customLabels, visible),
+  }
 }
 
 // custom layout 各行の左右クラスタ (描画文字列)。companion プレビューが flex space-between で
 // 正確に左右表示するのに使う (実機の space 近似と違い px 量子化しない)。
 export function layoutRowClusters(
+  lay: GlassLayout,
   d: GlassData,
   visible: VisibleMap | undefined,
   budget: number,
 ): RowClusters[] {
-  const rows = activeView(d.config).glassLayout?.rows ?? []
+  const rows = lay.rows ?? []
   const out: RowClusters[] = []
-  for (let i = 0; i < budget; i++) out.push(rowClusters(rows[i] ?? [], d, visible))
+  for (let i = 0; i < budget; i++)
+    out.push(rowClusters(rows[i] ?? [], d, lay.customLabels, visible))
   return out
 }
 
@@ -254,11 +277,12 @@ function justifyClusters({ left, right }: RowClusters): string {
 // 行番号 = 絶対位置なので空行も保持する (上の空行が下へ押し下げる)。各行は @right 区切りで
 // 左右クラスタに分け、右クラスタがあれば中央 space 充填で右端へ寄せる。
 export function layoutLines(
+  lay: GlassLayout,
   d: GlassData,
   visible: VisibleMap | undefined,
   budget: number,
 ): string[] {
-  return layoutRowClusters(d, visible, budget).map(justifyClusters)
+  return layoutRowClusters(lay, d, visible, budget).map(justifyClusters)
 }
 
 // 従来の group=1行 描画 (glassLayout 未設定時)。align で top/bottom に振り分ける。
@@ -326,33 +350,15 @@ function frame(body: string[], hint: string | null): string {
   return rows.join('\n')
 }
 
-// HUD は builtin group (clock / g2) として本文に含まれる。glass には操作ヒントを出さない
-// (10 行は貴重なので操作説明は companion 側に常設)。本文を MAX_ROWS に収める。
-// custom は固定行を絶対描画。auto (未カスタマイズ) は align で top/bottom に寄せる。
-export function renderGlass(view: GView, d: GlassData, visible?: VisibleMap): string {
-  const budget = MAX_ROWS
-
-  if (view !== 'summary') return frame(clampRows(detailBody(d, view, visible), budget), null)
-
-  // custom layout: 固定行を絶対位置で描画 (空行も保持)。
-  if (activeView(d.config).glassLayout) return layoutLines(d, visible, budget).join('\n')
-
-  const { top, bottom } = summarySections(d, visible)
-  if (top.length + bottom.length === 0) return frame(['(no metric)'], null)
-  if (bottom.length === 0) return frame(clampRows(top, budget), null)
-  if (top.length + bottom.length > budget) {
-    return frame(clampRows([...top, ...bottom], budget), null)
-  }
-  // 予算いっぱいに展開: top を上、bottom を下、間を空行で埋める。
-  const gap = budget - top.length - bottom.length
-  return frame([...top, ...Array<string>(gap).fill(''), ...bottom], null)
+// custom ページが描画可能な chip を 1 つでも持つか (空ページ skip 判定)。
+function hasRenderableLayout(lay: GlassLayout, d: GlassData, visible?: VisibleMap): boolean {
+  return layoutLines(lay, d, visible, MAX_ROWS).some((line) => line.trim() !== '')
 }
 
-// 表示するビュー: summary + 表示可能な segment が 1 つ以上ある有効 group (groupOrder 順)。
-// 全 segment が条件で隠れた group は detail も出さない (groupLine が null)。
-export function buildViews(d: GlassData, visible?: VisibleMap): GView[] {
+// auto デッキの detail 対象 group ref 列 (表示可能 segment が 1 つ以上ある有効 group。groupOrder 順)。
+function renderableGroupRefs(d: GlassData, visible?: VisibleMap): GroupRef[] {
   const view = activeView(d.config)
-  const out: GView[] = ['summary']
+  const out: GroupRef[] = []
   for (const ref of view.groupOrder) {
     const vg = view.groups[ref.sourceId]?.[ref.groupId]
     const meta = d.config.groups[ref.sourceId]?.[ref.groupId]
@@ -361,4 +367,59 @@ export function buildViews(d: GlassData, visible?: VisibleMap): GView[] {
     if (g && groupLine(g, meta, vg, ref, visible)) out.push(ref)
   }
   return out
+}
+
+// 表示するランタイムページ列。pages (explicit デッキ) があればそれを、無ければ auto デッキ
+// (summary + 描画可能 group の detail) を生成する。explicit では auto detail を混在させない (確定)。
+// 空ページ (条件で全 chip 消滅) は巡回からスキップ。全ページ空なら custom 先頭 1 枚を fallback。
+export function buildRuntimePages(d: GlassData, visible?: VisibleMap): RuntimePage[] {
+  const view = activeView(d.config)
+  const pages = resolvePages(view)
+  if (pages.length) {
+    const live = pages.filter((p) => hasRenderableLayout(p.layout, d, visible))
+    if (live.length) return live.map((page) => ({ kind: 'custom', page }))
+    return [{ kind: 'custom', page: pages[0] as GlassPage }] // 全空 → 先頭 1 枚 (空表示)
+  }
+  return [
+    { kind: 'autoSummary' },
+    ...renderableGroupRefs(d, visible).map((ref): RuntimePage => ({ kind: 'autoDetail', ref })),
+  ]
+}
+
+// 1 ランタイムページの本文を budget 行で描く (autoSummary/autoDetail/custom 分岐)。
+// budget はインジケータ有無で 9 (表示) or 10 (非表示)。
+export function renderRuntimePage(
+  page: RuntimePage,
+  d: GlassData,
+  budget: number,
+  visible?: VisibleMap,
+): string {
+  if (page.kind === 'autoDetail') {
+    return frame(clampRows(detailBody(d, page.ref, visible), budget), null)
+  }
+  if (page.kind === 'custom') {
+    return layoutLines(page.page.layout, d, visible, budget).join('\n')
+  }
+  // autoSummary: align で top/bottom に振り分け、予算いっぱいに展開 (renderGlass の summary 分岐と同義)。
+  const { top, bottom } = summarySections(d, visible)
+  if (top.length + bottom.length === 0) return frame(['(no metric)'], null)
+  if (bottom.length === 0) return frame(clampRows(top, budget), null)
+  if (top.length + bottom.length > budget)
+    return frame(clampRows([...top, ...bottom], budget), null)
+  const gap = budget - top.length - bottom.length
+  return frame([...top, ...Array<string>(gap).fill(''), ...bottom], null)
+}
+
+// デッキの現在ページを描く (glass.ts の単一描画エントリ)。全ページ本文 10 行。
+// ページ位置インジケータは出さない (実機でドットが大きすぎるためユーザー判断で撤去)。
+export function renderDeckPage(
+  pages: RuntimePage[],
+  idx: number,
+  d: GlassData,
+  visible?: VisibleMap,
+): string {
+  const total = pages.length
+  const safeIdx = total > 0 ? ((idx % total) + total) % total : 0
+  const page = pages[safeIdx] ?? { kind: 'autoSummary' }
+  return renderRuntimePage(page, d, MAX_ROWS, visible)
 }

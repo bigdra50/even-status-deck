@@ -418,6 +418,11 @@ textarea {
   font-size: var(--fs-sm);
   color: var(--text-dim);
 }
+/* live status 未取得の segment (Items に素材として出すが値はまだ無い: 例 充電中/データ不足の rate/eta) */
+.metric.missing .mval {
+  opacity: 0.5;
+  font-style: italic;
+}
 
 /* toggle */
 .tg {
@@ -587,6 +592,17 @@ button.owner-badge:hover {
   color: var(--text);
   font-size: var(--fs-sm);
   font-family: var(--font-mono);
+  padding: var(--space-1) var(--space-2);
+}
+/* 提示先のカスタム文言入力 (display=toast/banner 等のとき)。 */
+.vis-text {
+  flex: 1 1 auto;
+  min-width: 80px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-sm);
   padding: var(--space-1) var(--space-2);
 }
 .vis-del {
@@ -1373,4 +1389,50 @@ button.owner-badge:hover {
 }
 .dbgc-info .dbgc-msg {
   color: var(--text-dim);
+}
+
+/* explicit デッキのページ tab / 操作行 (companion Glass セクション) */
+.page-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0;
+}
+.page-tab {
+  max-width: 140px;
+  overflow: hidden;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: var(--fs-md);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.page-tab-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.page-add {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-dim);
+}
+.page-ctl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+}
+.page-name-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: var(--fs-md);
 }
