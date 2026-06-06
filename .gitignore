@@ -20,6 +20,9 @@ dist-server/
 /blob-report/
 /playwright/.cache/
 
+# 作業メモ / スクラッチ (設計メモ・lessons 等。git 管理しない)
+tasks/
+
 # OS / editor
 .DS_Store
 .idea/

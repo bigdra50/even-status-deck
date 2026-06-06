@@ -176,5 +176,45 @@
         Full Disk Access).
       </p>
     </div>
+
+    <h2>Conditional display</h2>
+    <p class="lead">
+      Any metric can be shown only when a condition holds, or surfaced as a pop-up instead of
+      sitting in a row. Open a metric's <strong>Show</strong> row to set this up.
+    </p>
+    <ol>
+      <li>
+        Under a metric, in the <strong>Show</strong> row, tap <code>Add condition</code> and pick
+        one: a threshold (e.g. <code>level ≤ 20%</code>, optionally on another metric in the same
+        group), <code>On update</code> (after a value changes), <code>Has value</code>, or
+        <code>At place</code> (a saved location). Two or more conditions combine with
+        <code>All of</code> / <code>Any of</code>.
+      </li>
+      <li>
+        Choose how to <strong>Present</strong> it:
+        <code>Inline</code> keeps the metric in its row (shown only while the condition holds);
+        <code>Toast</code> pops a one-line message at the bottom; <code>Notification</code> pops a
+        centered card.
+      </li>
+      <li>
+        For Toast / Notification, set the auto-hide seconds (default 5s) and, optionally, a custom
+        message (otherwise it shows <code>label value</code>, e.g. <code>Battery 18%</code>).
+      </li>
+    </ol>
+
+    <div class="note">
+      <p>
+        <strong>Example — low-battery alert.</strong>
+        On the <code>Estimated time left</code> metric, add <code>level ≤ 20%</code> and set Present
+        to <code>Toast</code>, 5s, text <code>Battery low</code>. A toast appears the moment the
+        battery drops to 20%.
+      </p>
+      <p style="margin-bottom: 0">
+        <strong>How pop-ups behave.</strong>
+        Toast / Notification fire once at the moment the condition becomes true (not while it is
+        already true), at most once per 30s per metric, and auto-hide after the seconds you set.
+        Inline simply shows or hides the row. Conditions and Present are shared across all presets.
+      </p>
+    </div>
   </body>
 </html>
