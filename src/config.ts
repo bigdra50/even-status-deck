@@ -1327,7 +1327,7 @@ function normalizeProfileView(p: Profile): void {
   // 重複を除去する (重複すると同じ group が Items / glass に二重表示される)。最初の出現を残す。
   const seenRef = new Set<string>()
   p.view.groupOrder = p.view.groupOrder.filter((r) => {
-    const k = `${r.sourceId} ${r.groupId}`
+    const k = `${r.sourceId}\u0000${r.groupId}`
     if (seenRef.has(k)) return false
     seenRef.add(k)
     return true
