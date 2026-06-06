@@ -139,12 +139,11 @@ export type SegMeta = {
 // lastLabel: 最後に観測した live group label の内部記録 (sync で捕捉)。同 source 内で見出しが一致する
 // group は glass で 1 unit にマージ表示するため、offline でも unit 構成/align が揺れない merge identity
 // として使う (UI には出さない)。effective 見出し = displayName || lastLabel || liveLabel。
-// displayNameSource: 廃止フィールド (旧 'auto'=衝突自動命名 'Claude (limits)' 世代)。migrate で一掃する。
+// 旧 displayNameSource ('auto'=衝突自動命名 'Claude (limits)' 世代) は廃止 — migrate で一掃する。
 export type GroupMeta = {
   segments: SegMeta[]
   displayName?: string
   lastLabel?: string
-  displayNameSource?: 'auto' | 'user'
 }
 
 export type GAlign = 'top' | 'bottom'
@@ -760,8 +759,9 @@ function normalizeDisplayMeta(c: Config): void {
 function normalizeGroupDisplayNames(c: Config): void {
   for (const groups of Object.values(c.groups ?? {})) {
     for (const meta of Object.values(groups)) {
-      if (meta.displayNameSource === 'auto') delete meta.displayName
-      delete meta.displayNameSource
+      const legacy = meta as GroupMeta & { displayNameSource?: unknown }
+      if (legacy.displayNameSource === 'auto') delete meta.displayName
+      delete legacy.displayNameSource
       if (
         meta.displayName !== undefined &&
         (typeof meta.displayName !== 'string' || meta.displayName === '')

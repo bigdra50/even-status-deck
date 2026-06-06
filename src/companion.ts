@@ -54,7 +54,13 @@ import {
   syncSourceWithStatus,
 } from './config'
 import { fetchMachineFrom, type MachineInfo } from './data'
-import { collisionCategories, effectiveOwner, resolveDisplayLabels } from './display-identity'
+import {
+  collisionCategories,
+  effectiveGroupHeading,
+  effectiveOwner,
+  normalizeHeading,
+  resolveDisplayLabels,
+} from './display-identity'
 import { esc } from './escape'
 import {
   type GlassData,
@@ -439,6 +445,18 @@ function optionControls(
   return `<div class="clock-ctl">${fields.map(ctl).join('')}</div>`
 }
 
+// ref と同じ source 内に merge 見出し (effectiveGroupHeading) が一致する別 group があるか。
+// glass はマージ表示するが管理 UI は per-group のままなので、同名行に group id を併記する判定に使う。
+// 描画 (computeGroupMergeUnits) と同じ resolver/正規化を共有 = 「表示はマージ・併記なし」のズレを防ぐ。
+function groupHeadingCollides(sourceId: string, groupId: string): boolean {
+  const mine = normalizeHeading(effectiveGroupHeading(config, sourceId, groupId))
+  if (!mine) return false
+  return Object.keys(config.groups[sourceId] ?? {}).some(
+    (gid) =>
+      gid !== groupId && normalizeHeading(effectiveGroupHeading(config, sourceId, gid)) === mine,
+  )
+}
+
 function groupRow(ref: GroupRef): string {
   const g = statusGroup(ref.sourceId, ref.groupId)
   const meta = config.groups[ref.sourceId]?.[ref.groupId]
@@ -499,6 +517,11 @@ function groupRow(ref: GroupRef): string {
       : src
         ? `<span class="src-note">${esc(src.label)}</span>`
         : ''
+  // 同 source 内で同名の group は glass で 1 unit にマージされる。管理面は per-group なので
+  // どの provider 由来か分かるよう group id を淡色併記する (衝突時のみ)。
+  const gidTag = groupHeadingCollides(ref.sourceId, ref.groupId)
+    ? `<span class="src-note">${esc(ref.groupId)}</span>`
+    : ''
   // default-label トグル (glass で group 名を前置するか)。位置/上詰めは Glass layout で決める。
   const showsLabel = vg.showDefaultLabel ?? ref.groupId !== 'clock'
   const labelBtn = `<button class="label-btn ${showsLabel ? 'on' : ''}" data-action="toggle-grouplabel" data-key="${key}" title="${showsLabel ? 'Group label shown on glass' : 'Group label hidden'}">${icon('tag', { size: 15 })}</button>`
@@ -508,6 +531,7 @@ function groupRow(ref: GroupRef): string {
   return `<div class="src" data-key="${key}"><div class="src-head"><span class="src-grip">${icon('grip', { size: 16 })}</span>
     <span class="src-caret" data-action="expand" data-key="${key}">${caret}</span>
     <span class="src-name" data-action="expand" data-key="${key}">${esc(title)}</span>
+    ${gidTag}
     ${srcTag}
     ${renameBtn}
     ${labelBtn}
@@ -795,10 +819,14 @@ function groupOrderRow(ref: GroupRef): string {
   const title = groupDisplayName(config, ref.sourceId, ref.groupId) ?? baseTitle
   const owner = src ? effectiveOwner(src) : ''
   const key = `${esc(ref.sourceId)}|${esc(ref.groupId)}`
+  // 同名で glass マージされる group は行が見分けられないので group id を併記する (衝突時のみ)。
+  const gidTag = groupHeadingCollides(ref.sourceId, ref.groupId)
+    ? `<span class="src-note">${esc(ref.groupId)}</span>`
+    : ''
   return `<div class="src ord-row" data-key="${key}"><div class="src-head">
     <span class="src-grip">${icon('grip', { size: 16 })}</span>
     <span class="src-name">${esc(title)}</span>
-    <span class="src-note">${esc(owner)}</span></div></div>`
+    ${gidTag}<span class="src-note">${esc(owner)}</span></div></div>`
 }
 
 // auto モードの順序エディタ。#source-list を使い既存 onGroupReorder を再接続する (group sortable)。
@@ -1713,7 +1741,32 @@ async function onClick(e: MouseEvent): Promise<void> {
         const next = window.prompt('Group name', meta.displayName ?? base)
         if (next !== null) {
           const v = next.trim()
-          if (v && v !== base) {
+          // 変更後の見出しが同 source の別 group と一致するならマージが起きる。暗黙に発動させず
+          // confirm で意図を確認する (base へ戻した結果マージされるケースも同様)。
+          // 判定は描画と同じ resolver: 変更後の effective 見出しを先に確定してから比較する。
+          const renamed = v !== '' && v !== base
+          const nextHeading = renamed
+            ? v
+            : isBuiltin
+              ? (BUILTIN_GROUP_LABELS[ref.groupId] ?? ref.groupId)
+              : (meta.lastLabel ?? '')
+          const nextKey = normalizeHeading(nextHeading)
+          const mergesWith =
+            nextKey &&
+            Object.keys(config.groups[ref.sourceId] ?? {}).find(
+              (gid) =>
+                gid !== ref.groupId &&
+                normalizeHeading(effectiveGroupHeading(config, ref.sourceId, gid)) === nextKey,
+            )
+          if (
+            mergesWith &&
+            !window.confirm(
+              `"${nextHeading}" is already used by "${mergesWith}" in this source. Groups with the same name are combined on glass. Continue?`,
+            )
+          ) {
+            break
+          }
+          if (renamed) {
             meta.displayName = v // 手動命名 (glass の見出しと merge 判定を上書き)
           } else {
             delete meta.displayName // 空 or base と同じ → producer の label に戻す
