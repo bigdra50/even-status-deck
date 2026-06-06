@@ -14,7 +14,7 @@ import {
 import { fetchMachineFrom } from '../data'
 import { setSegmentOption, setSourceOption } from '../options'
 import { refreshSourceById, setSourcesFromConfig } from '../store'
-import type { DisplayUi, VisibilityLeaf } from '../visibility'
+import type { DisplayUi, VisibilityCond, VisibilityLeaf } from '../visibility'
 import { requestRender } from './render-port'
 import { segChoicesFor } from './rows'
 import { ctx } from './state'
@@ -24,17 +24,163 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, Number.isFinite(n) ? n : lo))
 }
 
-// segment 条件エディタ (combinator select / leaf の kind・op・value・hold) の変更を
-// 素材 config.groups[*][*].segments[*].visibility に反映する。leaf は data-idx で特定する。
-// change イベントの振り分け: 表示オプション (#36) → onOptionChange、それ以外 → onSegVisChange。
+type ChangeHandler = (t: HTMLElement, e: Event) => void
+
+type SegVisCtx = {
+  ref: GroupRef
+  segId: string
+  vis: VisibilityCond
+  val: string
+}
+
+type SegVisLeafCtx = SegVisCtx & { idx: number; leaf: VisibilityLeaf }
+
+function segVisVal(t: HTMLElement): string {
+  return (t as HTMLInputElement | HTMLSelectElement).value
+}
+
+function resolveSegVis(t: HTMLElement): SegVisCtx | null {
+  const key = t.dataset.key
+  const segId = t.dataset.seg
+  if (!key || !segId) return null
+  const ref = parseKey(key)
+  const sm = ctx.config.groups[ref.sourceId]?.[ref.groupId]?.segments.find((s) => s.id === segId)
+  const vis = sm?.visibility
+  if (!vis) return null
+  return { ref, segId, vis, val: segVisVal(t) }
+}
+
+function commitSegVis(): void {
+  void saveConfig(ctx.config)
+  requestRender()
+}
+
+// seg-vis 系の共通枠: SegMeta/visibility を解決 → fn で更新 → save + render。
+// 解決できない (key/seg 欠落・visibility 未設定) 場合は何もしない (旧 onSegVisChange の early return と等価)。
+function withSegVis(t: HTMLElement, fn: (c: SegVisCtx) => void): void {
+  const c = resolveSegVis(t)
+  if (!c) return
+  fn(c)
+  commitSegVis()
+}
+
+function withSegVisLeaf(t: HTMLElement, fn: (c: SegVisLeafCtx) => void): void {
+  const c = resolveSegVis(t)
+  if (!c) return
+  const idx = Number(t.dataset.idx)
+  const leaf = c.vis.conditions[idx]
+  if (!leaf) return
+  fn({ ...c, idx, leaf })
+  commitSegVis()
+}
+
+function onSegVisCombinator(t: HTMLElement): void {
+  withSegVis(t, ({ vis, val }) => {
+    vis.combinator = val === 'or' ? 'or' : 'and'
+  })
+}
+
+function onSegVisDisplayUi(t: HTMLElement): void {
+  withSegVis(t, ({ vis, val }) => {
+    // 提示先: Inline(空) = display 削除 / それ以外 = ui 設定 (text/durationMs は保持)。
+    const uis: ReadonlySet<string> = new Set(['toast', 'notification'])
+    if (uis.has(val)) vis.display = { ...vis.display, ui: val as DisplayUi }
+    else delete vis.display
+  })
+}
+
+function onSegVisDisplayText(t: HTMLElement): void {
+  withSegVis(t, ({ vis, val }) => {
+    if (vis.display) {
+      const text = val.trim().slice(0, 80)
+      if (text) vis.display.text = text
+      else delete vis.display.text
+    }
+  })
+}
+
+function onSegVisDisplaySecs(t: HTMLElement): void {
+  withSegVis(t, ({ vis, val }) => {
+    if (vis.display) vis.display.durationMs = clamp(Number(val), 1, 60) * 1000
+  })
+}
+
+function onSegVisLeafKind(t: HTMLElement): void {
+  withSegVisLeaf(t, ({ vis, ref, segId, val, idx }) => {
+    vis.conditions[idx] = newLeafOfKind(val, ref, segId)
+  })
+}
+
+function onSegVisLeafOp(t: HTMLElement): void {
+  withSegVisLeaf(t, ({ leaf, val }) => {
+    if (leaf.kind === 'threshold') leaf.op = val === 'lte' ? 'lte' : 'gte'
+  })
+}
+
+function onSegVisLeafValue(t: HTMLElement): void {
+  withSegVisLeaf(t, ({ leaf, val }) => {
+    if (leaf.kind === 'threshold') leaf.value = clamp(Number(val), 0, 100)
+  })
+}
+
+function onSegVisLeafHold(t: HTMLElement): void {
+  withSegVisLeaf(t, ({ leaf, val }) => {
+    if (leaf.kind === 'onChange') leaf.holdMs = clamp(Number(val), 1, 60) * 1000
+  })
+}
+
+function onSegVisLeafSeg(t: HTMLElement): void {
+  withSegVisLeaf(t, ({ leaf, segId, val }) => {
+    // 対象 segment を切替。self を選んだら省略形に戻す (後方互換・config churn 回避)。
+    if (leaf.kind === 'present') leaf.seg = val
+    else if (leaf.kind === 'threshold' || leaf.kind === 'onChange') {
+      if (val === segId) delete leaf.seg
+      else leaf.seg = val
+    }
+  })
+}
+
+function onSegVisLeafAbsent(t: HTMLElement): void {
+  withSegVisLeaf(t, ({ leaf, val }) => {
+    if (leaf.kind === 'present') leaf.absent = val === 'absent'
+  })
+}
+
+function onSegVisLeafPlace(t: HTMLElement): void {
+  withSegVisLeaf(t, ({ leaf, val }) => {
+    if (leaf.kind === 'inPlace') leaf.placeId = val
+  })
+}
+
+function onSegVisLeafSide(t: HTMLElement): void {
+  withSegVisLeaf(t, ({ leaf, val }) => {
+    if (leaf.kind === 'inPlace') leaf.outside = val === 'outside'
+  })
+}
+
+export const CHANGE_ACTIONS: Record<string, ChangeHandler> = {
+  'profile-switch': (_t, e) => onProfileSwitch(e),
+  'opt-set': (_t, e) => onOptionChange(e),
+  'profile-geofence-place': () => onGeofenceBindChange(),
+  'profile-geofence-mode': () => onGeofenceBindChange(),
+  'page-rename': (_t, e) => onPageRename(e),
+  'seg-vis-combinator': (t) => onSegVisCombinator(t),
+  'seg-vis-display-ui': (t) => onSegVisDisplayUi(t),
+  'seg-vis-display-text': (t) => onSegVisDisplayText(t),
+  'seg-vis-display-secs': (t) => onSegVisDisplaySecs(t),
+  'seg-vis-leaf-kind': (t) => onSegVisLeafKind(t),
+  'seg-vis-leaf-op': (t) => onSegVisLeafOp(t),
+  'seg-vis-leaf-value': (t) => onSegVisLeafValue(t),
+  'seg-vis-leaf-hold': (t) => onSegVisLeafHold(t),
+  'seg-vis-leaf-seg': (t) => onSegVisLeafSeg(t),
+  'seg-vis-leaf-absent': (t) => onSegVisLeafAbsent(t),
+  'seg-vis-leaf-place': (t) => onSegVisLeafPlace(t),
+  'seg-vis-leaf-side': (t) => onSegVisLeafSide(t),
+}
+
 export function onChange(e: Event): void {
-  const action = (e.target as HTMLElement).dataset.action ?? ''
-  if (action === 'profile-switch') onProfileSwitch(e)
-  else if (action === 'opt-set') onOptionChange(e)
-  else if (action === 'profile-geofence-place' || action === 'profile-geofence-mode')
-    onGeofenceBindChange()
-  else if (action === 'page-rename') onPageRename(e)
-  else onSegVisChange(e)
+  const t = e.target as HTMLElement
+  CHANGE_ACTIONS[t.dataset.action ?? '']?.(t, e)
 }
 
 // ページ名の変更 (rename input の change)。現在編集中ページ (pageEditingIdx) に作用する。
@@ -143,74 +289,6 @@ function newLeafOfKind(kind: string, ref: GroupRef, hostId: string): VisibilityL
     return leaf
   }
   return { kind: 'onChange', holdMs: 5000 }
-}
-
-function onSegVisChange(e: Event): void {
-  const t = e.target as HTMLInputElement | HTMLSelectElement
-  const action = t.dataset.action
-  const key = t.dataset.key
-  const segId = t.dataset.seg
-  if (!action?.startsWith('seg-vis-') || !key || !segId) return
-  const ref = parseKey(key)
-  const sm = ctx.config.groups[ref.sourceId]?.[ref.groupId]?.segments.find((s) => s.id === segId)
-  const vis = sm?.visibility
-  if (!vis) return
-  const val = t.value
-  if (action === 'seg-vis-combinator') {
-    vis.combinator = val === 'or' ? 'or' : 'and'
-  } else if (action === 'seg-vis-display-ui') {
-    // 提示先: Inline(空) = display 削除 / それ以外 = ui 設定 (text/durationMs は保持)。
-    const uis: ReadonlySet<string> = new Set(['toast', 'notification'])
-    if (uis.has(val)) vis.display = { ...vis.display, ui: val as DisplayUi }
-    else delete vis.display
-  } else if (action === 'seg-vis-display-text') {
-    if (vis.display) {
-      const text = val.trim().slice(0, 80)
-      if (text) vis.display.text = text
-      else delete vis.display.text
-    }
-  } else if (action === 'seg-vis-display-secs') {
-    if (vis.display) vis.display.durationMs = clamp(Number(val), 1, 60) * 1000
-  } else {
-    const idx = Number(t.dataset.idx)
-    const leaf = vis.conditions[idx]
-    if (!leaf) return
-    switch (action) {
-      case 'seg-vis-leaf-kind':
-        vis.conditions[idx] = newLeafOfKind(val, ref, segId)
-        break
-      case 'seg-vis-leaf-op':
-        if (leaf.kind === 'threshold') leaf.op = val === 'lte' ? 'lte' : 'gte'
-        break
-      case 'seg-vis-leaf-value':
-        if (leaf.kind === 'threshold') leaf.value = clamp(Number(val), 0, 100)
-        break
-      case 'seg-vis-leaf-hold':
-        if (leaf.kind === 'onChange') leaf.holdMs = clamp(Number(val), 1, 60) * 1000
-        break
-      case 'seg-vis-leaf-seg':
-        // 対象 segment を切替。self を選んだら省略形に戻す (後方互換・config churn 回避)。
-        if (leaf.kind === 'present') leaf.seg = val
-        else if (leaf.kind === 'threshold' || leaf.kind === 'onChange') {
-          if (val === segId) delete leaf.seg
-          else leaf.seg = val
-        }
-        break
-      case 'seg-vis-leaf-absent':
-        if (leaf.kind === 'present') leaf.absent = val === 'absent'
-        break
-      case 'seg-vis-leaf-place':
-        if (leaf.kind === 'inPlace') leaf.placeId = val
-        break
-      case 'seg-vis-leaf-side':
-        if (leaf.kind === 'inPlace') leaf.outside = val === 'outside'
-        break
-      default:
-        return
-    }
-  }
-  void saveConfig(ctx.config)
-  requestRender()
 }
 
 // 編集中ソースの URL を検証・更新し、store に反映する。
