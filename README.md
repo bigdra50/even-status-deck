@@ -31,7 +31,7 @@ PC のシステム情報や provider を配信するローカルサーバー。�
    npx even-status-deck server    # Node.js
    ```
 
-   > npm 公開後に有効。公開前は[開発者向けセットアップ](#開発者向けセットアップ)の clone 手順（`bun run server`）で起動する。
+   > npm 公開後に有効。公開前は [DEVELOPMENT.md](./DEVELOPMENT.md) の clone 手順（`bun run server`）で起動する。
 
 2. companion（スマホ UI）の「+ サーバーを追加」に、表示された `http://<LAN-IP>:8723` を登録して Test する。
 3. グラス（スマホ）とサーバーのマシンを同じ Wi-Fi に置く。サーバー稼働中だけ更新され、マシンがスリープすると止まる。
@@ -267,57 +267,17 @@ watcher / ask はどちらもサーバーの loopback `/api/emit` に投げる�
 | `watch:mac` で通知 DB を読めない | watcher プロセスに Full Disk Access を付与（System Settings > Privacy & Security > Full Disk Access）|
 | ローカルサーバーに繋がらない | グラス（スマホ）とサーバーのマシンが同じ Wi-Fi か、URL が `http://<LAN-IP>:8723` か、サーバーが起動中かを確認 |
 
-## 開発者向けセットアップ
+## ドキュメント
 
-リポジトリを clone して動かす場合（コントリビュート / npm 公開前の起動）。一般ユーザーは[ローカルサーバー](#ローカルサーバー任意)の bunx / npx で足りる。
-
-```bash
-bun install
-bun run dev          # dev server (フロント + /api を同一オリジン配信)
-bun run server       # standalone サーバー (/api を 0.0.0.0:8723 で配信、起動時に LAN IP を表示)
-bun run provider     # provider 管理 CLI (list / enable / install / ...)。例: bun run provider list
-bun run build:server # server を bunx/npx 配布用の単一 dist-server/index.js にバンドル
-bun run sim          # evenhub-simulator で動作確認
-bun run qr           # 接続先 URL の QR を表示 (スマホから dev-URL sideload)
-bun run build        # tsc && vite build
-bun run pack         # build + .ehpk 生成 (status-deck.ehpk)
-bun run lint         # biome
-```
-
-実機への載せ方:
-
-- **dev-URL QR**: `bun run qr` の QR を Even Hub アプリでスキャン → dev server から hot reload で読み込む（`.ehpk` 不要、同一オリジンでデータ直結）。
-- **`.ehpk` サイドロード / private 配布**: `bun run pack` で生成し、Even Hub portal にアップロード。
-  companion の Machine/ソース設定で Mac の LAN URL や iPhone bridge（`http://127.0.0.1:8723`）を登録する。
-  EvenApp の WebView は実測でランタイム CORS / network whitelist を厳格強制しておらず、
-  private 配布で localhost / LAN 直結が動作する。
-
-## バックグラウンド対応
-
-phone ロック / Even App バックグラウンドでもグラスを生存させる（提出 QA 要件）。
-
-- keep-alive: 極小音量の AudioContext オシレータ + Web Locks（`keep-alive.ts`）。
-- ライフサイクル: `FOREGROUND_ENTER` で再取得、`ABNORMAL/SYSTEM_EXIT` で cleanup、
-  root double-tap → `shutDownPageContainer(1)`（終了確認ダイアログ）。
-
-## 構成
-
-| ファイル | 役割 |
+| 文書 | 内容 |
 |---|---|
-| `src/store.ts` | 共有 store（複数ソース集約・ポーリング・stale）|
-| `src/builtins.ts` | builtin local（時刻/日付/電池 → StatusDoc）|
-| `src/data.ts` | `fetchStatusFrom` / `fetchMachineFrom`（URL 明示・timeout/abort）|
-| `src/config.ts` | config v4（素材 sources/groups + 表示プリセット profiles / 移行）|
-| `src/glass-render.ts` | グラス描画の純粋ロジック（横断描画・行予算）|
-| `src/glass.ts` | glass の bridge 配線・購読・電池・keep-alive |
-| `src/companion.ts` | スマホ UI（ソース管理 + 横断 segment 設定 + プレビュー）|
-| `src/status-types.ts` | プロトコル型 + `parseStatusDoc` |
-| `server/` | standalone サーバー（provider 群 claude/codex/system + subprocess + http-server + vite dev middleware）|
-| `vite.config.ts` | `server/vite-plugin` を dev に挿すだけ（9 行）|
+| [DEVELOPMENT.md](./DEVELOPMENT.md) | clone して動かす・テスト/CI・実機への載せ方・コード構成 |
+| [RELEASE.md](./RELEASE.md) | リリース手順（version bump / Even Hub Add build / GitHub Release）|
+| [DESIGN.md](./DESIGN.md) | 設計（データモデル・プリセット・取得経路・ロードマップ）|
+| [PROTOCOL.md](./PROTOCOL.md) | status protocol 公開仕様（provider 実装者向け）|
 
 ## 関連
 
-- プロトコル: [`PROTOCOL.md`](./PROTOCOL.md)
 - iPhone データ源: `bigdra50/eveng2-iphone-bridge`
 - PoC: `bigdra50/eveng2-demo`
 - 調査ノート: survey-any `topics/mentraos-even-g2-implementation`

@@ -270,3 +270,14 @@ Phase 3        source 安定化（machineId 採用 + urls[] 複数経路、旧UU
 Phase 4        接続検出ベースの提案型自動切替（自動適用はせず手動承認）
                 → 「業務Mac+iPhone が見つかりました。"出張" に切替?」
 ```
+
+## 12. バックグラウンド生存（keep-alive）
+
+phone ロック / Even App バックグラウンドでもグラスを生存させる（提出 QA 要件）。
+白画面の本質はホスト側（iOS WKWebView の WebContent 強制終了 = jettison）にあり、Web 側でできるのは延命まで。
+
+- keep-alive: Web Locks を「ページが閉じるまで解放しない」形で保持し WebView の凍結を防ぐ（`src/keep-alive.ts`）。
+  AudioContext オシレータ版は撤去した（SDK 0.0.10 がホスト側ネイティブの background keep-alive を持ち冗長、実機 bisect で白画面に無関係と確定、実際に鳴らすと逆に jettison を早める兆候）。
+- ライフサイクル: `FOREGROUND_ENTER` で再取得、`ABNORMAL/SYSTEM_EXIT` で cleanup、
+  root double-tap → `shutDownPageContainer(1)`（終了確認ダイアログ）。
+- SDK 0.0.10 に `setBackgroundState` / `onBackgroundRestore` は無いため、背景復帰は `setLocalStorage` の config 読み戻しで賄う（§2）。

@@ -1,17 +1,22 @@
 # Status Deck 開発ルール
 
+## ドキュメント構成（正本の場所）
+
+| 文書 | 正本として持つ内容 |
+|---|---|
+| [README.md](./README.md) | ユーザー向け: 導入・仕組み・データソース・provider 拡張・カスタマイズ |
+| [DEVELOPMENT.md](./DEVELOPMENT.md) | clone して動かす手順・テスト/CI・実機への載せ方・ファイル役割表 |
+| [RELEASE.md](./RELEASE.md) | リリース手順（version bump / Even Hub Add build / GitHub Release）|
+| [DESIGN.md](./DESIGN.md) | 設計判断（データモデル・プリセット・取得経路・バックグラウンド制約）|
+| [PROTOCOL.md](./PROTOCOL.md) | status protocol 公開仕様 |
+
+同じ情報を複数文書に複製しない。迷ったら上の表の正本に書き、他からは参照する。
+作業中の設計メモ・running note は git 管理しない（local scratch。公開価値が出たものは Issue / PR 本文へ昇格）。
+
 ## Even Hub へのアップロード（必須）
 
 Even Hub への再アップロード（Add build）時は、**毎回 `app.json` の `version` を bump する**。
-同一 version のまま Add build しても Even Hub が「更新あり」と認識せず、実機に更新が反映されない。
-
-- 修正・実機確認のたびに version を 1 つ上げる（例: 0.1.48 → 0.1.49）。同一 version での差し替えはしない。
-- 手順:
-  1. `app.json` の `version` を上げる
-  2. コミット（`🔖 release: app.json を <ver> に`）
-  3. `npm run pack`
-  4. `node ~/.claude/skills/evenhub-upload/upload.mjs -m "<changelog>"`
-- アップロードは Private build。公開は Even Hub UI で Private→Public に切り替える（スクリプトは行わない）。
+同一 version のまま Add build しても実機に更新が反映されない。手順の詳細は [RELEASE.md](./RELEASE.md)。
 
 ## セカンドオピニオン・レビューに使う LLM
 
