@@ -107,3 +107,38 @@ test('segment visibility condition: add, edit params, remove', async ({ page }) 
   await expect(page.locator('.vis-cond-row')).toHaveCount(0)
   await expect(page.locator('.vis-always').first()).toHaveText('always')
 })
+
+test('segment visibility condition: leaf-kind switch and toast display params', async ({
+  page,
+}) => {
+  await openSourceDetail(page, SERVER_ID)
+  await page.locator(`.src-caret[data-action="expand"][data-key="${key('cpu')}"]`).click()
+  const seg = `[data-key="${key('cpu')}"][data-seg="usage"]`
+  await page.locator(`[data-action="seg-vis-add"]${seg}`).click()
+
+  // kind 切替: threshold → On update (onChange)。params が op/value から hold(秒) に変わる
+  await page.locator(`[data-action="seg-vis-leaf-kind"]${seg}`).selectOption('onChange')
+  await expect(page.locator(`[data-action="seg-vis-leaf-kind"]${seg}`)).toHaveValue('onChange')
+  await expect(page.locator(`[data-action="seg-vis-leaf-op"]${seg}`)).toHaveCount(0)
+  const hold = page.locator(`[data-action="seg-vis-leaf-hold"]${seg}`)
+  await expect(hold).toBeVisible()
+  await hold.fill('9')
+  await hold.dispatchEvent('change')
+  await expect(page.locator(`[data-action="seg-vis-leaf-hold"]${seg}`)).toHaveValue('9')
+
+  // 提示先を Toast にすると secs / text フィールドが現れ、設定値が再描画後も保持される
+  await page.locator(`[data-action="seg-vis-display-ui"]${seg}`).selectOption('toast')
+  const secs = page.locator(`[data-action="seg-vis-display-secs"]${seg}`)
+  await expect(secs).toBeVisible()
+  await secs.fill('7')
+  await secs.dispatchEvent('change')
+  await expect(page.locator(`[data-action="seg-vis-display-secs"]${seg}`)).toHaveValue('7')
+  const text = page.locator(`[data-action="seg-vis-display-text"]${seg}`)
+  await text.fill('cpu hot')
+  await text.dispatchEvent('change')
+  await expect(page.locator(`[data-action="seg-vis-display-text"]${seg}`)).toHaveValue('cpu hot')
+
+  // Inline へ戻すと display は削除され secs/text が消える
+  await page.locator(`[data-action="seg-vis-display-ui"]${seg}`).selectOption('')
+  await expect(page.locator(`[data-action="seg-vis-display-secs"]${seg}`)).toHaveCount(0)
+})
