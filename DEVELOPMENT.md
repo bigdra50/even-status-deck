@@ -32,7 +32,7 @@ bun run test:sim      # evenhub-simulator のグラス表示 e2e (e2e-sim/run.ts
 - `lint:deps` — dependency-cruiser
 - `knip` — 未使用 export / dep
 - `lint:dup` — jscpd 重複率 3% 未満
-- `lint:fta` — FTA score-cap 170（`src/companion/` は再肥大防止のため 120）
+- `lint:fta` — FTA score-cap 120（src / server 共通。companion・config 分割後の worst は 83）
 - `test:coverage` + Codecov — `bun test --coverage`（patch は informational）
 
 | workflow | トリガ | 内容 |
