@@ -10,6 +10,7 @@
 4. `npm run upload -- -m "<changelog>"`（Web UI の「Upload a build → Add build」相当）
 
 - version bump は毎回必須。同一 version のまま Add build しても Even Hub が「更新あり」と認識せず、実機に更新が反映されない。同一 version での差し替えはしない。
+- version は単調増加で +1 する（飛ばさない・下げない）。Even Hub はアップロード済みより下の version を受け付けず、実機側も downgrade できない。検証用の一時ビルドでも飛び番号を使わず次の番号を振る。
 - 追加されるビルドは Private。公開は Even Hub UI で Private → Public に切り替える（スクリプトでは行わない）。
 - 前提: `evenhub login` 済み（`~/.config/evenhub/credentials.yaml` の access_token を使用。失効時は refresh で自動更新）。API の詳細は `scripts/upload.mjs` 冒頭コメント。
 
