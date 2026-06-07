@@ -176,9 +176,17 @@ function moveFsKeyToZone(key: string, rowIdx: number, side: 'left' | 'right'): v
   normalizeFsRows()
 }
 
+// drop 先 zone の解決。チップは zone ボックスより上にペイントされる (.fs-glass .fs-chip の
+// position:relative) ため、チップ内要素を skip してその下の zone ボックスで決める。
+// これで drop 先は「ポインタが乗っているチップの所属クラスタ」ではなく「幾何学的な半分」で
+// 決まる (左クラスタがはみ出していても右半分への drop は右ゾーン、という従来意図の維持)。
 function fsZoneAt(e: PointerEvent): HTMLElement | null {
-  const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
-  return el?.closest('.fs-zone, .fs-tray') ?? null
+  for (const el of document.elementsFromPoint(e.clientX, e.clientY)) {
+    if (el.closest('.fs-chip')) continue
+    const zone = el.closest('.fs-zone, .fs-tray')
+    if (zone instanceof HTMLElement) return zone
+  }
+  return null
 }
 
 function fsClearHot(): void {

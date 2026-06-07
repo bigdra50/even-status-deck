@@ -1106,8 +1106,10 @@ button.owner-badge:hover {
   border-bottom: none;
 }
 /* 左ゾーンは右半分にはみ出しても描画する (クリップしない)。折返しは禁止 (縦衝突を防ぐ)。
-   右ゾーンは DOM 上で後 = 左のはみ出しの上に重なって右端に表示される。ドロップ判定は
-   要素ベース (data-zone) なので、左がはみ出していても右半分のドロップは右ゾーンに解決される。 */
+   チップは positioned (.fs-glass .fs-chip) にして zone ボックスより上にペイントする。
+   こうしないと DOM 上で後の .fs-zone-r (透明) がはみ出しチップのヒットテストを奪い、
+   ドラッグ開始 (pointerdown) と × (fs-unplace) が効かなくなる。drop 先はチップではなく
+   zone ボックスの幾何学的な半分で決める (fs-editor.ts fsZoneAt がチップを skip して解決)。 */
 .fs-zone {
   flex: 1;
   display: flex;
@@ -1153,8 +1155,11 @@ button.owner-badge:hover {
 .fs-chip-armed {
   opacity: 0.4;
 }
-/* キャンバス内チップは glass サイズに追従 (cqh)。端末/回転に依らず行に収まる。 */
+/* キャンバス内チップは glass サイズに追従 (cqh)。端末/回転に依らず行に収まる。
+   position:relative は見た目用ではなくヒットテスト用: 非 positioned のままだと、zone を
+   越えてはみ出したチップが後続 sibling の zone ボックスの下にペイントされ掴めなくなる。 */
 .fs-glass .fs-chip {
+  position: relative;
   gap: 0.6cqh;
   padding: 0.7cqh 1.4cqh;
   border-radius: 3cqh;
@@ -1192,6 +1197,8 @@ button.owner-badge:hover {
   color: rgba(254, 249, 145, 0.7);
 }
 .fs-over {
+  position: relative; /* positioned なチップの下に隠れないよう同じペイント層に置く */
+  pointer-events: none; /* 重なったチップのドラッグ開始を奪わない */
   color: #e0a458;
   display: inline-flex;
   align-items: center;
