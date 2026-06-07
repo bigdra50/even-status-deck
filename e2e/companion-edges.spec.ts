@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 import { attachConsoleErrors, key, MACHINE, openSourceDetail, SERVER_ID, STATUS } from './fixtures'
 
 // companion.ts 分割リファクタの characterization テスト。既存 spec が触れていない
@@ -29,6 +29,101 @@ test('fullscreen editor opens, Done closes it and keeps the page deck', async ({
   // fs-open は auto デッキから explicit 1 ページを生成する → Done 後も page tab が残る
   await expect(page.locator('.page-tab[data-action="page-select"]')).toHaveCount(1)
   await expect(page.locator('.gpv-screen')).toBeVisible()
+})
+
+// ── fullscreen エディタ: zone を越えてはみ出したチップのヒットテスト回帰 ──
+// 1 zone に複数チップを置くとクラスタは行中央 (zone 境界) を越えてはみ出す。チップが
+// positioned (.fs-glass .fs-chip) でないと DOM 上で後の .fs-zone-r が pointerdown/click を
+// 奪い、はみ出したチップを掴めず × も効かない。既定レイアウトでは g2 group の 3 チップ目
+// (eta) がこの状態を再現する (前提が崩れたら overflowGrabPoint の expect で検知する)。
+const ETA_CHIP = 'builtin.local|g2|eta'
+
+type Box = { x: number; y: number; width: number; height: number }
+type Point = { x: number; y: number }
+
+// チップが zone ボックスの外へはみ出した部分の中心点。portrait 回転下では行方向が y になる
+// ため軸非依存で判定する。はみ出していなければ null。
+function overflowMid(chip: Box, zone: Box): Point | null {
+  const yEnd = zone.y + zone.height
+  if (chip.y + chip.height > yEnd + 8)
+    return { x: chip.x + chip.width / 2, y: (Math.max(chip.y, yEnd) + chip.y + chip.height) / 2 }
+  const xEnd = zone.x + zone.width
+  if (chip.x + chip.width > xEnd + 8)
+    return { x: (Math.max(chip.x, xEnd) + chip.x + chip.width) / 2, y: chip.y + chip.height / 2 }
+  return null
+}
+
+async function openFsEditor(page: Page): Promise<void> {
+  await page.locator('[data-action="fs-open"]').click()
+  await expect(page.locator('.fs-root .fs-stage')).toBeVisible()
+}
+
+// preview チップのドラッグ。pointerdown 後に移動しきい値 (FS_MOVE_CANCEL_PX=10) を超える
+// move で長押しを待たず即 arm し、目的地で drop する。
+async function fsDrag(page: Page, from: Point, to: Point): Promise<void> {
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(from.x + 12, from.y + 12, { steps: 3 })
+  await page.mouse.move(to.x, to.y, { steps: 10 })
+  await page.mouse.up()
+}
+
+// はみ出しチップ (ETA_CHIP) の zone 外の掴み点と所属 row を返す。
+async function overflowGrabPoint(page: Page): Promise<{ point: Point; row: string }> {
+  const chip = page.locator(`.fs-zone .fs-chip[data-segkey="${ETA_CHIP}"]`)
+  const zone = page.locator(`.fs-zone:has(.fs-chip[data-segkey="${ETA_CHIP}"])`)
+  await expect(chip).toBeVisible()
+  const chipBox = await chip.boundingBox()
+  const zoneBox = await zone.boundingBox()
+  if (!chipBox || !zoneBox) throw new Error('eta chip / zone not measurable')
+  const point = overflowMid(chipBox, zoneBox)
+  expect(point, 'premise: default layout overflows the g2 cluster past its zone').not.toBeNull()
+  if (!point) throw new Error('unreachable')
+  const row = (await zone.getAttribute('data-row')) ?? ''
+  return { point, row }
+}
+
+test('fullscreen editor: chip overflowing past the zone can still be dragged', async ({ page }) => {
+  await openFsEditor(page)
+  const { point } = await overflowGrabPoint(page)
+  const target = page.locator('[data-row="5"][data-zone="left"]')
+  const tb = await target.boundingBox()
+  if (!tb) throw new Error('row5 left zone not measurable')
+  await fsDrag(page, point, { x: tb.x + tb.width / 2, y: tb.y + tb.height / 2 })
+  await expect(
+    page.locator(`[data-row="5"][data-zone="left"] .fs-chip[data-segkey="${ETA_CHIP}"]`),
+  ).toHaveCount(1)
+})
+
+test('fullscreen editor: unplace (×) works on a chip overflowing past the zone', async ({
+  page,
+}) => {
+  await openFsEditor(page)
+  await overflowGrabPoint(page) // はみ出し前提の確認
+  const x = page.locator(`.fs-zone .fs-chip[data-segkey="${ETA_CHIP}"] .fs-x`)
+  const xb = await x.boundingBox()
+  if (!xb) throw new Error('fs-x not measurable')
+  await page.mouse.click(xb.x + xb.width / 2, xb.y + xb.height / 2)
+  await expect(page.locator(`.fs-tray .fs-chip[data-segkey="${ETA_CHIP}"]`)).toHaveCount(1)
+  await expect(page.locator(`.fs-zone .fs-chip[data-segkey="${ETA_CHIP}"]`)).toHaveCount(0)
+})
+
+test('fullscreen editor: drop on an overflowed chip resolves to the geometric half', async ({
+  page,
+}) => {
+  await openFsEditor(page)
+  const { point, row } = await overflowGrabPoint(page)
+  // zone 内に収まっている mem チップを、はみ出し領域 (右半分) へ drop すると、
+  // 下にあるチップの所属クラスタではなく幾何学的な半分 = 右クラスタへ入る
+  const memChip = page.locator(`.fs-zone .fs-chip[data-segkey="${key('mem')}|used"]`)
+  const mb = await memChip.boundingBox()
+  if (!mb) throw new Error('mem chip not measurable')
+  await fsDrag(page, { x: mb.x + mb.width / 2, y: mb.y + mb.height / 2 }, point)
+  await expect(
+    page.locator(
+      `[data-row="${row}"][data-zone="right"] .fs-chip[data-segkey="${key('mem')}|used"]`,
+    ),
+  ).toHaveCount(1)
 })
 
 // ── デバッグコンソール (console-*) ──
