@@ -184,6 +184,14 @@ Source Edit : 接続先 URL（複数可） + 接続テスト + 「ローカル�
 - summary 行は segment 境界で物理 1 行に clamp し、超過は `… +N`（全データは detail ページ）。autoSummary の top/bottom gap 計算が論理行数ベースのため、折り返しで 10 行予算を破らないための保証。
 - 管理面（companion）は per-group のまま: 同名が並ぶ行だけ group id を淡色併記して provider 出自を区別する。
 
+### grid ページ（12×10 セル配置, Issue #17）
+
+- ページは `mode: 'linear' | 'grid'`（未設定 = linear）を単一の分岐軸とする。grid ページは `GlassPage.grid.cells` に最大 7 セル（+ compiler 注入の event 層 = SDK text 上限 8）を 12×10 格子（COL_W 48px / ROW_H 28.8px, edge-based 丸めで隙間なく tile）へ配置し、セルごとに `rows: string[][]`（linear と同語彙: segKey / `@right` / `@customLabel:id`。ラベル本文は `page.layout.customLabels` を共有）でデータ束縛する。
+- linear status line も同じ compiler を通る「全面 1 セル preset」（wire-identical をテストで固定）。1 セル⇄多セルは同一パイプラインの濃淡で、別系統の描画コードを持たない。
+- `layout` は grid 化直前の凍結スナップショットとして保持する（自動投影しない）。旧バージョンへ downgrade すると grid 化前の線形レイアウトに戻る、という予測可能な意味論。現行アプリの表示系 reader はすべて `mode` で分岐し、source 削除 / id remap / 統合 / orphan 掃除は `config/rows.ts` の行集合 visitor が layout と grid の両方を更新する。
+- BLE 同期（`glass-sync.ts`）: 送信 await が true を返した後にのみ applied state を更新し、false / 例外は invalidate → 次回 rebuild（失敗からの自動復帰）。topology（幾何/様式/順序。content 含まず）同一かつ差分 1 セルなら `textContainerUpgrade`（cheap path）、差分 2 セル以上・幾何変化・overlay 出入りは rebuild（逐次 upgrade 中の混在表示を避ける）。
+- 制約: 枠線（border）は rowSpan>=2 のセルのみ（1 行セル ≒28px は line-height 27px を圧迫）。normalize は invalid セルを clamp せず drop する（落ちた chip は Unplaced 棚に現れる）。
+
 ## 7. メトリック定義
 
 | Source 種別 | Source | Group/Metric | 取得元 |
