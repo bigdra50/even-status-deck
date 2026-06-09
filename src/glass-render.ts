@@ -8,6 +8,7 @@ import {
   defaultShowGroupLabel,
   type GlassLayout,
   type GlassPage,
+  type GridCellSpec,
   type GroupMeta,
   type GroupRef,
   isCustomLabelKey,
@@ -23,6 +24,7 @@ import {
   type GroupMergeUnit,
   normalizeHeading,
 } from './display-identity'
+import { type CompiledCell, cellRect, compileGrid, type GridCell, LINE_H } from './glass-layout'
 import { GLASS_PADDING, GLASS_WIDTH, MAX_ROWS } from './glass-types'
 import { sanitizeGlyphs } from './glyphs'
 import type { Group, StatusDoc } from './status-types'
@@ -315,6 +317,20 @@ function rowClusters(
   }
 }
 
+// 任意の行スロット列 (linear layout の rows / grid セル内の rows) を左右クラスタへ解決する。
+// budget 行ぶん (空行は '' で保持) 返す。
+export function rowSlotClusters(
+  rows: string[][],
+  customLabels: Record<string, { text: string }>,
+  d: GlassData,
+  visible: VisibleMap | undefined,
+  budget: number,
+): RowClusters[] {
+  const out: RowClusters[] = []
+  for (let i = 0; i < budget; i++) out.push(rowClusters(rows[i] ?? [], d, customLabels, visible))
+  return out
+}
+
 // custom layout 各行の左右クラスタ (描画文字列)。companion プレビューが flex space-between で
 // 正確に左右表示するのに使う (実機の space 近似と違い px 量子化しない)。
 export function layoutRowClusters(
@@ -323,23 +339,20 @@ export function layoutRowClusters(
   visible: VisibleMap | undefined,
   budget: number,
 ): RowClusters[] {
-  const rows = lay.rows ?? []
-  const out: RowClusters[] = []
-  for (let i = 0; i < budget; i++)
-    out.push(rowClusters(rows[i] ?? [], d, lay.customLabels, visible))
-  return out
+  return rowSlotClusters(lay.rows ?? [], lay.customLabels, d, visible, budget)
 }
 
 // 左右クラスタを 1 行文字列に justify する。実機は単一 TextContainer (content) しか持たないため
-// 中央を space で充填して右クラスタを右端へ寄せる近似。pretext で px 計測。
+// 中央を space で充填して右クラスタを右端へ寄せる近似。pretext で px 計測。width = 描画可能幅
+// (全面 layout は INNER_W、grid セルはセル内寸)。
 // space 数は floor + 安全マージン (space 1 個) で決める。round 切り上げや pretext/実機 LVGL の
-// per-glyph 丸め差で合計が INNER_W を数 px でも超えると、最後の単語が word wrap して行が増え、
-// 10 行を超えた分が 2 ページ目に溢れるため (実機で確認)。floor なら合計 < INNER_W を保証する。
+// per-glyph 丸め差で合計が width を数 px でも超えると、最後の単語が word wrap して行が増え、
+// 行予算を超えた分が溢れるため (実機で確認)。floor なら合計 < width を保証する。
 // - 右が空: 左だけ (従来の左寄せ)。- 左が空: 行頭 space で右寄せ。- 両方: 中央 space は最低 1 個。
-function justifyClusters({ left, right }: RowClusters): string {
+function justifyClusters({ left, right }: RowClusters, width: number): string {
   if (!right) return left
   const rightW = getTextWidth(right)
-  const safe = INNER_W - SPACE_W // 右端に space 1 個分の余白を残し、丸め/フォント差での超過を防ぐ
+  const safe = width - SPACE_W // 右端に space 1 個分の余白を残し、丸め/フォント差での超過を防ぐ
   if (!left) {
     const pad = Math.max(0, Math.floor((safe - rightW) / SPACE_W))
     return ' '.repeat(pad) + right
@@ -357,7 +370,75 @@ export function layoutLines(
   visible: VisibleMap | undefined,
   budget: number,
 ): string[] {
-  return layoutRowClusters(lay, d, visible, budget).map(justifyClusters)
+  return layoutRowClusters(lay, d, visible, budget).map((rc) => justifyClusters(rc, INNER_W))
+}
+
+// ── grid ページ (Issue #17: cell→segment データ束縛) ──
+
+// 1 セルの描画行 (justify 済み)。行数はセル内寸の行容量に clamp し、各行はセル内寸幅で
+// 左右 justify する。custom label の本文は page.layout.customLabels を共有する。
+export function gridCellLines(
+  cell: GridCellSpec,
+  customLabels: Record<string, { text: string }>,
+  d: GlassData,
+  visible?: VisibleMap,
+): string[] {
+  const { w, h } = cellRect(cell)
+  const inset = 2 * ((cell.border ?? 0) + (cell.padding ?? 0))
+  const budget = Math.max(1, Math.floor((h - inset) / LINE_H))
+  const count = Math.min(cell.rows.length, budget)
+  const innerW = w - inset
+  return rowSlotClusters(cell.rows, customLabels, d, visible, count).map((rc) =>
+    justifyClusters(rc, innerW),
+  )
+}
+
+// grid ページの各セル content を解決して compiler へ渡す (event 層は compileGrid が注入)。
+// fitContent は既定 ON のまま (justify は幅を保証するが、px 丸め差の安全網として通す)。
+export function compileGridPage(
+  page: GlassPage,
+  d: GlassData,
+  visible?: VisibleMap,
+): CompiledCell[] {
+  const labels = page.layout.customLabels
+  const cells = (page.grid?.cells ?? []).map((c): GridCell => {
+    const cell: GridCell = {
+      id: c.id,
+      col: c.col,
+      row: c.row,
+      colSpan: c.colSpan,
+      rowSpan: c.rowSpan,
+      content: gridCellLines(c, labels, d, visible).join('\n'),
+    }
+    if (c.border !== undefined) cell.border = c.border
+    if (c.radius !== undefined) cell.radius = c.radius
+    if (c.padding !== undefined) cell.padding = c.padding
+    return cell
+  })
+  return compileGrid({ cells })
+}
+
+// custom ページが grid 描画対象なら GlassPage を返す (mode が単一の分岐軸)。
+export function gridPageOf(page: RuntimePage): GlassPage | null {
+  return page.kind === 'custom' && page.page.mode === 'grid' && page.page.grid ? page.page : null
+}
+
+// grid ページが描画可能 chip を 1 つでも持つか (空ページ skip 判定)。
+function hasRenderableGrid(page: GlassPage, d: GlassData, visible?: VisibleMap): boolean {
+  return (page.grid?.cells ?? []).some((c) =>
+    gridCellLines(c, page.layout.customLabels, d, visible).some((l) => l.trim() !== ''),
+  )
+}
+
+// grid ページの平文化 (セルを row,col 順に連結・空行除去・10 行 clamp)。
+// overlay の下地/コンテキスト行に使う近似 (overlay 表示中のみ。通常描画はセル別コンテナ)。
+export function gridPageText(page: GlassPage, d: GlassData, visible?: VisibleMap): string {
+  const cells = [...(page.grid?.cells ?? [])].sort((a, b) => a.row - b.row || a.col - b.col)
+  const lines = cells.flatMap((c) => gridCellLines(c, page.layout.customLabels, d, visible))
+  return lines
+    .filter((l) => l.trim() !== '')
+    .slice(0, MAX_ROWS)
+    .join('\n')
 }
 
 // unit=1行 の summary 描画 (glassLayout 未設定時)。align で top/bottom に振り分ける。
@@ -453,7 +534,11 @@ export function buildRuntimePages(d: GlassData, visible?: VisibleMap): RuntimePa
   const view = activeView(d.config)
   const pages = resolvePages(view)
   if (pages.length) {
-    const live = pages.filter((p) => hasRenderableLayout(p.layout, d, visible))
+    const renderable = (p: GlassPage): boolean =>
+      p.mode === 'grid' && p.grid
+        ? hasRenderableGrid(p, d, visible)
+        : hasRenderableLayout(p.layout, d, visible)
+    const live = pages.filter(renderable)
     if (live.length) return live.map((page) => ({ kind: 'custom', page }))
     return [{ kind: 'custom', page: pages[0] as GlassPage }] // 全空 → 先頭 1 枚 (空表示)
   }
@@ -477,6 +562,10 @@ export function renderRuntimePage(
     return frame(clampRows(detailBody(d, page.unit, visible), budget), null)
   }
   if (page.kind === 'custom') {
+    // grid ページの文字列表現は平文化 (通常描画は glass.ts がセル別コンテナで行う。
+    // ここを通るのは overlay 下地などテキスト 1 枚が要る経路のみ)。
+    const grid = gridPageOf(page)
+    if (grid) return gridPageText(grid, d, visible)
     return layoutLines(page.page.layout, d, visible, budget).join('\n')
   }
   // autoSummary: align で top/bottom に振り分け、予算いっぱいに展開 (renderGlass の summary 分岐と同義)。
@@ -489,7 +578,14 @@ export function renderRuntimePage(
   return frame([...top, ...Array<string>(gap).fill(''), ...bottom], null)
 }
 
-// デッキの現在ページを描く (glass.ts の単一描画エントリ)。全ページ本文 10 行。
+// デッキの現在ページ (安全 idx で巡回)。glass.ts が描画分岐 (single/grid) に使う。
+export function currentPage(pages: RuntimePage[], idx: number): RuntimePage {
+  const total = pages.length
+  const safeIdx = total > 0 ? ((idx % total) + total) % total : 0
+  return pages[safeIdx] ?? { kind: 'autoSummary' }
+}
+
+// デッキの現在ページを文字列で描く。全ページ本文 10 行。
 // ページ位置インジケータは出さない (実機でドットが大きすぎるためユーザー判断で撤去)。
 export function renderDeckPage(
   pages: RuntimePage[],
@@ -497,8 +593,5 @@ export function renderDeckPage(
   d: GlassData,
   visible?: VisibleMap,
 ): string {
-  const total = pages.length
-  const safeIdx = total > 0 ? ((idx % total) + total) % total : 0
-  const page = pages[safeIdx] ?? { kind: 'autoSummary' }
-  return renderRuntimePage(page, d, MAX_ROWS, visible)
+  return renderRuntimePage(currentPage(pages, idx), d, MAX_ROWS, visible)
 }

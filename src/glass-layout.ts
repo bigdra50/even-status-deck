@@ -7,6 +7,7 @@ import { GLASS_HEIGHT, GLASS_PADDING, GLASS_WIDTH, GRID_COLS, GRID_ROWS } from '
 
 // 既存 import 互換のため再エクスポート (定義は glass-types.ts の leaf へ移動)。
 export { GRID_COLS, GRID_ROWS } from './glass-types'
+
 const COL_W = GLASS_WIDTH / GRID_COLS // 48
 const ROW_H = GLASS_HEIGHT / GRID_ROWS // 28.8
 export const LINE_H = 27 // glass-render の line-height と一致
@@ -122,15 +123,30 @@ function eventLayer(): CompiledCell {
   }
 }
 
-// 1 セルを px 座標へ変換する。edge-based 丸め: 隣接セルが隙間/重なり無く tile する
+// セル矩形を px へ変換する。edge-based 丸め: 隣接セルが隙間/重なり無く tile する
 // (ROW_H=28.8 が小数なので round(span*ROW_H) の累積だと 1px ずれる)。
+// 描画側 (glass-render の grid データ束縛) も同じ式で内寸を計算する。
+export function cellRect(c: { col: number; row: number; colSpan: number; rowSpan: number }): {
+  x: number
+  y: number
+  w: number
+  h: number
+} {
+  const x = Math.round(c.col * COL_W)
+  const y = Math.round(c.row * ROW_H)
+  return {
+    x,
+    y,
+    w: Math.round((c.col + c.colSpan) * COL_W) - x,
+    h: Math.round((c.row + c.rowSpan) * ROW_H) - y,
+  }
+}
+
+// 1 セルを px 座標へ変換する。
 function compileCell(c: GridCell, id: number, opts: CompileGridOpts): CompiledCell {
   const border = Math.max(0, Math.min(5, c.border ?? 0))
   const padding = Math.max(0, c.padding ?? 0)
-  const x = Math.round(c.col * COL_W)
-  const y = Math.round(c.row * ROW_H)
-  const w = Math.round((c.col + c.colSpan) * COL_W) - x
-  const h = Math.round((c.row + c.rowSpan) * ROW_H) - y
+  const { x, y, w, h } = cellRect(c)
   const inset = 2 * (border + padding)
   const cell: CompiledCell = {
     xPosition: x,
