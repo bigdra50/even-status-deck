@@ -23,7 +23,7 @@ import {
   type GroupMergeUnit,
   normalizeHeading,
 } from './display-identity'
-import { MAX_ROWS } from './glass-types'
+import { GLASS_PADDING, GLASS_WIDTH, MAX_ROWS } from './glass-types'
 import { sanitizeGlyphs } from './glyphs'
 import type { Group, StatusDoc } from './status-types'
 import { isVisible, segKey, type VisibleMap } from './visibility'
@@ -46,14 +46,10 @@ export type GlassData = {
   statuses: Record<string, StatusDoc | null>
 }
 
-// MAX_ROWS は glass-types.ts へ分離 (config との循環回避)。既存 import 互換のため再エクスポートする。
-export { MAX_ROWS } from './glass-types'
+// 定数は glass-types.ts へ分離 (config / glass-layout との循環回避)。既存 import 互換のため再エクスポート。
+export { GLASS_HEIGHT, GLASS_PADDING, GLASS_WIDTH, MAX_ROWS } from './glass-types'
 
-// G2 ディスプレイ寸法と TextContainer padding (glass.ts の TextContainerProperty と一致させる)。
 // 右クラスタの justify (右寄せ) は INNER_W の中で行う。
-export const GLASS_WIDTH = 576
-export const GLASS_HEIGHT = 288
-export const GLASS_PADDING = 8
 const INNER_W = GLASS_WIDTH - 2 * GLASS_PADDING // テキスト描画可能幅 (560px)
 const SPACE_W = getTextWidth(' ') // proportional フォントの space 1 個の advance 幅 (px)
 

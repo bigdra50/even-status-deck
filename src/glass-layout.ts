@@ -3,13 +3,13 @@
 // 決定的に変換する。text セルのみ・固定 12×10。各セルを px で座標配置するので、
 // 列は座標で厳密に揃う (線形 status line の space パディングと違い proportional フォントでも揃う)。
 import { getTextWidth } from '@evenrealities/pretext'
-import { GLASS_HEIGHT, GLASS_PADDING, GLASS_WIDTH } from './glass-render'
+import { GLASS_HEIGHT, GLASS_PADDING, GLASS_WIDTH, GRID_COLS, GRID_ROWS } from './glass-types'
 
-export const GRID_COLS = 12
-export const GRID_ROWS = 10
+// 既存 import 互換のため再エクスポート (定義は glass-types.ts の leaf へ移動)。
+export { GRID_COLS, GRID_ROWS } from './glass-types'
 const COL_W = GLASS_WIDTH / GRID_COLS // 48
 const ROW_H = GLASS_HEIGHT / GRID_ROWS // 28.8
-const LINE_H = 27 // glass-render の line-height と一致
+export const LINE_H = 27 // glass-render の line-height と一致
 
 export type GridCell = {
   id: string
