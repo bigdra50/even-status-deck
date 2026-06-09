@@ -5,13 +5,24 @@ import {
   activeView,
   BUILTIN_SOURCE_ID,
   type GlassLayout,
+  type GlassPage,
+  type GridCellSpec,
   type GroupRef,
   saveConfig,
   syncSourceWithStatus,
 } from '../config'
 import { resolveDisplayLabels } from '../display-identity'
 import { esc } from '../escape'
-import { type GlassData, layoutRowClusters, MAX_ROWS, summarySections } from '../glass-render'
+import { cellRect, LINE_H } from '../glass-layout'
+import {
+  type GlassData,
+  layoutRowClusters,
+  MAX_ROWS,
+  type RowClusters,
+  rowSlotClusters,
+  summarySections,
+} from '../glass-render'
+import { GRID_COLS, GRID_ROWS } from '../glass-types'
 import type { Group, SourceState } from '../status-types'
 import {
   getAllStatuses,
@@ -22,7 +33,7 @@ import {
   setSourcesFromConfig,
 } from '../store'
 import { suggestProfile } from '../suggest'
-import { createVisibilityRuntime, segKey } from '../visibility'
+import { createVisibilityRuntime, segKey, type VisibleMap } from '../visibility'
 import { requestRender } from './render-port'
 import { ctx } from './state'
 
@@ -123,23 +134,48 @@ export function emptyGlassLayout(): GlassLayout {
   return { rows: Array.from({ length: MAX_ROWS }, () => []), customLabels: {} }
 }
 
+// 行 HTML: 右クラスタがあれば flex space-between で右端へ寄せる
+// (実機の space 近似と違い、プレビューは px 量子化せず正確に左右配置する)。
+const growHtml = (l: string): string => `<span class="grow">${l ? esc(l) : '&nbsp;'}</span>`
+const rowHtml = ({ left, right }: RowClusters): string =>
+  right
+    ? `<div class="grow gjust"><span>${left ? esc(left) : ''}</span><span class="gj-r">${esc(right)}</span></div>`
+    : growHtml(left)
+
+// grid ページのプレビュー。セルを 12×10 の % で絶対配置し、セル内行は linear と同じ
+// 左右クラスタ表示。行数は実機と同じセル内寸の行容量に clamp する。
+function gridPreviewHtml(page: GlassPage, d: GlassData, visible: VisibleMap): string {
+  const cellHtml = (c: GridCellSpec): string => {
+    const { h } = cellRect(c)
+    const inset = 2 * ((c.border ?? 0) + (c.padding ?? 0))
+    const budget = Math.max(1, Math.floor((h - inset) / LINE_H))
+    const count = Math.min(c.rows.length, budget)
+    const lines = rowSlotClusters(c.rows, page.layout.customLabels, d, visible, count)
+    const style = [
+      `left:${(c.col / GRID_COLS) * 100}%`,
+      `top:${(c.row / GRID_ROWS) * 100}%`,
+      `width:${(c.colSpan / GRID_COLS) * 100}%`,
+      `height:${(c.rowSpan / GRID_ROWS) * 100}%`,
+    ].join(';')
+    const cls = c.border ? 'gpv-cell gpv-cell-border' : 'gpv-cell'
+    return `<div class="${cls}" style="${style}" data-cellid="${esc(c.id)}">${lines.map(rowHtml).join('')}</div>`
+  }
+  const cells = page.grid?.cells ?? []
+  return `<div class="glass-screen gpv-gridscreen">${cells.map(cellHtml).join('')}</div>`
+}
+
 export function glassPreviewHtml(): string {
   const visible = previewVisibility.compute(ctx.config, getRenderableStatuses()).map
   const d = glassData()
-  const grow = (l: string) => `<span class="grow">${l ? esc(l) : '&nbsp;'}</span>`
+  const page = activeView(ctx.config).pages?.[ctx.pageEditingIdx]
+  if (page?.mode === 'grid' && page.grid) return gridPreviewHtml(page, d, visible)
   const lay = editingLayout()
   if (lay) {
-    // 各行を左右クラスタで表示。右クラスタがあれば flex space-between で右端へ寄せる
-    // (実機の space 近似と違い、プレビューは px 量子化せず正確に左右配置する)。
-    const row = ({ left, right }: { left: string; right: string }) =>
-      right
-        ? `<div class="grow gjust"><span>${left ? esc(left) : ''}</span><span class="gj-r">${esc(right)}</span></div>`
-        : grow(left)
-    return `<div class="glass-screen">${layoutRowClusters(lay, d, visible, MAX_ROWS).map(row).join('')}</div>`
+    return `<div class="glass-screen">${layoutRowClusters(lay, d, visible, MAX_ROWS).map(rowHtml).join('')}</div>`
   }
   const { top, bottom } = summarySections(d, visible)
   if (top.length + bottom.length === 0) top.push('(no metric)')
-  return `<div class="glass-screen"><div class="gsec gsec-top">${top.map(grow).join('')}</div><div class="gsec gsec-bot">${bottom.map(grow).join('')}</div></div>`
+  return `<div class="glass-screen"><div class="gsec gsec-top">${top.map(growHtml).join('')}</div><div class="gsec gsec-bot">${bottom.map(growHtml).join('')}</div></div>`
 }
 
 // ── 表示項目 (groupOrder 横断) ──

@@ -1007,6 +1007,22 @@ button.owner-badge:hover {
   margin-top: auto;
 }
 
+/* grid ページのプレビュー (Issue #17)。セルは 12×10 を % で絶対配置する。 */
+.glass-screen.gpv-gridscreen {
+  position: relative;
+  display: block;
+}
+.glass-screen .gpv-cell {
+  position: absolute;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.glass-screen .gpv-cell-border {
+  border: 1px solid rgba(60, 250, 68, 0.7);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
 /* Glass セクション見出しの右側アクション (Fullscreen / Edit layout) */
 .cmp-actions {
   display: flex;
