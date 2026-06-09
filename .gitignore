@@ -35,3 +35,6 @@ tasks/
 .env
 .env.local
 *.credentials.json
+
+# 実装 running note (ローカル専用。docs ポリシー: 設計メモは git 管理しない)
+implementation-notes.html
