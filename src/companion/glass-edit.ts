@@ -187,23 +187,21 @@ function renderGridCanvas(page: GlassPage): string {
 }
 
 // 選択セルの操作列: 移動 (◀▶▲▼) / サイズ (W±/H±) / 枠線 / 削除。実行不能な操作は disabled。
+// data-action は静的リテラルで放出する (actions.test.ts のソース走査契約。動的組み立て禁止)。
 function renderGridCellControls(page: GlassPage, sel: GridCellSpec): string {
   const grid = page.grid ?? { cells: [] }
   const can = (rect: Partial<GridCellSpec>): boolean => canPlace(grid, { ...sel, ...rect }, sel.id)
-  const btn = (action: string, attrs: string, ic: string, title: string, ok: boolean): string =>
-    `<button class="gear-btn" data-action="${action}" ${attrs} title="${title}" aria-label="${title}" ${ok ? '' : 'disabled'}>${ic}</button>`
-  const move = [
-    btn('grid-cell-move', 'data-dx="-1" data-dy="0"', icon('chevron-left', { size: 14 }), 'Move left', can({ col: sel.col - 1 })),
-    btn('grid-cell-move', 'data-dx="1" data-dy="0"', icon('chevron-right', { size: 14 }), 'Move right', can({ col: sel.col + 1 })),
-    btn('grid-cell-move', 'data-dx="0" data-dy="-1"', icon('chevron-up', { size: 14 }), 'Move up', can({ row: sel.row - 1 })),
-    btn('grid-cell-move', 'data-dx="0" data-dy="1"', icon('chevron-down', { size: 14 }), 'Move down', can({ row: sel.row + 1 })),
-  ].join('')
-  const size = [
-    btn('grid-cell-resize', 'data-dim="w" data-delta="-1"', 'W−', 'Narrower', sel.colSpan > 1),
-    btn('grid-cell-resize', 'data-dim="w" data-delta="1"', 'W+', 'Wider', can({ colSpan: sel.colSpan + 1 })),
-    btn('grid-cell-resize', 'data-dim="h" data-delta="-1"', 'H−', 'Shorter', sel.rowSpan > 1),
-    btn('grid-cell-resize', 'data-dim="h" data-delta="1"', 'H+', 'Taller', can({ rowSpan: sel.rowSpan + 1 })),
-  ].join('')
+  const dis = (ok: boolean): string => (ok ? '' : 'disabled')
+  const move = `
+    <button class="gear-btn" data-action="grid-cell-move" data-dx="-1" data-dy="0" title="Move left" aria-label="Move left" ${dis(can({ col: sel.col - 1 }))}>${icon('chevron-left', { size: 14 })}</button>
+    <button class="gear-btn" data-action="grid-cell-move" data-dx="1" data-dy="0" title="Move right" aria-label="Move right" ${dis(can({ col: sel.col + 1 }))}>${icon('chevron-right', { size: 14 })}</button>
+    <button class="gear-btn" data-action="grid-cell-move" data-dx="0" data-dy="-1" title="Move up" aria-label="Move up" ${dis(can({ row: sel.row - 1 }))}>${icon('chevron-up', { size: 14 })}</button>
+    <button class="gear-btn" data-action="grid-cell-move" data-dx="0" data-dy="1" title="Move down" aria-label="Move down" ${dis(can({ row: sel.row + 1 }))}>${icon('chevron-down', { size: 14 })}</button>`
+  const size = `
+    <button class="gear-btn" data-action="grid-cell-resize" data-dim="w" data-delta="-1" title="Narrower" aria-label="Narrower" ${dis(sel.colSpan > 1)}>W−</button>
+    <button class="gear-btn" data-action="grid-cell-resize" data-dim="w" data-delta="1" title="Wider" aria-label="Wider" ${dis(can({ colSpan: sel.colSpan + 1 }))}>W+</button>
+    <button class="gear-btn" data-action="grid-cell-resize" data-dim="h" data-delta="-1" title="Shorter" aria-label="Shorter" ${dis(sel.rowSpan > 1)}>H−</button>
+    <button class="gear-btn" data-action="grid-cell-resize" data-dim="h" data-delta="1" title="Taller" aria-label="Taller" ${dis(can({ rowSpan: sel.rowSpan + 1 }))}>H+</button>`
   // 枠線は rowSpan>=2 のみ (1 行セルは line-height を圧迫。config normalize とも一致)。
   const borderOk = sel.rowSpan >= 2
   const borderOn = (sel.border ?? 0) > 0

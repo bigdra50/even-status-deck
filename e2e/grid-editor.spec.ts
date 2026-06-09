@@ -63,9 +63,7 @@ test('tapping a shelf chip places it into the selected cell and the preview show
   const shelfChip = page.locator('.wys-shelf .wys-chip[data-action="grid-chip-add"]').first()
   const chipKey = await shelfChip.getAttribute('data-segkey')
   await shelfChip.click()
-  await expect(
-    page.locator(`#grid-rows .wys-chip[data-segkey="${chipKey}"]`),
-  ).toBeVisible()
+  await expect(page.locator(`#grid-rows .wys-chip[data-segkey="${chipKey}"]`)).toBeVisible()
   // Done でプレビューに戻ると、grid セルとして描画される。
   await page.locator('[data-action="layout-edit-toggle"]').click()
   await expect(page.locator('.gpv-gridscreen .gpv-cell')).toHaveCount(1)

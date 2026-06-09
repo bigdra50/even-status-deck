@@ -49,7 +49,9 @@ type ClickHandler = (t: HTMLElement, e: MouseEvent) => void | Promise<void>
 // 編集中ページの grid と選択セル (grid エディタの操作対象)。
 function editingGridCell(): {
   grid: NonNullable<ReturnType<typeof editingPage>>['grid']
-  cell: NonNullable<NonNullable<ReturnType<typeof editingPage>>['grid']>['cells'][number] | undefined
+  cell:
+    | NonNullable<NonNullable<ReturnType<typeof editingPage>>['grid']>['cells'][number]
+    | undefined
 } {
   const grid = editingPage()?.grid
   const cell = grid?.cells.find((c) => c.id === ctx.gridCellSel)

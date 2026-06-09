@@ -1029,8 +1029,20 @@ button.owner-badge:hover {
   position: relative;
   aspect-ratio: 576 / 288;
   background:
-    repeating-linear-gradient(to right, transparent 0, transparent calc(100% / 12 - 1px), rgba(60, 250, 68, 0.12) calc(100% / 12 - 1px), rgba(60, 250, 68, 0.12) calc(100% / 12)),
-    repeating-linear-gradient(to bottom, transparent 0, transparent calc(100% / 10 - 1px), rgba(60, 250, 68, 0.12) calc(100% / 10 - 1px), rgba(60, 250, 68, 0.12) calc(100% / 10)),
+    repeating-linear-gradient(
+      to right,
+      transparent 0,
+      transparent calc(100% / 12 - 1px),
+      rgba(60, 250, 68, 0.12) calc(100% / 12 - 1px),
+      rgba(60, 250, 68, 0.12) calc(100% / 12)
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent calc(100% / 10 - 1px),
+      rgba(60, 250, 68, 0.12) calc(100% / 10 - 1px),
+      rgba(60, 250, 68, 0.12) calc(100% / 10)
+    ),
     #000;
 }
 .grid-cell {
