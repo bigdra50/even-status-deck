@@ -1,9 +1,9 @@
-// グリッドレイアウト compiler (tasks/roadmap-ideas.md「グリッドレイアウト設計」の MVP)。
+// グリッドレイアウト compiler (Issue #17「グリッドレイアウト設計」)。
 // layout 定義 (セルの grid 座標) → SDK の TextContainerProperty 互換オブジェクト配列へ
-// 決定的に変換する。MVP は text セルのみ・固定 12×10。各セルを px で座標配置するので、
+// 決定的に変換する。text セルのみ・固定 12×10。各セルを px で座標配置するので、
 // 列は座標で厳密に揃う (線形 status line の space パディングと違い proportional フォントでも揃う)。
 import { getTextWidth } from '@evenrealities/pretext'
-import { GLASS_HEIGHT, GLASS_WIDTH } from './glass-render'
+import { GLASS_HEIGHT, GLASS_PADDING, GLASS_WIDTH } from './glass-render'
 
 export const GRID_COLS = 12
 export const GRID_ROWS = 10
@@ -25,6 +25,8 @@ export type GridCell = {
 export type GridLayout = { cols?: number; rows?: number; cells: GridCell[] }
 
 // new TextContainerProperty(...) に渡せる plain object。
+// borderRadius は radius 指定セルのみ持つ (未指定は toJson に出さない = PB default 0 と同義。
+// 旧 status-line 単一コンテナと wire-identical にするため optional)。
 export type CompiledCell = {
   xPosition: number
   yPosition: number
@@ -32,12 +34,21 @@ export type CompiledCell = {
   height: number
   borderWidth: number
   borderColor: number
-  borderRadius: number
+  borderRadius?: number
   paddingLength: number
   containerID: number
   containerName: string
   content: string
   isEventCapture: number
+}
+
+// compileGrid の内部オプション。config 語彙 (セル定義) には載せない:
+// - captureCellId: event 層を注入せず、この id のセル自身に isEventCapture=1 を与える
+//   (status-line preset 専用。id 採番も 1 始まりになる)
+// - fit: false で fitContent をスキップ (呼び出し元が幅/行数を保証済みの整形済み content 用)
+export type CompileGridOpts = {
+  captureCellId?: string
+  fit?: boolean
 }
 
 // 1 行を px 幅に収める。超えれば末尾 … (… の px を残す)。for..of = code point 単位 = grapheme で
@@ -78,63 +89,113 @@ function overlaps(grid: boolean[][], c: GridCell): boolean {
   return false
 }
 
-// MVP compiler: text セルのみ。event 層 (全面透明 text, isEventCapture:1) を 1 つ注入する。
-// 上限: user text ≤7 + event 1 = 8 (SDK の text 最大 8)。bounds / overlap / 上限を満たさねば throw。
-export function compileGrid(layout: GridLayout): CompiledCell[] {
+// セル定義の静的 validation。上限 (text ≤7 + event 1 = 8。captureCellId 指定時は注入なしで ≤8) /
+// id 一意 / id 1〜16 文字 (SDK containerName 制限) / captureCellId の実在。
+function validateCells(cells: GridCell[], capture?: string): void {
+  const max = capture ? 8 : 7
+  if (cells.length > max) throw new Error(`grid: text セルは最大 ${max}。${cells.length} 個指定`)
+  if (capture && !cells.some((c) => c.id === capture))
+    throw new Error(`grid: captureCellId '${capture}' のセルが無い`)
+  const ids = new Set<string>()
+  for (const c of cells) {
+    if (c.id.length < 1 || c.id.length > 16)
+      throw new Error(`grid: セル id '${c.id}' は 1〜16 文字 (SDK containerName 制限)`)
+    if (ids.has(c.id)) throw new Error(`grid: セル id '${c.id}' が重複`)
+    ids.add(c.id)
+  }
+}
+
+// event 層 (id 1, 全面透明)。declaration 順で最初に置く (後のセルが上に描画される)。
+function eventLayer(): CompiledCell {
+  return {
+    xPosition: 0,
+    yPosition: 0,
+    width: GLASS_WIDTH,
+    height: GLASS_HEIGHT,
+    borderWidth: 0,
+    borderColor: 0,
+    paddingLength: 0,
+    containerID: 1,
+    containerName: 'evt',
+    content: ' ', // 空不可。space 1 個 (不可視)
+    isEventCapture: 1,
+  }
+}
+
+// 1 セルを px 座標へ変換する。edge-based 丸め: 隣接セルが隙間/重なり無く tile する
+// (ROW_H=28.8 が小数なので round(span*ROW_H) の累積だと 1px ずれる)。
+function compileCell(c: GridCell, id: number, opts: CompileGridOpts): CompiledCell {
+  const border = Math.max(0, Math.min(5, c.border ?? 0))
+  const padding = Math.max(0, c.padding ?? 0)
+  const x = Math.round(c.col * COL_W)
+  const y = Math.round(c.row * ROW_H)
+  const w = Math.round((c.col + c.colSpan) * COL_W) - x
+  const h = Math.round((c.row + c.rowSpan) * ROW_H) - y
+  const inset = 2 * (border + padding)
+  const cell: CompiledCell = {
+    xPosition: x,
+    yPosition: y,
+    width: w,
+    height: h,
+    borderWidth: border,
+    borderColor: border > 0 ? 12 : 0,
+    paddingLength: padding,
+    containerID: id,
+    containerName: c.id,
+    content: opts.fit === false ? c.content : fitContent(c.content, w - inset, h - inset),
+    isEventCapture: c.id === opts.captureCellId ? 1 : 0,
+  }
+  // radius 指定セルのみ borderRadius を持つ (未指定は PB default 0 に任せ、wire を旧実装と揃える)。
+  if (c.radius !== undefined) cell.borderRadius = Math.max(0, Math.min(10, c.radius))
+  return cell
+}
+
+// compiler: text セルのみ。既定では event 層 (全面透明 text, isEventCapture:1) を 1 つ注入し、
+// セル id は 2 始まり。captureCellId 指定時は注入せず、そのセル自身が入力を受ける (id 1 始まり)。
+// bounds / overlap / validateCells を満たさねば throw。
+// containerName にはセル id をそのまま使う (textContainerUpgrade の宛先として安定)。
+export function compileGrid(layout: GridLayout, opts: CompileGridOpts = {}): CompiledCell[] {
   const cols = layout.cols ?? GRID_COLS
   const rows = layout.rows ?? GRID_ROWS
-  if (layout.cells.length > 7)
-    throw new Error(`grid: text セルは最大 7 (event 層 +1 = 8)。${layout.cells.length} 個指定`)
+  validateCells(layout.cells, opts.captureCellId)
 
   const grid: boolean[][] = Array.from({ length: rows }, () => Array<boolean>(cols).fill(false))
-  // event 層 (id 1, 全面透明)。declaration 順で最初に置く (後のセルが上に描画される)。
-  const out: CompiledCell[] = [
-    {
-      xPosition: 0,
-      yPosition: 0,
-      width: GLASS_WIDTH,
-      height: GLASS_HEIGHT,
-      borderWidth: 0,
-      borderColor: 0,
-      borderRadius: 0,
-      paddingLength: 0,
-      containerID: 1,
-      containerName: 'evt',
-      content: ' ', // 空不可。space 1 個 (不可視)
-      isEventCapture: 1,
-    },
-  ]
-  let id = 2
+  const out: CompiledCell[] = opts.captureCellId ? [] : [eventLayer()]
+  let id = opts.captureCellId ? 1 : 2
   for (const c of layout.cells) {
     if (c.col < 0 || c.row < 0 || c.col + c.colSpan > cols || c.row + c.rowSpan > rows)
       throw new Error(`grid: セル '${c.id}' が範囲外 (${cols}×${rows})`)
     if (overlaps(grid, c)) throw new Error(`grid: セル '${c.id}' が他セルと重なる`)
     markOccupied(grid, c)
-
-    const border = Math.max(0, Math.min(5, c.border ?? 0))
-    const padding = Math.max(0, c.padding ?? 0)
-    const x = Math.round(c.col * COL_W)
-    const y = Math.round(c.row * ROW_H)
-    // edge-based 丸め: 隣接セルが隙間/重なり無く tile する (ROW_H=28.8 が小数なので
-    // round(span*ROW_H) の累積だと 1px ずれる)。1 行セル (rowSpan=1) を積むときに効く。
-    const w = Math.round((c.col + c.colSpan) * COL_W) - x
-    const h = Math.round((c.row + c.rowSpan) * ROW_H) - y
-    const inset = 2 * (border + padding)
-    out.push({
-      xPosition: x,
-      yPosition: y,
-      width: w,
-      height: h,
-      borderWidth: border,
-      borderColor: border > 0 ? 12 : 0,
-      borderRadius: Math.max(0, Math.min(10, c.radius ?? 0)),
-      paddingLength: padding,
-      containerID: id,
-      containerName: `c${id}`,
-      content: fitContent(c.content, w - inset, h - inset),
-      isEventCapture: 0,
-    })
+    out.push(compileCell(c, id, opts))
     id++
   }
   return out
+}
+
+// status-line preset: 全面 1 cell (12×10)。従来の単一 'toolbar' container (glass.ts) と
+// wire-identical なコンパイル結果になる (glass-layout.test.ts で payload を固定)。
+// content は renderDeckPage が幅/行数を保証済みなので fit しない (fitLine を通すと
+// detail 行の挙動が word-wrap → ellipsis に変わり描画不変にならない)。
+export const STATUS_CELL_ID = 'toolbar'
+export function compileStatusLine(content: string): CompiledCell {
+  const cells = compileGrid(
+    {
+      cells: [
+        {
+          id: STATUS_CELL_ID,
+          col: 0,
+          row: 0,
+          colSpan: GRID_COLS,
+          rowSpan: GRID_ROWS,
+          content,
+          padding: GLASS_PADDING,
+        },
+      ],
+    },
+    { captureCellId: STATUS_CELL_ID, fit: false },
+  )
+  const cell = cells[0]
+  if (!cell) throw new Error('status-line preset: compile 結果が空')
+  return cell
 }
