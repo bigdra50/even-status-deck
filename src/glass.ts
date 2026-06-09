@@ -21,16 +21,9 @@ import {
 import { postDialogResult } from './data'
 import { getGlassBattery, setGlassBattery } from './device-state'
 import { startEvents, stopEvents } from './events'
+import { compileStatusLine, STATUS_CELL_ID } from './glass-layout'
 import { createOverlayManager, type Notif } from './glass-overlay'
-import {
-  buildRuntimePages,
-  GLASS_HEIGHT,
-  GLASS_PADDING,
-  GLASS_WIDTH,
-  type GlassData,
-  type RuntimePage,
-  renderDeckPage,
-} from './glass-render'
+import { buildRuntimePages, type GlassData, type RuntimePage, renderDeckPage } from './glass-render'
 import { feedImuSample, isImuStarted, setImuConfig, startImu, stopImu } from './imu'
 import { activateKeepAlive, deactivateKeepAlive } from './keep-alive'
 import {
@@ -51,10 +44,8 @@ import { recomputeSunCountdown } from './weather'
 
 // glass (G2 576×288) の描画。複数ソースの status は共有 store が保持し、glass は購読して
 // 横断描画する。HUD (時刻/電池) は builtin local の group として groupOrder に含まれる。
-const DISPLAY_W = GLASS_WIDTH
-const DISPLAY_H = GLASS_HEIGHT
 const CONTAINER_ID = 1
-const CONTAINER_NAME = 'toolbar'
+const CONTAINER_NAME = STATUS_CELL_ID // 'toolbar' (grid preset のセル id = containerName)
 const DEFAULT_DISPLAY_MS = 5000 // 条件提示 (toast/notification) の既定 自動非表示 ms (companion の既定秒数と一致)
 
 let gbridge: EvenAppBridge | null = null
@@ -82,21 +73,10 @@ const glassVisibility: VisibilityRuntime = createVisibilityRuntime({ wake: true 
 // 条件成立 → overlay UI 提示 (edge/level)。glass のみ。
 const displayRuntime: ConditionDisplayRuntime = createConditionDisplayRuntime()
 
-// 全面 1 text container (page1 / linear)。従来の単一コンテナと同一。
+// 全面 1 text container (page1 / linear)。grid compiler の status-line preset (全面 1 cell) を
+// 通すが、コンパイル結果は従来の単一コンテナと wire-identical (glass-layout.test.ts で固定)。
 function singleContainer(content: string): TextContainerProperty {
-  return new TextContainerProperty({
-    xPosition: 0,
-    yPosition: 0,
-    width: DISPLAY_W,
-    height: DISPLAY_H,
-    borderWidth: 0,
-    borderColor: 0,
-    paddingLength: GLASS_PADDING,
-    containerID: CONTAINER_ID,
-    containerName: CONTAINER_NAME,
-    content,
-    isEventCapture: 1,
-  })
+  return new TextContainerProperty(compileStatusLine(content))
 }
 
 // bridge 書き込みを 1 件ずつ直列化する (BLE 飽和でグラス切断するのを防ぐ。例外も握る)。
