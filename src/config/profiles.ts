@@ -25,6 +25,16 @@ export function cloneGlassLayout(lay: GlassLayout): GlassLayout {
   return { rows: lay.rows.map((r) => [...r]), customLabels }
 }
 
+// GlassPage を deep copy する (layout / grid / mode を新規化)。複製・profile clone・編集 UI で共用。
+export function cloneGlassPage(p: GlassPage): GlassPage {
+  const page: GlassPage = { id: p.id, name: p.name, layout: cloneGlassLayout(p.layout) }
+  if (p.mode) page.mode = p.mode
+  if (p.grid) {
+    page.grid = { cells: p.grid.cells.map((c) => ({ ...c, rows: c.rows.map((r) => [...r]) })) }
+  }
+  return page
+}
+
 // active profile を返す (見つからなければ先頭、それも無ければ Default を生成して補う)。
 export function activeProfile(cfg: Config): Profile {
   const found = cfg.profiles.find((p) => p.id === cfg.activeProfileId)
@@ -124,13 +134,7 @@ function cloneView(view: ProfileView): ProfileView {
     groupOrder: view.groupOrder.map((r) => ({ ...r })),
   }
   if (view.glassLayout) next.glassLayout = cloneGlassLayout(view.glassLayout)
-  if (view.pages) {
-    next.pages = view.pages.map((p) => ({
-      id: p.id,
-      name: p.name,
-      layout: cloneGlassLayout(p.layout),
-    }))
-  }
+  if (view.pages) next.pages = view.pages.map(cloneGlassPage)
   return next
 }
 

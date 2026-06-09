@@ -46,6 +46,7 @@ export {
   activeProfile,
   activeView,
   addProfile,
+  cloneGlassPage,
   duplicateActiveProfile,
   enabledSources,
   groupDisplayName,
@@ -67,8 +68,10 @@ export {
 export type {
   Config,
   GAlign,
+  GlassGrid,
   GlassLayout,
   GlassPage,
+  GridCellSpec,
   GroupMeta,
   GroupRef,
   OptionValues,

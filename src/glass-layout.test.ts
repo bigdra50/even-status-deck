@@ -123,10 +123,12 @@ test('captureCellId: 存在しないセル id を指すと throw', () => {
 
 // ── validation ──
 
-test('セル id の重複 / 16 文字超 / 空は throw', () => {
+test('セル id の重複 / 16 文字超 / 空 / 予約 id (evt) は throw', () => {
   expect(() => compileGrid({ cells: [cell(), cell({ row: 2 })] })).toThrow(/重複/)
   expect(() => compileGrid({ cells: [cell({ id: 'x'.repeat(17) })] })).toThrow(/16/)
   expect(() => compileGrid({ cells: [cell({ id: '' })] })).toThrow(/16/)
+  // 'evt' は注入される event 層と containerName が衝突する (sync の upgrade 先が壊れる)。
+  expect(() => compileGrid({ cells: [cell({ id: 'evt' })] })).toThrow(/予約/)
 })
 
 test('セル数上限: 既定 7 (event 層+1=8)、captureCellId 指定時は 8', () => {

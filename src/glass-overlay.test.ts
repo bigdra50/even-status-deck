@@ -70,3 +70,66 @@ test('key(): content-hash なので同長別内容で変わる (banner 値更新
   const k2 = ov.key()
   expect(k1).not.toBe(k2)
 })
+
+test('dialog: containers() の wire payload を固定 (framedBox/compileGrid の回帰検出)', () => {
+  const ov = createOverlayManager()
+  ov.dialog('T', 'M', ['OK'])
+  const wire = ov.containers('top\nl2\nl3\nbottom').map((c) => c.toJson())
+  // 12×10 grid: top(row0-1) / box(row2-7, 枠+radius) / bottom(row8-9) + event 層。
+  // borderRadius は radius 指定セル (box) のみ wire に出る。
+  expect(wire).toEqual([
+    {
+      xPosition: 0,
+      yPosition: 0,
+      width: 576,
+      height: 288,
+      borderWidth: 0,
+      borderColor: 0,
+      paddingLength: 0,
+      containerID: 1,
+      containerName: 'evt',
+      content: ' ',
+      isEventCapture: 1,
+    },
+    {
+      xPosition: 0,
+      yPosition: 0,
+      width: 576,
+      height: 58,
+      borderWidth: 0,
+      borderColor: 0,
+      paddingLength: 0,
+      containerID: 2,
+      containerName: 'top',
+      content: 'top',
+      isEventCapture: 0,
+    },
+    {
+      xPosition: 48,
+      yPosition: 58,
+      width: 480,
+      height: 172,
+      borderWidth: 2,
+      borderColor: 12,
+      borderRadius: 8,
+      paddingLength: 6,
+      containerID: 3,
+      containerName: 'box',
+      content: 'T\nM\n\n▶OK',
+      isEventCapture: 0,
+    },
+    {
+      xPosition: 0,
+      yPosition: 230,
+      width: 576,
+      height: 58,
+      borderWidth: 0,
+      borderColor: 0,
+      paddingLength: 0,
+      containerID: 4,
+      containerName: 'bottom',
+      content: 'bottom',
+      isEventCapture: 0,
+    },
+  ])
+})

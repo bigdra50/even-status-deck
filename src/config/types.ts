@@ -79,12 +79,34 @@ export type GlassLayout = {
   customLabels: Record<string, { text: string }> // ユーザー定義ラベルの本文 (id -> text)
 }
 
+// grid ページ (Issue #17) の 1 セル。12×10 grid 上の矩形に segment を束縛する。
+// rows = セル内の行スロット (GlassLayout.rows と同語彙: segKey / @right / @customLabel:id。
+// custom label の本文は page.layout.customLabels を共有する)。
+// border は rowSpan>=2 のみ有効 (1 行セルは枠線が line-height 27px を圧迫する。normalize が落とす)。
+export type GridCellSpec = {
+  id: string
+  col: number
+  row: number
+  colSpan: number
+  rowSpan: number
+  border?: number // 0-5
+  radius?: number // 0-10
+  padding?: number
+  rows: string[][]
+}
+export type GlassGrid = { cells: GridCellSpec[] }
+
 // 意図的マルチページ (explicit デッキ) の 1 ページ。layout = そのページの 10 行スロット。
 // id: 安定 id (複製/並べ替え/インジケータ用)。name: companion 表示用 (グラスには既定で出さない)。
+// mode: 表示系 reader の分岐軸 (未設定 = linear)。'grid' のとき grid を描画し、layout は
+// grid 化直前の凍結スナップショットとして保持する (旧バージョンへの downgrade 時は layout に戻る。
+// 自動投影はしない)。prune / source remap 系の visitor は layout と grid の両方を更新する。
 export type GlassPage = {
   id: string
   name: string
   layout: GlassLayout
+  mode?: 'linear' | 'grid'
+  grid?: GlassGrid
 }
 
 // profile の view (レシピ)。可視性・並び・10 行配置を状況ごとに持つ。

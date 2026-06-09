@@ -25,6 +25,7 @@ import {
   normalizeSourceUrls,
 } from './normalize'
 import { activeProfile, emptyDefaultProfile } from './profiles'
+import { mapViewRows, viewRowSets } from './rows'
 import type {
   Config,
   GAlign,
@@ -128,13 +129,10 @@ function migrateMacGroupToSystem(c: Config): void {
         if (hasSystemRef) return []
         return [{ sourceId: sid, groupId: SYSTEM_GROUP_ID }]
       })
-      // glassLayout.rows: segKey (sid|mac|seg) の groupId を 'system' へ (配置を保つ)。
-      const lay = p.view.glassLayout
-      if (lay) {
-        lay.rows = lay.rows.map((row) =>
-          row.map((k) => reKeyGroupId(k, sid, SYSTEM_GROUP_OLD_ID, SYSTEM_GROUP_ID)),
-        )
-      }
+      // 全行集合 (glassLayout / pages / grid): segKey (sid|mac|seg) の groupId を 'system' へ (配置を保つ)。
+      mapViewRows(p.view, (row) =>
+        row.map((k) => reKeyGroupId(k, sid, SYSTEM_GROUP_OLD_ID, SYSTEM_GROUP_ID)),
+      )
     }
   }
 }
@@ -244,26 +242,27 @@ function migrateLocationSourcesMerge(c: Config): void {
       return [ref]
     })
 
-    // 3d. glassLayout.rows: segKey の sourceId+groupId を remap。remap した location key だけ dedupe
+    // 3d. 全行集合: segKey の sourceId+groupId を remap。remap した location key だけ集合内で dedupe
     //     (@right / customLabel / 他 source key は素通し・dedupe しない = 複数行の @right を保つ)。
-    const lay = p.view.glassLayout
-    if (lay) {
+    for (const rs of viewRowSets(p.view)) {
       const seenKey = new Set<string>()
-      lay.rows = lay.rows.map((row) =>
-        row.flatMap((k) => {
-          const parts = k.split('|')
-          const m =
-            parts.length >= 3
-              ? LOCATION_MERGE_MAP.find((x) => x.src === parts[0] && x.grp === parts[1])
-              : undefined
-          if (!m) return [k]
-          parts[0] = LOCATION_SOURCE_ID
-          parts[1] = m.newGrp
-          const remapped = parts.join('|')
-          if (seenKey.has(remapped)) return []
-          seenKey.add(remapped)
-          return [remapped]
-        }),
+      rs.write(
+        rs.read().map((row) =>
+          row.flatMap((k) => {
+            const parts = k.split('|')
+            const m =
+              parts.length >= 3
+                ? LOCATION_MERGE_MAP.find((x) => x.src === parts[0] && x.grp === parts[1])
+                : undefined
+            if (!m) return [k]
+            parts[0] = LOCATION_SOURCE_ID
+            parts[1] = m.newGrp
+            const remapped = parts.join('|')
+            if (seenKey.has(remapped)) return []
+            seenKey.add(remapped)
+            return [remapped]
+          }),
+        ),
       )
     }
   }
@@ -299,19 +298,16 @@ function migrateDropPlaceNav(c: Config): void {
   const meta = c.groups[LOCATION_SOURCE_ID]?.[gid]
   if (meta) meta.segments = meta.segments.filter((s) => !isNavSeg(s.id))
 
-  // 2. 各 profile の view.groups + glassLayout.rows から除去(行位置は保つ=空行も残す)。
+  // 2. 各 profile の view.groups + 全行集合から除去(行位置は保つ=空行も残す)。
   for (const p of c.profiles) {
     const vg = p.view.groups[LOCATION_SOURCE_ID]?.[gid]
     if (vg) for (const id of Object.keys(vg.segments)) if (isNavSeg(id)) delete vg.segments[id]
-    const lay = p.view.glassLayout
-    if (lay) {
-      lay.rows = lay.rows.map((row) =>
-        row.filter((k) => {
-          const parts = k.split('|')
-          return !(parts[0] === LOCATION_SOURCE_ID && parts[1] === gid && isNavSeg(parts[2] ?? ''))
-        }),
-      )
-    }
+    mapViewRows(p.view, (row) =>
+      row.filter((k) => {
+        const parts = k.split('|')
+        return !(parts[0] === LOCATION_SOURCE_ID && parts[1] === gid && isNavSeg(parts[2] ?? ''))
+      }),
+    )
   }
 
   // 3. 廃止オプション値(distUnit/bearingStyle)を掃除(無害だが残さない)。
@@ -469,11 +465,10 @@ function pruneOrphans(cfg: Config): void {
     for (const sid of Object.keys(p.view.groups)) {
       if (!ids.has(sid)) delete p.view.groups[sid]
     }
-    // explicit デッキ: pages[].layout の segKey が指す orphan source chip を掃除 (custom label/@right は残す)。
-    // glassLayout (legacy) の rows は従来どおり掃除しない (回帰最小。render は pages を見る)。
-    for (const page of p.view.pages ?? []) {
-      page.layout.rows = page.layout.rows.map((row) => row.filter((k) => keepLayoutKey(k, ids)))
-    }
+    // explicit デッキ: pages[].layout / pages[].grid の segKey が指す orphan source chip を掃除
+    // (custom label/@right は残す)。glassLayout (legacy) の rows は従来どおり掃除しない
+    // (回帰最小。render は pages を見る)。
+    mapViewRows(p.view, (row) => row.filter((k) => keepLayoutKey(k, ids)), { legacy: false })
   }
 }
 
