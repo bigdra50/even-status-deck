@@ -46,7 +46,8 @@ const TOAST_MAX = 4 // toast キュー上限 (条件発火の連続でも無限�
 const DIALOG_MAX = 4 // dialog キュー上限 (ack-only の条件 dialog が溜まり過ぎないように)
 
 // 簡易 content hash (djb2)。key() を文字数でなく内容で作り、同長別内容 (banner の値更新等) でも再描画させる。
-function hashStr(s: string): number {
+// glass.ts も overlay 表示中の下地 (base) 変化検出に使う。
+export function hashStr(s: string): number {
   let h = 5381
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
   return h

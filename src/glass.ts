@@ -21,9 +21,20 @@ import {
 import { postDialogResult } from './data'
 import { getGlassBattery, setGlassBattery } from './device-state'
 import { startEvents, stopEvents } from './events'
-import { compileStatusLine, STATUS_CELL_ID } from './glass-layout'
-import { createOverlayManager, type Notif } from './glass-overlay'
-import { buildRuntimePages, type GlassData, type RuntimePage, renderDeckPage } from './glass-render'
+import { type CompiledCell, compileStatusLine } from './glass-layout'
+import { createOverlayManager, hashStr, type Notif } from './glass-overlay'
+import {
+  buildRuntimePages,
+  compileGridPage,
+  currentPage,
+  type GlassData,
+  gridPageOf,
+  gridPageText,
+  MAX_ROWS,
+  type RuntimePage,
+  renderRuntimePage,
+} from './glass-render'
+import { createContainerSync } from './glass-sync'
 import { feedImuSample, isImuStarted, setImuConfig, startImu, stopImu } from './imu'
 import { activateKeepAlive, deactivateKeepAlive } from './keep-alive'
 import {
@@ -44,8 +55,6 @@ import { recomputeSunCountdown } from './weather'
 
 // glass (G2 576×288) の描画。複数ソースの status は共有 store が保持し、glass は購読して
 // 横断描画する。HUD (時刻/電池) は builtin local の group として groupOrder に含まれる。
-const CONTAINER_ID = 1
-const CONTAINER_NAME = STATUS_CELL_ID // 'toolbar' (grid preset のセル id = containerName)
 const DEFAULT_DISPLAY_MS = 5000 // 条件提示 (toast/notification) の既定 自動非表示 ms (companion の既定秒数と一致)
 
 let gbridge: EvenAppBridge | null = null
@@ -63,8 +72,7 @@ let eventUnsub: (() => void) | null = null // onEvenHubEvent の解除関数 (cl
 let glassesSn = '' // getDeviceInfo の sn。status 更新が他デバイス(ring 等)か判別する
 let refreshBusy = false // bridge 書き込みを直列化 (BLE 飽和でグラス切断するのを防ぐ)
 let refreshPending = false
-let lastContent: string | null = null // 直近送信した content (single topology)。無変化なら upgrade 抑制
-let lastTopo: string | null = null // 直近のコンテナ構成キー。変わると rebuildPageContainer する
+let lastOverlayKey: string | null = null // 直近の overlay 構成キー (種類+内容+下地 hash)。変わると rebuild
 let glassClock: ReturnType<typeof setTimeout> | null = null // 分境界の時刻更新 (store.notify を介さない)
 let overlayTimer: ReturnType<typeof setTimeout> | null = null // toast の自動消去タイマー
 const overlay = createOverlayManager() // notification / toast / dialog / banner (server イベント用も含む)
@@ -73,15 +81,46 @@ const glassVisibility: VisibilityRuntime = createVisibilityRuntime({ wake: true 
 // 条件成立 → overlay UI 提示 (edge/level)。glass のみ。
 const displayRuntime: ConditionDisplayRuntime = createConditionDisplayRuntime()
 
-// 全面 1 text container (page1 / linear)。grid compiler の status-line preset (全面 1 cell) を
-// 通すが、コンパイル結果は従来の単一コンテナと wire-identical (glass-layout.test.ts で固定)。
-function singleContainer(content: string): TextContainerProperty {
-  return new TextContainerProperty(compileStatusLine(content))
+// 通常ビューのコンテナ集合 (applied-state 同期は glass-sync)。送信は成功 (true) 後にのみ
+// state を確定し、false / 例外は invalidate → 次回 rebuild (bridge 不通からの自動復帰)。
+const sync = createContainerSync({
+  rebuild: (cells) =>
+    gbridge
+      ? gbridge
+          .rebuildPageContainer(
+            new RebuildPageContainer({
+              containerTotalNum: cells.length,
+              textObject: cells.map((c) => new TextContainerProperty(c)),
+            }),
+          )
+          .then((ok) => !!ok)
+          .catch(() => false)
+      : Promise.resolve(false),
+  upgrade: (t) =>
+    gbridge
+      ? gbridge
+          .textContainerUpgrade(new TextContainerUpgrade(t))
+          .then((ok) => !!ok)
+          .catch(() => false)
+      : Promise.resolve(false),
+})
+
+// 現在ページのコンテナ集合と、その平文表現 (overlay の下地/コンテキスト行用)。
+// linear/auto ページ = 全面 1 cell (status-line preset)。grid ページ = セル別コンテナ。
+// 絵文字 tofu 対策の sanitize は glass-render(値/ラベル段) と glass-overlay(本文段) が担う。
+function renderCurrentCells(): { cells: CompiledCell[]; base: string } {
+  const page = currentPage(pages, idx)
+  const grid = gridPageOf(page)
+  if (grid) {
+    return { cells: compileGridPage(grid, data, visible), base: gridPageText(grid, data, visible) }
+  }
+  const base = renderRuntimePage(page, data, MAX_ROWS, visible)
+  return { cells: [compileStatusLine(base)], base }
 }
 
 // bridge 書き込みを 1 件ずつ直列化する (BLE 飽和でグラス切断するのを防ぐ。例外も握る)。
 // 通知 popup がある間は現在ビューの上下 1 行を残し中央に overlay を rebuild、無ければ
-// 現在ビューを単一 'toolbar' container で描く (同一内容は textContainerUpgrade=ちらつき無し)。
+// 現在ビューのコンテナ集合へ同期する (同一内容は無送信 / 1 セル差分は upgrade = ちらつき無し)。
 function refresh(): void {
   if (!gbridge) return
   if (refreshBusy) {
@@ -105,15 +144,15 @@ function refresh(): void {
   // 毎分 glassTick の refresh で値が減る。anchors/suncountdown が無ければ no-op。
   const loc = data.statuses[LOCATION_SOURCE_ID]
   if (loc) data.statuses[LOCATION_SOURCE_ID] = recomputeSunCountdown(loc, Date.now())
-  // 絵文字 tofu 対策の sanitize は glass-render(値/ラベル段) と glass-overlay(本文段) が担う。
-  const base = renderDeckPage(pages, idx, data, visible)
+  const { cells, base } = renderCurrentCells()
 
   if (overlay.isActive()) {
-    // 現在ビューの上に active overlay を重ねる (内容/選択が変われば rebuild)。
-    const key = `ov:${overlay.key()}`
-    if (key !== lastTopo) {
-      lastTopo = key
-      lastContent = null
+    // 現在ビューの上に active overlay を重ねる。key に下地 (base) の hash も含め、
+    // overlay 表示中のコンテキスト行/toast 下地の値更新でも再描画する。
+    const key = `ov:${overlay.key()}:${hashStr(base)}`
+    if (key !== lastOverlayKey) {
+      lastOverlayKey = key
+      sync.invalidate() // overlay が別コンテナ集合を送る → 通常ビューの applied state は無効
       const containers = overlay.containers(base)
       bridge
         .rebuildPageContainer(
@@ -130,35 +169,8 @@ function refresh(): void {
     return
   }
 
-  // 通常ビュー (summary / detail) は単一 'toolbar' container。
-  if (lastTopo !== 'single') {
-    lastTopo = 'single'
-    lastContent = base
-    bridge
-      .rebuildPageContainer(
-        new RebuildPageContainer({ containerTotalNum: 1, textObject: [singleContainer(base)] }),
-      )
-      .catch(() => {})
-      .finally(done)
-    return
-  }
-  if (base === lastContent) {
-    done()
-    return
-  }
-  lastContent = base
-  bridge
-    .textContainerUpgrade(
-      new TextContainerUpgrade({
-        containerID: CONTAINER_ID,
-        containerName: CONTAINER_NAME,
-        content: base,
-      }),
-    )
-    .catch(() => {
-      /* bridge 不通/コンテナ無効 — 無視 (次の更新で復帰) */
-    })
-    .finally(done)
+  lastOverlayKey = null
+  void sync.apply(cells).finally(done)
 }
 
 function cycle(dir: number): void {
@@ -275,6 +287,8 @@ function cleanup(): void {
   if (gbridge) void stopImu(gbridge)
   glassVisibility.reset() // transient 状態 + wake タイマーを破棄
   displayRuntime.reset() // edge/banner 状態を破棄
+  sync.invalidate() // 適用済みコンテナ state を破棄 (再 init 時に必ず作り直す)
+  lastOverlayKey = null
   deactivateKeepAlive()
   // exit 後に onStoreUpdate/onConfigChanged/refresh が bridge 書込を復活させないよう無効化。
   gbridge = null
@@ -467,16 +481,17 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   pages = buildRuntimePages(data, visible)
   idx = 0
 
-  // 起動ページ。先頭ページを単一 'toolbar' container で。
-  const content0 = renderDeckPage(pages, idx, data, visible)
-  lastTopo = 'single'
-  lastContent = content0
+  // 起動ページ。先頭ページのコンテナ集合 (linear=全面 1 cell / grid=セル別) で作成し、
+  // 以後の差分同期 (sync) の applied state として seed する。
+  const { cells } = renderCurrentCells()
+  lastOverlayKey = null
   await bridge.createStartUpPageContainer(
     new CreateStartUpPageContainer({
-      containerTotalNum: 1,
-      textObject: [singleContainer(content0)],
+      containerTotalNum: cells.length,
+      textObject: cells.map((c) => new TextContainerProperty(c)),
     }),
   )
+  sync.seed(cells)
 
   eventUnsub = bridge.onEvenHubEvent(onEvent)
   storeUnsub = subscribe(onStoreUpdate)
