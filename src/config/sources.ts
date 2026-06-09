@@ -2,6 +2,7 @@ import { BUILTIN_SOURCE_ID, LOCAL_SOURCE_ID } from './constants'
 import { deriveSourceId, disambiguateSourceId, genSourceId } from './ids'
 import { pruneRemovedViews } from './normalize'
 import { activeProfile } from './profiles'
+import { mapViewRows, type RowSet, viewRowSets } from './rows'
 import type { Config, GlassLayout, Profile, RemovedSourceView, SourceDef, ViewGroup } from './types'
 
 // 新規 server ソースを不変 ID で追加する (ユーザー追加。ランダム ID)。
@@ -41,8 +42,8 @@ export function removeSource(cfg: Config, id: string): void {
 }
 
 // source と全 profile view 参照を物理削除する (tombstone を書かない内部 helper)。
-// glassLayout からも当該 source の segKey を除去する (削除後に幽霊 chip を残さない。
-// 配置の復元は tombstone 経由で行う)。
+// glassLayout / 各 page (layout + grid) からも当該 source の segKey を除去する
+// (削除後に幽霊 chip を残さない。配置の復元は tombstone 経由で行う)。
 function discardSource(cfg: Config, id: string): void {
   if (id === BUILTIN_SOURCE_ID) return
   cfg.sources = cfg.sources.filter((s) => s.id !== id)
@@ -51,12 +52,7 @@ function discardSource(cfg: Config, id: string): void {
     p.enabledSourceIds = p.enabledSourceIds.filter((sid) => sid !== id)
     delete p.view.groups[id]
     p.view.groupOrder = p.view.groupOrder.filter((r) => r.sourceId !== id)
-    const lay = p.view.glassLayout
-    if (lay) lay.rows = lay.rows.map((row) => row.filter((k) => k.split('|')[0] !== id))
-    // explicit デッキ各ページからも当該 source chip を除去 (削除後の幽霊 chip を残さない)。
-    for (const page of p.view.pages ?? []) {
-      page.layout.rows = page.layout.rows.map((row) => row.filter((k) => k.split('|')[0] !== id))
-    }
+    mapViewRows(p.view, (row) => row.filter((k) => k.split('|')[0] !== id))
   }
 }
 
@@ -127,13 +123,8 @@ function reKeySource(cfg: Config, oldId: string, newId: string): void {
       delete p.view.groups[oldId]
     }
     for (const r of p.view.groupOrder) if (r.sourceId === oldId) r.sourceId = newId
-    const lay = p.view.glassLayout
-    if (lay) lay.rows = lay.rows.map((row) => row.map((k) => reKeySegKey(k, oldId, newId)))
-    // explicit デッキ各ページの segKey も新 id へ付け替える (配置を保つ)。
-    for (const page of p.view.pages ?? []) {
-      if (!page?.layout) continue
-      page.layout.rows = page.layout.rows.map((row) => row.map((k) => reKeySegKey(k, oldId, newId)))
-    }
+    // glassLayout / 各 page (layout + grid) の segKey も新 id へ付け替える (配置を保つ)。
+    mapViewRows(p.view, (row) => row.map((k) => reKeySegKey(k, oldId, newId)))
   }
 }
 
@@ -173,31 +164,35 @@ function mergeSourceViewInto(cfg: Config, fromId: string, toId: string): void {
         present.add(r.groupId)
       }
     }
-    mergeGlassRows(p.view.glassLayout, fromId, toId)
-    for (const page of p.view.pages ?? []) mergeGlassRows(page.layout, fromId, toId)
+    // 行集合 (glassLayout / 各 page.layout / 各 page.grid) ごとに remap する。
+    // dedup の状態 (present) は集合内で共有し、集合間では共有しない (grid とその凍結
+    // layout は別の表示面なので、片方に在る chip がもう片方の remap を妨げない)。
+    for (const rs of viewRowSets(p.view)) mergeRowSet(rs, fromId, toId)
   }
 }
 
-// glassLayout.rows の fromId chip を toId へ remap する。重複は exact segKey 単位で排除する
+// 行集合の fromId chip を toId へ remap する。重複は exact segKey 単位で排除する
 // (同一 chip が rows に二重に乗ると同じ表示が 2 回出るため)。既に toId chip が在る位置を尊重し、
 // 衝突しない fromId chip は配置を保ったまま remap する (additive)。
-function mergeGlassRows(lay: GlassLayout | undefined, fromId: string, toId: string): void {
-  if (!lay) return
+function mergeRowSet(rs: RowSet, fromId: string, toId: string): void {
+  const rows = rs.read()
   // 既に rows 内に存在する toId segKey 集合 (これと衝突する fromId chip は捨てる)。
   const present = new Set<string>()
-  for (const row of lay.rows) {
+  for (const row of rows) {
     for (const k of row) {
       if (k.split('|')[0] === toId) present.add(k)
     }
   }
-  lay.rows = lay.rows.map((row) =>
-    row.flatMap((k) => {
-      if (k.split('|')[0] !== fromId) return [k]
-      const remapped = reKeySegKey(k, fromId, toId)
-      if (present.has(remapped)) return [] // 同一 chip が既配置なら捨てる (重複防止)
-      present.add(remapped)
-      return [remapped]
-    }),
+  rs.write(
+    rows.map((row) =>
+      row.flatMap((k) => {
+        if (k.split('|')[0] !== fromId) return [k]
+        const remapped = reKeySegKey(k, fromId, toId)
+        if (present.has(remapped)) return [] // 同一 chip が既配置なら捨てる (重複防止)
+        present.add(remapped)
+        return [remapped]
+      }),
+    ),
   )
 }
 
