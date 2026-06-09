@@ -137,8 +137,8 @@ function renderGlassEdit(lay: GlassLayout): string {
   for (let i = 0; i < MAX_ROWS; i++) {
     const row = lay.rows[i] ?? []
     const { left, right } = splitRowClusters(row)
-    const lc = left.map(wysChip).join('')
-    const rc = right.map(wysChip).join('')
+    const lc = left.map((k) => wysChip(k)).join('')
+    const rc = right.map((k) => wysChip(k)).join('')
     const warn = rowOverflow(row)
       ? `<span class="wys-over" title="May be too long for one line">${icon('alert', { size: 12 })}</span>`
       : ''
@@ -151,7 +151,7 @@ function renderGlassEdit(lay: GlassLayout): string {
     )
   }
   const shelf = unplaced.length
-    ? unplaced.map(wysChip).join('')
+    ? unplaced.map((k) => wysChip(k)).join('')
     : '<span class="cmp-sub">Nothing unplaced</span>'
   return `<div class="gpv"><div class="gpv-cap">G2 576×288 — editing</div>
       <div class="gpv-screen wys-screen">${lines.join('')}</div></div>
@@ -509,7 +509,7 @@ export function attachSortables(): void {
             for (const c of document.querySelectorAll('.wys-cell.drop-hot')) {
               c.classList.remove('drop-hot')
             }
-            recomputeWysFromDom()
+            recomputeFromDom()
           },
         }),
       )
@@ -517,28 +517,51 @@ export function attachSortables(): void {
   }
 }
 
-// ドラッグ後、各行の左/右ゾーンの chip 並びから glassLayout.rows (固定 MAX_ROWS 行) を再構築する。
-// 右ゾーンに chip があれば左ゾーンとの間に @right 区切りを挿む (前=左/後=右クラスタ)。
-// 棚 (data-shelf) の chip はどの行にも無い = 未配置 (次の描画で棚に導出される)。
-function recomputeWysFromDom(): void {
-  const lay = editingLayout()
-  if (!lay) return
-  const readZone = (i: number, zone: 'left' | 'right'): string[] => {
-    const el = document.querySelector<HTMLElement>(
-      `.wys-cell[data-row="${i}"][data-zone="${zone}"]`,
-    )
-    if (!el) return []
-    return [...el.querySelectorAll<HTMLElement>('.wys-chip')]
-      .map((c) => c.dataset.segkey ?? '')
-      .filter(Boolean)
-  }
-  const rows: string[][] = Array.from({ length: MAX_ROWS }, (_, i) => {
+// DOM の行ゾーン (data-row/data-zone) から chip キー列を読む。
+function readZone(i: number, zone: 'left' | 'right'): string[] {
+  const el = document.querySelector<HTMLElement>(`.wys-cell[data-row="${i}"][data-zone="${zone}"]`)
+  if (!el) return []
+  return [...el.querySelectorAll<HTMLElement>('.wys-chip')]
+    .map((c) => c.dataset.segkey ?? '')
+    .filter(Boolean)
+}
+
+// DOM の行ゾーンから rows (n 行) を再構築する。右ゾーンに chip があれば @right 区切りを挿む。
+function readRowsFromDom(n: number): string[][] {
+  return Array.from({ length: n }, (_, i) => {
     const left = readZone(i, 'left')
     const right = readZone(i, 'right')
     return right.length ? [...left, RIGHT_DIVIDER, ...right] : left
   })
+}
+
+// ドラッグ後の書き戻し: grid セル行エディタ (#grid-rows) があればそのセルへ、無ければ線形 layout へ。
+function recomputeFromDom(): void {
+  const gridRows = document.querySelector<HTMLElement>('#grid-rows')
+  if (gridRows) {
+    recomputeGridCellFromDom(gridRows.dataset.cellId ?? '')
+    return
+  }
+  recomputeWysFromDom()
+}
+
+// grid 選択セルの行を DOM から再構築する (行数 = セル容量)。
+function recomputeGridCellFromDom(cellId: string): void {
   const page = activeView(ctx.config).pages?.[ctx.pageEditingIdx]
-  if (page) page.layout = { rows, customLabels: lay.customLabels }
+  const cell = page?.grid?.cells.find((c) => c.id === cellId)
+  if (!cell) return
+  cell.rows = readRowsFromDom(cellCapacity(cell))
+  void saveConfig(ctx.config)
+  requestRender()
+}
+
+// ドラッグ後、各行の左/右ゾーンの chip 並びから glassLayout.rows (固定 MAX_ROWS 行) を再構築する。
+// 棚 (data-shelf) の chip はどの行にも無い = 未配置 (次の描画で棚に導出される)。
+function recomputeWysFromDom(): void {
+  const lay = editingLayout()
+  if (!lay) return
+  const page = activeView(ctx.config).pages?.[ctx.pageEditingIdx]
+  if (page) page.layout = { rows: readRowsFromDom(MAX_ROWS), customLabels: lay.customLabels }
   void saveConfig(ctx.config)
   requestRender()
 }
