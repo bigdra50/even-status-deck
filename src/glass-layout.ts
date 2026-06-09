@@ -101,6 +101,8 @@ function validateCells(cells: GridCell[], capture?: string): void {
   for (const c of cells) {
     if (c.id.length < 1 || c.id.length > 16)
       throw new Error(`grid: セル id '${c.id}' は 1〜16 文字 (SDK containerName 制限)`)
+    if (c.id === 'evt')
+      throw new Error(`grid: セル id 'evt' は予約済み (注入される event 層と衝突する)`)
     if (ids.has(c.id)) throw new Error(`grid: セル id '${c.id}' が重複`)
     ids.add(c.id)
   }

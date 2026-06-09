@@ -94,6 +94,15 @@ test('gridCellLines: セル内の @right はセル内寸幅で右寄せされる
   expect(getTextWidth(line ?? '')).toBeLessThanOrEqual(w)
 })
 
+test('gridCellLines: 左+右がセル幅を超えても @right クラスタは欠落しない (左を切り詰め)', () => {
+  // colSpan 3 = 144px。左 (G2 Bat 80%) + 右 (12:00) は収まらない → 左が … 切り詰めされ右が残る。
+  const cell = cellSpec({ colSpan: 3, rows: [[G2_LEVEL, RIGHT_DIVIDER, CLOCK_DT]] })
+  const [line] = gridCellLines(cell, {}, makeData())
+  expect(line?.endsWith('12:00')).toBe(true)
+  const { w } = cellRect(cell)
+  expect(getTextWidth(line ?? '')).toBeLessThanOrEqual(w)
+})
+
 test('gridCellLines: 行数はセル内寸の行容量に clamp (rowSpan1 ≒28px は 1 行)', () => {
   const cell = cellSpec({ rowSpan: 1, rows: [[G2_LEVEL], [CLOCK_DT], [G2_LEVEL]] })
   const lines = gridCellLines(cell, {}, makeData())

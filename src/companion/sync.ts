@@ -13,13 +13,12 @@ import {
 } from '../config'
 import { resolveDisplayLabels } from '../display-identity'
 import { esc } from '../escape'
-import { cellRect, LINE_H } from '../glass-layout'
 import {
   type GlassData,
+  gridCellLines,
   layoutRowClusters,
   MAX_ROWS,
   type RowClusters,
-  rowSlotClusters,
   summarySections,
 } from '../glass-render'
 import { GRID_COLS, GRID_ROWS } from '../glass-types'
@@ -142,23 +141,28 @@ const rowHtml = ({ left, right }: RowClusters): string =>
     ? `<div class="grow gjust"><span>${left ? esc(left) : ''}</span><span class="gj-r">${esc(right)}</span></div>`
     : growHtml(left)
 
-// grid ページのプレビュー。セルを 12×10 の % で絶対配置し、セル内行は linear と同じ
-// 左右クラスタ表示。行数は実機と同じセル内寸の行容量に clamp する。
+// 実機 px → プレビュー幅基準の cqw (container query width 単位)。576px = 100cqw。
+const toCqw = (px: number): string => `${((px / 576) * 100).toFixed(2)}cqw`
+
+// grid ページのプレビュー。セルを 12×10 の % で絶対配置し、セル内容は実機と同じ
+// justify 済み文字列 (gridCellLines = 行容量 clamp / セル幅切り詰め込み) を表示する。
+// border / radius / padding は実値を cqw でスケールして反映する (固定 CSS にしない)。
 function gridPreviewHtml(page: GlassPage, d: GlassData, visible: VisibleMap): string {
   const cellHtml = (c: GridCellSpec): string => {
-    const { h } = cellRect(c)
-    const inset = 2 * ((c.border ?? 0) + (c.padding ?? 0))
-    const budget = Math.max(1, Math.floor((h - inset) / LINE_H))
-    const count = Math.min(c.rows.length, budget)
-    const lines = rowSlotClusters(c.rows, page.layout.customLabels, d, visible, count)
+    const lines = gridCellLines(c, page.layout.customLabels, d, visible)
     const style = [
       `left:${(c.col / GRID_COLS) * 100}%`,
       `top:${(c.row / GRID_ROWS) * 100}%`,
       `width:${(c.colSpan / GRID_COLS) * 100}%`,
       `height:${(c.rowSpan / GRID_ROWS) * 100}%`,
-    ].join(';')
+      `padding:${toCqw(c.padding ?? 0)}`,
+    ]
+    if (c.border) {
+      style.push(`border-width:${toCqw(c.border)}`, `border-radius:${toCqw(c.radius ?? 0)}`)
+    }
     const cls = c.border ? 'gpv-cell gpv-cell-border' : 'gpv-cell'
-    return `<div class="${cls}" style="${style}" data-cellid="${esc(c.id)}">${lines.map(rowHtml).join('')}</div>`
+    const body = lines.map((l) => `<span class="grow">${l ? esc(l) : '&nbsp;'}</span>`).join('')
+    return `<div class="${cls}" style="${style.join(';')}" data-cellid="${esc(c.id)}">${body}</div>`
   }
   const cells = page.grid?.cells ?? []
   return `<div class="glass-screen gpv-gridscreen">${cells.map(cellHtml).join('')}</div>`

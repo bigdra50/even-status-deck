@@ -132,7 +132,8 @@ function sanitizeGridCell(raw: unknown, ids: Set<string>): GridCellSpec | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
   const id = typeof r.id === 'string' ? r.id : ''
-  if (id.length < 1 || id.length > 16 || ids.has(id)) return null
+  // 'evt' は compiler が注入する event 層の予約 id (同名コンテナが 2 つできると upgrade 先が壊れる)。
+  if (id.length < 1 || id.length > 16 || id === 'evt' || ids.has(id)) return null
   const geom = sanitizeCellGeometry(r)
   if (!geom) return null
   const rows = (Array.isArray(r.rows) ? r.rows : [])

@@ -4,6 +4,7 @@ import {
   type EvenHubEvent,
   OsEventTypeList,
   RebuildPageContainer,
+  StartUpPageCreateResult,
   TextContainerProperty,
   TextContainerUpgrade,
 } from '@evenrealities/even_hub_sdk'
@@ -151,7 +152,6 @@ function refresh(): void {
     // overlay 表示中のコンテキスト行/toast 下地の値更新でも再描画する。
     const key = `ov:${overlay.key()}:${hashStr(base)}`
     if (key !== lastOverlayKey) {
-      lastOverlayKey = key
       sync.invalidate() // overlay が別コンテナ集合を送る → 通常ビューの applied state は無効
       const containers = overlay.containers(base)
       bridge
@@ -161,7 +161,13 @@ function refresh(): void {
             textObject: containers,
           }),
         )
-        .catch(() => {})
+        // key は送信成功後にのみ確定する (失敗時に確定すると同一 overlay が再送されず表示されない)。
+        .then((ok) => {
+          lastOverlayKey = ok ? key : null
+        })
+        .catch(() => {
+          lastOverlayKey = null
+        })
         .finally(done)
     } else {
       done()
@@ -482,16 +488,19 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   idx = 0
 
   // 起動ページ。先頭ページのコンテナ集合 (linear=全面 1 cell / grid=セル別) で作成し、
-  // 以後の差分同期 (sync) の applied state として seed する。
+  // 成功 (success=0) したときのみ差分同期 (sync) の applied state として seed する。
+  // 失敗時は seed しない → 最初の refresh が rebuild して復帰する。
   const { cells } = renderCurrentCells()
   lastOverlayKey = null
-  await bridge.createStartUpPageContainer(
-    new CreateStartUpPageContainer({
-      containerTotalNum: cells.length,
-      textObject: cells.map((c) => new TextContainerProperty(c)),
-    }),
-  )
-  sync.seed(cells)
+  const created = await bridge
+    .createStartUpPageContainer(
+      new CreateStartUpPageContainer({
+        containerTotalNum: cells.length,
+        textObject: cells.map((c) => new TextContainerProperty(c)),
+      }),
+    )
+    .catch(() => null)
+  if (created === StartUpPageCreateResult.success) sync.seed(cells)
 
   eventUnsub = bridge.onEvenHubEvent(onEvent)
   storeUnsub = subscribe(onStoreUpdate)

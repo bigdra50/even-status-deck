@@ -78,17 +78,34 @@ test('migrate: grid ページは layout が壊れていても空 layout で生�
   expect(page?.layout.rows).toHaveLength(10)
 })
 
-test('normalize: 範囲外 / id 重複 / 17 文字 id / 非整数座標のセルは drop', () => {
+test('normalize: 範囲外 / id 重複 / 17 文字 id / 予約 id (evt) / 非整数座標のセルは drop', () => {
   const cfg = emptyConfig()
   withGridPage(cfg, [
     cellSpec({ id: 'ok' }),
     cellSpec({ id: 'oob', col: 8, colSpan: 6, row: 4 }), // col+span > 12
     cellSpec({ id: 'ok', row: 4 }), // id 重複
     cellSpec({ id: 'x'.repeat(17), row: 6 }),
+    cellSpec({ id: 'evt', row: 6 }), // 予約 id (event 層と衝突)
     cellSpec({ id: 'frac', row: 8, col: 0.5 as unknown as number }),
   ])
   const page = migratedPage(cfg)
   expect(page?.grid?.cells.map((c) => c.id)).toEqual(['ok'])
+})
+
+test('migrate: cells が配列でない壊れた grid でもクラッシュせず grid を落とす', () => {
+  const cfg = emptyConfig()
+  ;(activeProfile(cfg).view as { pages: unknown }).pages = [
+    {
+      id: 'p1',
+      name: 'P1',
+      layout: { rows: emptyRows(), customLabels: {} },
+      mode: 'grid',
+      grid: { cells: {} }, // 壊れた形 (consolidateClock が normalize 前に走る経路で過去クラッシュ)
+    },
+  ]
+  const page = migratedPage(cfg)
+  expect(page?.grid).toBeUndefined()
+  expect(page?.mode).toBeUndefined()
 })
 
 test('normalize: overlap は定義順で先勝ち (後のセルを drop)', () => {

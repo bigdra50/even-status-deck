@@ -357,8 +357,17 @@ function justifyClusters({ left, right }: RowClusters, width: number): string {
     const pad = Math.max(0, Math.floor((safe - rightW) / SPACE_W))
     return ' '.repeat(pad) + right
   }
-  const gap = Math.max(1, Math.floor((safe - getTextWidth(left) - rightW) / SPACE_W))
-  return left + ' '.repeat(gap) + right
+  // 左+右が幅を超えるときは左を px 切り詰めて右クラスタを守る。後段の安全網 (fitLine) は
+  // 末尾 = 右側から削るため、ここで放置すると @right 側が丸ごと欠落する (小さい grid セルで現実に起きる)。
+  const avail = safe - rightW - SPACE_W // 中央 space 最低 1 個分を確保した左クラスタの上限幅
+  const l = getTextWidth(left) <= avail ? left : avail > 0 ? truncateToWidth(left, avail) : ''
+  if (!l || getTextWidth(l) > avail) {
+    // 右クラスタだけで幅が尽きる極小セル: 右を優先し左は出さない。
+    const pad = Math.max(0, Math.floor((safe - rightW) / SPACE_W))
+    return ' '.repeat(pad) + right
+  }
+  const gap = Math.max(1, Math.floor((safe - getTextWidth(l) - rightW) / SPACE_W))
+  return l + ' '.repeat(gap) + right
 }
 
 // custom layout (固定行) の絶対行レンダー。budget 行ぶん (空行は '' で保持) を返す。

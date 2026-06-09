@@ -22,8 +22,10 @@ function layoutRowSet(lay: { rows: string[][] }): RowSet {
 
 // grid は cells の rows を連結して 1 集合に見せる (write は各セルの行数で切り戻す)。
 // 変換は行単位 (行数を変えない) である前提。
+// 注: normalize 前に走るため cells 自体が配列でない壊れた config も来る (Array.isArray 必須)。
 function gridRowSet(page: GlassPage): RowSet | null {
-  const cells = (page.grid?.cells ?? []).filter((c) => Array.isArray(c?.rows))
+  const raw = page.grid?.cells
+  const cells = (Array.isArray(raw) ? raw : []).filter((c) => Array.isArray(c?.rows))
   if (!cells.length) return null
   return {
     read: () => cells.flatMap((c) => c.rows),
