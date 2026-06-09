@@ -6,8 +6,10 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Copy,
   ExternalLink,
+  Grid3x3,
   GripVertical,
   LayoutGrid,
   LoaderCircle,
@@ -30,6 +32,7 @@ export type IconName =
   | 'chevron-down'
   | 'chevron-left'
   | 'chevron-right'
+  | 'chevron-up'
   | 'align-top'
   | 'align-bottom'
   | 'check'
@@ -46,6 +49,7 @@ export type IconName =
   | 'sparkles'
   | 'layout'
   | 'maximize'
+  | 'grid3'
 
 const SVGS: Record<IconName, string> = {
   settings: Settings,
@@ -53,6 +57,7 @@ const SVGS: Record<IconName, string> = {
   'chevron-down': ChevronDown,
   'chevron-left': ChevronLeft,
   'chevron-right': ChevronRight,
+  'chevron-up': ChevronUp,
   'align-top': ArrowUpToLine,
   'align-bottom': ArrowDownToLine,
   check: Check,
@@ -69,6 +74,7 @@ const SVGS: Record<IconName, string> = {
   sparkles: Sparkles,
   layout: LayoutGrid,
   maximize: Maximize2,
+  grid3: Grid3x3,
 }
 
 type IconOpts = { size?: number; stroke?: number; cls?: string }

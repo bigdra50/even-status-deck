@@ -9,6 +9,7 @@ import {
   customLabelId,
   type GlassLayout,
   type GlassPage,
+  type GridCellSpec,
   type GroupRef,
   groupDisplayName,
   isCustomLabelKey,
@@ -20,7 +21,9 @@ import {
 import { collisionCategories, effectiveOwner } from '../display-identity'
 import { esc } from '../escape'
 import { MAX_ROWS, splitRowClusters } from '../glass-render'
+import { GRID_COLS, GRID_ROWS } from '../glass-types'
 import { icon } from '../icons'
+import { canPlace, cellCapacity, findFreeRect, gridPlacedKeys } from './grid-edit'
 import { requestPreviewUpdate, requestRender } from './render-port'
 import { allPlaceableKeys, groupHeadingCollides, segLabelParts } from './rows'
 import { ctx } from './state'
@@ -76,7 +79,7 @@ function rowOverflowKeyWidth(
   return rowOverflowCustomLabelWidth(key) ?? rowOverflowSegmentWidth(key, prevGroup, view)
 }
 
-export function rowOverflow(items: string[]): boolean {
+export function rowOverflow(items: string[], maxChars = ROW_MAX_CHARS): boolean {
   const view = activeView(ctx.config)
   let total = 0
   let n = 0
@@ -88,20 +91,22 @@ export function rowOverflow(items: string[]): boolean {
     prevGroup = contrib.nextPrevGroup
     if (contrib.counts) n++
   }
-  return total + Math.max(0, n - 1) * 2 > ROW_MAX_CHARS
+  return total + Math.max(0, n - 1) * 2 > maxChars
 }
 
 // WYSIWYG の chip。custom ラベル (自由テキスト) と segment 値 chip の 2 種。
 // 値 chip は実機の表示文字列 (label value / value)。group の default-label が ON なら
 // group 名を小さく添える (実機で前置されるラベルを editor で可視化。OFF なら出さない)。
-function wysChip(key: string): string {
+// tapAdd: 棚の chip タップで選択中 grid セルへ追加する (grid エディタの棚のみ。drag は grip)。
+function wysChip(key: string, opts: { tapAdd?: boolean } = {}): string {
   const grip = `<span class="wys-grip">${icon('grip', { size: 11 })}</span>`
+  const tap = opts.tapAdd ? ` data-action="grid-chip-add"` : ''
   // custom ラベル: × は削除 (customLabels から除去)。値 chip の × は unplace。
   if (isCustomLabelKey(key)) {
     const id = customLabelId(key)
     const text = editingLayout()?.customLabels[id]?.text ?? ''
     const del = `<button class="wys-x" data-action="label-delete" data-label-id="${esc(id)}" title="Delete label" aria-label="Delete label">${icon('x', { size: 10 })}</button>`
-    return `<span class="wys-chip wys-label-chip wys-custom-chip" data-segkey="${esc(key)}" title="${esc(text)}">${grip}<span class="wys-txt">${esc(text)}</span>${del}</span>`
+    return `<span class="wys-chip wys-label-chip wys-custom-chip" data-segkey="${esc(key)}"${tap} title="${esc(text)}">${grip}<span class="wys-txt">${esc(text)}</span>${del}</span>`
   }
   const [sourceId, groupId, segId] = key.split('|')
   const { group, seg } = segLabelParts(key)
@@ -119,7 +124,7 @@ function wysChip(key: string): string {
     cat != null && src && collisionCategories(ctx.config).has(cat)
       ? `<span class="owner-badge owner-fixed" title="Owner">${esc(effectiveOwner(src))}</span>`
       : ''
-  return `<span class="wys-chip" data-segkey="${esc(key)}" title="${esc(group ? `${group} ${seg}` : seg)}">${grip}${grp}${ownerBadge}<span class="wys-txt">${esc(text)}</span>${x}</span>`
+  return `<span class="wys-chip" data-segkey="${esc(key)}"${tap} title="${esc(group ? `${group} ${seg}` : seg)}">${grip}${grp}${ownerBadge}<span class="wys-txt">${esc(text)}</span>${x}</span>`
 }
 
 // 編集モードのキャンバス: 固定 MAX_ROWS 行 (行番号ガター + 左/右ゾーン) + 未配置棚 + Reset。
@@ -152,6 +157,103 @@ function renderGlassEdit(lay: GlassLayout): string {
       <div class="gpv-screen wys-screen">${lines.join('')}</div></div>
     <div class="cmp-sub">Drag items into the left or right side of a row. Right-side items align to the right edge.</div>
     <div class="cmp-label">Unplaced</div>
+    <div class="wys-cell wys-shelf" data-shelf="1">${shelf}</div>
+    <div class="field-row wys-add">
+      <input class="lay-add-input" type="text" maxlength="64" placeholder="Custom label (heading / divider …)" />
+      <button class="save-btn sm" data-action="label-add">${icon('plus', { size: 14 })}Add label</button>
+    </div>
+    <button class="danger-btn" data-action="layout-reset">Reset to auto</button>`
+}
+
+// ── grid ページの編集 UI (Issue #17) ──
+
+// 12×10 キャンバス。セルはタップで選択 (steppers で移動/拡縮)。
+function renderGridCanvas(page: GlassPage): string {
+  const cells = (page.grid?.cells ?? [])
+    .map((c) => {
+      const sel = c.id === ctx.gridCellSel ? ' grid-cell-sel' : ''
+      const style = [
+        `left:${(c.col / GRID_COLS) * 100}%`,
+        `top:${(c.row / GRID_ROWS) * 100}%`,
+        `width:${(c.colSpan / GRID_COLS) * 100}%`,
+        `height:${(c.rowSpan / GRID_ROWS) * 100}%`,
+      ].join(';')
+      return `<button class="grid-cell${sel}" style="${style}" data-action="grid-cell-select" data-cell-id="${esc(c.id)}" title="${esc(c.id)}">
+        <span class="grid-cell-id">${esc(c.id)}</span><span class="grid-cell-size">${c.colSpan}×${c.rowSpan}</span></button>`
+    })
+    .join('')
+  return `<div class="gpv"><div class="gpv-cap">G2 576×288 — grid 12×10</div>
+    <div class="gpv-screen grid-canvas">${cells}</div></div>`
+}
+
+// 選択セルの操作列: 移動 (◀▶▲▼) / サイズ (W±/H±) / 枠線 / 削除。実行不能な操作は disabled。
+function renderGridCellControls(page: GlassPage, sel: GridCellSpec): string {
+  const grid = page.grid ?? { cells: [] }
+  const can = (rect: Partial<GridCellSpec>): boolean => canPlace(grid, { ...sel, ...rect }, sel.id)
+  const btn = (action: string, attrs: string, ic: string, title: string, ok: boolean): string =>
+    `<button class="gear-btn" data-action="${action}" ${attrs} title="${title}" aria-label="${title}" ${ok ? '' : 'disabled'}>${ic}</button>`
+  const move = [
+    btn('grid-cell-move', 'data-dx="-1" data-dy="0"', icon('chevron-left', { size: 14 }), 'Move left', can({ col: sel.col - 1 })),
+    btn('grid-cell-move', 'data-dx="1" data-dy="0"', icon('chevron-right', { size: 14 }), 'Move right', can({ col: sel.col + 1 })),
+    btn('grid-cell-move', 'data-dx="0" data-dy="-1"', icon('chevron-up', { size: 14 }), 'Move up', can({ row: sel.row - 1 })),
+    btn('grid-cell-move', 'data-dx="0" data-dy="1"', icon('chevron-down', { size: 14 }), 'Move down', can({ row: sel.row + 1 })),
+  ].join('')
+  const size = [
+    btn('grid-cell-resize', 'data-dim="w" data-delta="-1"', 'W−', 'Narrower', sel.colSpan > 1),
+    btn('grid-cell-resize', 'data-dim="w" data-delta="1"', 'W+', 'Wider', can({ colSpan: sel.colSpan + 1 })),
+    btn('grid-cell-resize', 'data-dim="h" data-delta="-1"', 'H−', 'Shorter', sel.rowSpan > 1),
+    btn('grid-cell-resize', 'data-dim="h" data-delta="1"', 'H+', 'Taller', can({ rowSpan: sel.rowSpan + 1 })),
+  ].join('')
+  // 枠線は rowSpan>=2 のみ (1 行セルは line-height を圧迫。config normalize とも一致)。
+  const borderOk = sel.rowSpan >= 2
+  const borderOn = (sel.border ?? 0) > 0
+  const border = `<button class="gear-btn${borderOn ? ' seg-on' : ''}" data-action="grid-cell-border" title="Toggle border" aria-label="Toggle border" ${borderOk ? '' : 'disabled'}>${icon('layout', { size: 14 })}</button>`
+  return `<div class="grid-ctl">
+      <span class="grid-ctl-lbl">${esc(sel.id)} — ${sel.colSpan}×${sel.rowSpan} @ (${sel.col},${sel.row})</span>
+      <div class="grid-ctl-row"><span class="cmp-sub">Move</span>${move}<span class="cmp-sub">Size</span>${size}${border}
+        <button class="gear-btn danger" data-action="grid-cell-remove" title="Delete cell" aria-label="Delete cell">${icon('trash', { size: 14 })}</button></div>
+    </div>`
+}
+
+// 選択セルの行エディタ (容量ぶんの行スロット。左右ゾーン + drag/タップ追加)。
+// #grid-rows[data-cell-id] が recompute の書き戻し先マーカー。
+function renderGridCellRows(sel: GridCellSpec): string {
+  const cap = cellCapacity(sel)
+  const maxChars = Math.max(8, Math.round((ROW_MAX_CHARS * sel.colSpan) / GRID_COLS))
+  const lines: string[] = []
+  for (let i = 0; i < cap; i++) {
+    const row = sel.rows[i] ?? []
+    const { left, right } = splitRowClusters(row)
+    const warn = rowOverflow(row, maxChars)
+      ? `<span class="wys-over" title="May be too long for this cell">${icon('alert', { size: 12 })}</span>`
+      : ''
+    lines.push(
+      `<div class="wys-line"><span class="wys-ln">${i + 1}</span>` +
+        `<div class="wys-cell wys-zone" data-row="${i}" data-zone="left" title="Left">${left.map((k) => wysChip(k)).join('')}</div>` +
+        `<span class="wys-zone-sep" title="Left ｜ Right"></span>` +
+        `<div class="wys-cell wys-zone wys-zone-r" data-row="${i}" data-zone="right" title="Right">${right.map((k) => wysChip(k)).join('')}</div>` +
+        `${warn}</div>`,
+    )
+  }
+  return `<div class="cmp-label">Cell rows (${cap} line${cap > 1 ? 's' : ''})</div>
+    <div id="grid-rows" data-cell-id="${esc(sel.id)}">${lines.join('')}</div>`
+}
+
+// grid ページ編集面: キャンバス + 選択セル操作 + セル行エディタ + 未配置棚。
+function renderGridEdit(page: GlassPage): string {
+  const grid = page.grid ?? { cells: [] }
+  const sel = grid.cells.find((c) => c.id === ctx.gridCellSel) ?? null
+  const placed = gridPlacedKeys(grid)
+  const unplaced = allPlaceableKeys().filter((k) => !placed.has(k))
+  const shelf = unplaced.length
+    ? unplaced.map((k) => wysChip(k, { tapAdd: !!sel })).join('')
+    : '<span class="cmp-sub">Nothing unplaced</span>'
+  const addOk = grid.cells.length < 7 && findFreeRect(grid) !== null
+  return `${renderGridCanvas(page)}
+    <div class="field-row grid-add-row"><button class="save-btn sm" data-action="grid-cell-add" ${addOk ? '' : 'disabled'}>${icon('plus', { size: 14 })}Add cell</button></div>
+    ${sel ? renderGridCellControls(page, sel) : '<div class="cmp-sub">Tap a cell on the canvas to move / resize it and fill its rows.</div>'}
+    ${sel ? renderGridCellRows(sel) : ''}
+    <div class="cmp-label">Unplaced${sel ? ' — tap a chip to add it to the selected cell' : ''}</div>
     <div class="wys-cell wys-shelf" data-shelf="1">${shelf}</div>
     <div class="field-row wys-add">
       <input class="lay-add-input" type="text" maxlength="64" placeholder="Custom label (heading / divider …)" />
@@ -204,15 +306,18 @@ function renderPageTabs(pages: GlassPage[]): string {
   return `<div class="page-tabs">${tabs}${add}</div>`
 }
 
-// 編集中ページ (pageEditingIdx) の操作行: 名前 rename / 左右移動 / 削除。
+// 編集中ページ (pageEditingIdx) の操作行: 名前 rename / grid 切替 / 左右移動 / 削除。
 function renderPageControls(pages: GlassPage[]): string {
   const cur = pages[ctx.pageEditingIdx]
   if (!cur) return ''
   const up = ctx.pageEditingIdx === 0 ? 'disabled' : ''
   const down = ctx.pageEditingIdx >= pages.length - 1 ? 'disabled' : ''
   const del = pages.length <= 1 ? 'disabled' : ''
+  const isGrid = cur.mode === 'grid'
+  const gridTitle = isGrid ? 'Switch to rows layout' : 'Switch to grid layout'
   return `<div class="page-ctl">
       <input class="page-name-input" type="text" maxlength="24" value="${esc(cur.name)}" data-action="page-rename" data-page-idx="${ctx.pageEditingIdx}" placeholder="Page name" aria-label="Page name" />
+      <button class="gear-btn${isGrid ? ' seg-on' : ''}" data-action="page-mode-toggle" title="${gridTitle}" aria-label="${gridTitle}">${icon('grid3', { size: 14 })}</button>
       <button class="gear-btn" data-action="page-move-up" title="Move left" aria-label="Move left" ${up}>${icon('chevron-left', { size: 14 })}</button>
       <button class="gear-btn" data-action="page-move-down" title="Move right" aria-label="Move right" ${down}>${icon('chevron-right', { size: 14 })}</button>
       <button class="gear-btn danger" data-action="page-remove" title="Delete page" aria-label="Delete page" ${del}>${icon('trash', { size: 14 })}</button>
@@ -233,16 +338,28 @@ export function renderGlassSection(): string {
       ${renderGlassAutoOrder()}`
   }
   if (ctx.pageEditingIdx >= pages.length) ctx.pageEditingIdx = 0
-  const lay = pages[ctx.pageEditingIdx]?.layout ?? pages[0].layout
+  const cur = pages[ctx.pageEditingIdx] ?? (pages[0] as GlassPage)
+  const isGrid = cur.mode === 'grid' && !!cur.grid
+  // 選択セルが現ページに無ければ解除 (ページ/モード切替の取り残し)。
+  if (ctx.gridCellSel && !cur.grid?.cells.some((c) => c.id === ctx.gridCellSel)) {
+    ctx.gridCellSel = null
+  }
   const multi = pages.length > 1
   if (ctx.layoutEditing) {
+    const hint = isGrid
+      ? `<div class="cmp-sub">Cells place on a 12×10 grid. Tap a cell to select it, then move / resize / fill its rows.</div>`
+      : `<div class="cmp-sub">Drag items to rows (1–${MAX_ROWS}) or the Unplaced shelf. Row number = position from top of glass.</div>`
     return `<div class="cmp-label cmp-label-row">Glass pages<button class="gear-btn" data-action="layout-edit-toggle" title="Done" aria-label="Done">${icon('check', { size: 16 })}</button></div>
       ${renderPageTabs(pages)}
       ${renderPageControls(pages)}
-      <div class="cmp-sub">Drag items to rows (1–${MAX_ROWS}) or the Unplaced shelf. Row number = position from top of glass.</div>
-      ${renderGlassEdit(lay)}`
+      ${hint}
+      ${isGrid ? renderGridEdit(cur) : renderGlassEdit(cur.layout)}`
   }
-  return `<div class="cmp-label cmp-label-row">Glass pages<span class="cmp-actions"><button class="gear-btn" data-action="layout-edit-toggle" title="Edit layout" aria-label="Edit layout">${icon('layout', { size: 16 })}</button><button class="gear-btn" data-action="fs-open" title="Fullscreen edit" aria-label="Fullscreen edit">${icon('maximize', { size: 16 })}</button></span></div>
+  // fullscreen エディタは行スロット専用 (grid ページでは出さない。凍結 layout を触らせない)。
+  const fsBtn = isGrid
+    ? ''
+    : `<button class="gear-btn" data-action="fs-open" title="Fullscreen edit" aria-label="Fullscreen edit">${icon('maximize', { size: 16 })}</button>`
+  return `<div class="cmp-label cmp-label-row">Glass pages<span class="cmp-actions"><button class="gear-btn" data-action="layout-edit-toggle" title="Edit layout" aria-label="Edit layout">${icon('layout', { size: 16 })}</button>${fsBtn}</span></div>
     ${renderPageTabs(pages)}
     <div class="gpv"><div class="gpv-cap">G2 576×288${multi ? ` — page ${ctx.pageEditingIdx + 1}/${pages.length}` : ''}</div><div class="gpv-screen">${glassPreviewHtml()}</div></div>
     <div class="cmp-sub">Glass gestures: swipe = next/prev page / tap = first page / double-tap = exit</div>`
