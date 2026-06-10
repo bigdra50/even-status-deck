@@ -79,10 +79,18 @@ export type GlassLayout = {
   customLabels: Record<string, { text: string }> // ユーザー定義ラベルの本文 (id -> text)
 }
 
+// image cell のデータ束縛 (Issue #17)。icon = 固定グリフ (GLASS_ICON_NAMES 語彙)、
+// sparkline = segKey の数値履歴の折れ線 (client canvas → PNG。gray4 変換はホスト責務)。
+export type GridImageSpec =
+  | { source: 'icon'; icon: string }
+  | { source: 'sparkline'; segKey: string }
+
 // grid ページ (Issue #17) の 1 セル。12×10 grid 上の矩形に segment を束縛する。
 // rows = セル内の行スロット (GlassLayout.rows と同語彙: segKey / @right / @customLabel:id。
 // custom label の本文は page.layout.customLabels を共有する)。
 // border は rowSpan>=2 のみ有効 (1 行セルは枠線が line-height 27px を圧迫する。normalize が落とす)。
+// kind 'image' のセルは rows を使わず image で束縛する。SDK 制約 (20-288 × 20-144 px / 最大 4 枚)
+// は normalize が enforce する。
 export type GridCellSpec = {
   id: string
   col: number
@@ -93,6 +101,8 @@ export type GridCellSpec = {
   radius?: number // 0-10
   padding?: number
   rows: string[][]
+  kind?: 'text' | 'image'
+  image?: GridImageSpec
 }
 export type GlassGrid = { cells: GridCellSpec[] }
 

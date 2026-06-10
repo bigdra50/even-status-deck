@@ -18,6 +18,30 @@ export const GRID_ROWS = 10
 // glass の line-height (px)。compiler の fitContent / セル行容量の共通基盤。
 export const LINE_H = 27
 
+// image cell (Issue #17) の SDK 制約 (ImageContainerProperty): width 20-288 / height 20-144 px、
+// 1 ページ最大 4 枚。containerID は text (1-8) / overlay dot (90+) と衝突しないレンジを使う。
+export const IMAGE_MIN_PX = 20
+export const IMAGE_MAX_W = 288
+export const IMAGE_MAX_H = 144
+export const IMAGE_CELL_MAX = 4
+export const IMAGE_CONTAINER_ID_BASE = 30
+
+// image cell の icon 語彙 (glass 描画用の curated set)。描画実体は glass-image.ts が持つ。
+// config 正規化は語彙の存在だけを見る (leaf に置いて config → canvas 依存を作らない)。
+export const GLASS_ICON_NAMES = [
+  'battery',
+  'clock',
+  'cpu',
+  'thermometer',
+  'sun',
+  'moon',
+  'cloud',
+  'zap',
+  'heart',
+  'home',
+] as const
+export type GlassIconName = (typeof GLASS_ICON_NAMES)[number]
+
 // grid セルの行容量。edge-based 丸め (compiler の cellRect と同式) の高さから
 // border/padding の inset を引いた行数。描画 (glass-render) / エディタ (companion) /
 // 正規化 (config) が同じ式を使う — ずれると「描画されないのに配置済み」の chip が

@@ -207,3 +207,128 @@ test('cloneGlassPage: grid を deep copy (複製編集が元に波及しない)'
   expect(page.grid?.cells[0]?.rows[0]).toEqual([G2_LEVEL])
   expect(page.grid?.cells[0]?.col).toBe(0)
 })
+
+test('normalize: image cell は語彙内 icon / segKey 形式 / サイズ制約を満たすものだけ残る', () => {
+  const cfg = emptyConfig()
+  withGridPage(cfg, [
+    cellSpec({
+      id: 'icon',
+      colSpan: 2,
+      rowSpan: 2,
+      rows: [],
+      kind: 'image',
+      image: { source: 'icon', icon: 'battery' },
+    }),
+    cellSpec({
+      id: 'spark',
+      col: 2,
+      colSpan: 4,
+      rowSpan: 2,
+      rows: [],
+      kind: 'image',
+      image: { source: 'sparkline', segKey: G2_LEVEL },
+    }),
+    cellSpec({
+      id: 'badicon',
+      col: 6,
+      colSpan: 2,
+      rowSpan: 2,
+      rows: [],
+      kind: 'image',
+      image: { source: 'icon', icon: 'nope' },
+    }),
+    cellSpec({
+      id: 'badkey',
+      col: 8,
+      colSpan: 2,
+      rowSpan: 2,
+      rows: [],
+      kind: 'image',
+      image: { source: 'sparkline', segKey: 'not-a-key' },
+    }),
+    // rowSpan 6 = 173px > 144 (SDK height 上限) → drop
+    cellSpec({
+      id: 'tall',
+      col: 0,
+      row: 2,
+      colSpan: 4,
+      rowSpan: 6,
+      rows: [],
+      kind: 'image',
+      image: { source: 'icon', icon: 'sun' },
+    }),
+  ])
+  const cells = migratedPage(cfg)?.grid?.cells
+  expect(cells?.map((c) => c.id)).toEqual(['icon', 'spark'])
+  expect(cells?.[0]?.kind).toBe('image')
+  expect(cells?.[0]?.image).toEqual({ source: 'icon', icon: 'battery' })
+})
+
+test('normalize: image cell は 4 枚まで・text 7 枠とは別勘定', () => {
+  const cfg = emptyConfig()
+  const imgCell = (i: number) =>
+    cellSpec({
+      id: `i${i}`,
+      col: (i % 6) * 2,
+      row: Math.floor(i / 6) * 2,
+      colSpan: 2,
+      rowSpan: 2,
+      rows: [],
+      kind: 'image',
+      image: { source: 'icon', icon: 'sun' },
+    })
+  withGridPage(cfg, [
+    ...Array.from({ length: 6 }, (_, i) => imgCell(i)),
+    cellSpec({ id: 'txt', col: 0, row: 8, colSpan: 12, rowSpan: 1 }),
+  ])
+  const cells = migratedPage(cfg)?.grid?.cells
+  expect(cells?.filter((c) => c.kind === 'image')).toHaveLength(4)
+  expect(cells?.some((c) => c.id === 'txt')).toBe(true) // text は別勘定で生存
+})
+
+test('removeSource: sparkline image の segKey も掃除されセルごと落ちる (visitor 経由)', () => {
+  const cfg = emptyConfig()
+  const src = addServer(cfg, 'Test', 'http://x')
+  activeProfile(cfg).view.pages = [
+    {
+      id: 'p1',
+      name: 'P1',
+      layout: { rows: emptyRows(), customLabels: {} },
+      mode: 'grid',
+      grid: {
+        cells: [
+          cellSpec({
+            id: 'sp',
+            colSpan: 4,
+            rowSpan: 2,
+            rows: [],
+            kind: 'image',
+            image: { source: 'sparkline', segKey: `${src.id}|grp|seg` },
+          }),
+        ],
+      },
+    },
+  ]
+  removeSource(cfg, src.id)
+  const cell = activeProfile(cfg).view.pages?.[0]?.grid?.cells[0]
+  expect(cell?.image).toEqual({ source: 'sparkline', segKey: '' }) // 空 = 次の load で drop
+  const reloaded = migrate(cfg as unknown as Record<string, unknown>)
+  expect(activeProfile(reloaded).view.pages?.[0]?.grid?.cells).toHaveLength(0)
+})
+
+test('normalize: 空要素入り segKey / 未知 kind のセルは drop', () => {
+  const cfg = emptyConfig()
+  withGridPage(cfg, [
+    cellSpec({
+      id: 'bad1',
+      colSpan: 4,
+      rowSpan: 2,
+      rows: [],
+      kind: 'image',
+      image: { source: 'sparkline', segKey: '||' },
+    }),
+    cellSpec({ id: 'bad2', col: 4, kind: 'video' as unknown as 'text' }),
+    cellSpec({ id: 'ok', col: 8, colSpan: 4 }),
+  ])
+  expect(migratedPage(cfg)?.grid?.cells.map((c) => c.id)).toEqual(['ok'])
+})

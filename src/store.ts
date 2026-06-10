@@ -12,6 +12,7 @@ import {
   sourceUrls,
 } from './config'
 import { fetchStatusFromUrls } from './data'
+import { recordStatusHistory } from './history'
 import { locationStatus } from './location'
 import type { StatusDoc } from './status-types'
 
@@ -201,6 +202,7 @@ function applyResult(def: SourceDef, next: StatusDoc | null): void {
   if (next) {
     const wasUnhealthy = (failCount.get(def.id) ?? 0) > 0
     statuses.set(def.id, next)
+    recordStatusHistory(def.id, next, Date.now()) // sparkline image cell の数値履歴 (メモリ内)
     lastSuccessAt.set(def.id, Date.now())
     failCount.set(def.id, 0)
     clearRetry(def.id)
@@ -234,7 +236,9 @@ function clientProducer(
 
 async function refreshSource(def: SourceDef): Promise<void> {
   if (def.kind === 'builtin') {
-    statuses.set(def.id, localStatus())
+    const doc = localStatus()
+    statuses.set(def.id, doc)
+    recordStatusHistory(def.id, doc, Date.now()) // builtin (g2 電池等) も sparkline の履歴対象
     notify()
     return
   }
@@ -292,7 +296,9 @@ export function refreshBuiltins(): void {
   let changed = false
   for (const def of defs) {
     if (def.kind === 'builtin') {
-      statuses.set(def.id, localStatus())
+      const doc = localStatus()
+      statuses.set(def.id, doc)
+      recordStatusHistory(def.id, doc, Date.now()) // 電池 notify 経由の更新も履歴へ
       changed = true
     }
   }

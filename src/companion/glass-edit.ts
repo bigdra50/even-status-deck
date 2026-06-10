@@ -178,8 +178,9 @@ function renderGridCanvas(page: GlassPage): string {
         `width:${(c.colSpan / GRID_COLS) * 100}%`,
         `height:${(c.rowSpan / GRID_ROWS) * 100}%`,
       ].join(';')
+      const tag = c.kind === 'image' ? ` · ${c.image?.source ?? 'img'}` : ''
       return `<button class="grid-cell${sel}" style="${style}" data-action="grid-cell-select" data-cell-id="${esc(c.id)}" title="${esc(c.id)}">
-        <span class="grid-cell-id">${esc(c.id)}</span><span class="grid-cell-size">${c.colSpan}×${c.rowSpan}</span></button>`
+        <span class="grid-cell-id">${esc(c.id)}</span><span class="grid-cell-size">${c.colSpan}×${c.rowSpan}${tag}</span></button>`
     })
     .join('')
   return `<div class="gpv"><div class="gpv-cap">G2 576×288 — grid 12×10</div>
@@ -244,13 +245,13 @@ function renderGridEdit(page: GlassPage): string {
   const placed = gridPlacedKeys(grid)
   const unplaced = allPlaceableKeys().filter((k) => !placed.has(k))
   const shelf = unplaced.length
-    ? unplaced.map((k) => wysChip(k, { tapAdd: !!sel })).join('')
+    ? unplaced.map((k) => wysChip(k, { tapAdd: !!sel && sel.kind !== 'image' })).join('')
     : '<span class="cmp-sub">Nothing unplaced</span>'
   const addOk = grid.cells.length < 7 && findFreeRect(grid) !== null
   return `${renderGridCanvas(page)}
     <div class="field-row grid-add-row"><button class="save-btn sm" data-action="grid-cell-add" ${addOk ? '' : 'disabled'}>${icon('plus', { size: 14 })}Add cell</button></div>
     ${sel ? renderGridCellControls(page, sel) : '<div class="cmp-sub">Tap a cell on the canvas to move / resize it and fill its rows.</div>'}
-    ${sel ? renderGridCellRows(sel) : ''}
+    ${sel && sel.kind !== 'image' ? renderGridCellRows(sel) : ''}
     <div class="cmp-label">Unplaced${sel ? ' — tap a chip to add it to the selected cell' : ''}</div>
     <div class="wys-cell wys-shelf" data-shelf="1">${shelf}</div>
     <div class="field-row wys-add">

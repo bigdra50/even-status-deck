@@ -77,13 +77,41 @@ test('compileGridPage: セル content を live status から解決し、event �
     cellSpec({ id: 'bat', rows: [[G2_LEVEL]] }),
     cellSpec({ id: 'clk', col: 6, rows: [[CLOCK_DT]] }),
   ])
-  const out = compileGridPage(page, makeData([page]))
-  expect(out).toHaveLength(3)
-  expect(out[0]).toMatchObject({ containerName: 'evt', isEventCapture: 1 })
-  expect(out[1]).toMatchObject({ containerName: 'bat' })
-  expect(out[1]?.content).toContain('Bat 80%')
-  expect(out[2]).toMatchObject({ containerName: 'clk' })
-  expect(out[2]?.content).toContain('12:00')
+  const { texts, images } = compileGridPage(page, makeData([page]))
+  expect(images).toHaveLength(0)
+  expect(texts).toHaveLength(3)
+  expect(texts[0]).toMatchObject({ containerName: 'evt', isEventCapture: 1 })
+  expect(texts[1]).toMatchObject({ containerName: 'bat' })
+  expect(texts[1]?.content).toContain('Bat 80%')
+  expect(texts[2]).toMatchObject({ containerName: 'clk' })
+  expect(texts[2]?.content).toContain('12:00')
+})
+
+test('compileGridPage: image cell は text と分離し別レンジの containerID を持つ', () => {
+  const page = gridPage([
+    cellSpec({ id: 'bat', rows: [[G2_LEVEL]] }),
+    cellSpec({
+      id: 'spark',
+      col: 6,
+      colSpan: 4,
+      rowSpan: 2,
+      rows: [],
+      kind: 'image',
+      image: { source: 'sparkline', segKey: G2_LEVEL },
+    }),
+  ])
+  const { texts, images } = compileGridPage(page, makeData([page]))
+  expect(texts.map((t) => t.containerName)).toEqual(['evt', 'bat'])
+  expect(images).toHaveLength(1)
+  expect(images[0]).toMatchObject({
+    containerID: 30, // IMAGE_CONTAINER_ID_BASE (text 1-8 / overlay dot 90+ と非衝突)
+    containerName: 'spark',
+    xPosition: 288,
+    yPosition: 0,
+    width: 192,
+    height: 58,
+  })
+  expect(images[0]?.image).toEqual({ source: 'sparkline', segKey: G2_LEVEL })
 })
 
 test('gridCellLines: セル内の @right はセル内寸幅で右寄せされる (px 計測で枠内)', () => {
