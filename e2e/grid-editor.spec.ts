@@ -130,3 +130,19 @@ test('dragging a chip into the right zone makes it right-aligned (@right)', asyn
     page.locator(`#grid-rows [data-zone="right"] .wys-chip[data-segkey="${chipKey}"]`),
   ).toBeVisible()
 })
+
+test('removing a page clears the cell selection (same-named cell on the next page)', async ({
+  page,
+}) => {
+  await enterGridMode(page)
+  await page.locator('[data-action="grid-cell-add"]').click() // page1: cell1
+  await page.locator('[data-action="page-add"]').click() // page2 (rows) へ移動
+  await page.locator('[data-action="page-mode-toggle"]').click() // page2 も grid に
+  await page.locator('[data-action="grid-cell-add"]').click() // page2: cell1 (選択中)
+  await expect(page.locator('.grid-cell-sel')).toHaveCount(1)
+  await page.locator('[data-action="page-remove"]').click() // page2 を削除 → page1 が繰り上がる
+  await expect(page.locator('.grid-canvas')).toBeVisible()
+  // page1 にも cell1 があるが、選択は持ち越さない。
+  await expect(page.locator('.grid-cell-sel')).toHaveCount(0)
+  await expect(page.locator('.grid-ctl')).toHaveCount(0)
+})

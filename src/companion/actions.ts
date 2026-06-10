@@ -570,6 +570,8 @@ export const CLICK_ACTIONS: Record<string, ClickHandler> = {
     if (pages && pages.length > 1 && ctx.pageEditingIdx < pages.length) {
       pages.splice(ctx.pageEditingIdx, 1)
       if (ctx.pageEditingIdx >= pages.length) ctx.pageEditingIdx = pages.length - 1
+      // index 詰めで別ページが繰り上がる。同名セル (cell1 等) の誤選択を防ぐ。
+      ctx.gridCellSel = null
       void saveConfig(ctx.config)
       requestRender()
     }
