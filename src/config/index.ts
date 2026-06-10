@@ -72,6 +72,7 @@ export type {
   GlassLayout,
   GlassPage,
   GridCellSpec,
+  GridImageSpec,
   GroupMeta,
   GroupRef,
   OptionValues,

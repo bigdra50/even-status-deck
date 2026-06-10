@@ -25,7 +25,13 @@ import {
   normalizeHeading,
 } from './display-identity'
 import { type CompiledCell, cellRect, compileGrid, type GridCell } from './glass-layout'
-import { cellRowCapacity, GLASS_PADDING, GLASS_WIDTH, MAX_ROWS } from './glass-types'
+import {
+  cellRowCapacity,
+  GLASS_PADDING,
+  GLASS_WIDTH,
+  IMAGE_CONTAINER_ID_BASE,
+  MAX_ROWS,
+} from './glass-types'
 import { sanitizeGlyphs } from './glyphs'
 import type { Group, StatusDoc } from './status-types'
 import { isVisible, segKey, type VisibleMap } from './visibility'
@@ -402,29 +408,63 @@ export function gridCellLines(
   )
 }
 
+// image cell のコンパイル結果 (幾何 + 束縛)。bytes の描画/送信は glass.ts / glass-sync が行う
+// (画像実体は container 作成後に updateImageRawData で別送する SDK 仕様)。
+export type CompiledImageCell = {
+  xPosition: number
+  yPosition: number
+  width: number
+  height: number
+  containerID: number
+  containerName: string
+  image: GridImageSpec
+}
+
+// grid ページのコンパイル結果。texts は event 層込みの text コンテナ列、images は別レンジの
+// containerID (IMAGE_CONTAINER_ID_BASE+) を持つ image コンテナ列。
+export type CompiledGridPage = { texts: CompiledCell[]; images: CompiledImageCell[] }
+
 // grid ページの各セル content を解決して compiler へ渡す (event 層は compileGrid が注入)。
 // fitContent は既定 ON のまま (justify は幅を保証するが、px 丸め差の安全網として通す)。
+// image cell は text と分離してコンパイルする (SDK 上限: text 8 / image 4 / 計 12)。
 export function compileGridPage(
   page: GlassPage,
   d: GlassData,
   visible?: VisibleMap,
-): CompiledCell[] {
+): CompiledGridPage {
   const labels = page.layout.customLabels
-  const cells = (page.grid?.cells ?? []).map((c): GridCell => {
-    const cell: GridCell = {
-      id: c.id,
-      col: c.col,
-      row: c.row,
-      colSpan: c.colSpan,
-      rowSpan: c.rowSpan,
-      content: gridCellLines(c, labels, d, visible).join('\n'),
-    }
-    if (c.border !== undefined) cell.border = c.border
-    if (c.radius !== undefined) cell.radius = c.radius
-    if (c.padding !== undefined) cell.padding = c.padding
-    return cell
-  })
-  return compileGrid({ cells })
+  const all = page.grid?.cells ?? []
+  const cells = all
+    .filter((c) => c.kind !== 'image')
+    .map((c): GridCell => {
+      const cell: GridCell = {
+        id: c.id,
+        col: c.col,
+        row: c.row,
+        colSpan: c.colSpan,
+        rowSpan: c.rowSpan,
+        content: gridCellLines(c, labels, d, visible).join('\n'),
+      }
+      if (c.border !== undefined) cell.border = c.border
+      if (c.radius !== undefined) cell.radius = c.radius
+      if (c.padding !== undefined) cell.padding = c.padding
+      return cell
+    })
+  const images = all
+    .filter((c) => c.kind === 'image' && c.image)
+    .map((c, i): CompiledImageCell => {
+      const { x, y, w, h } = cellRect(c)
+      return {
+        xPosition: x,
+        yPosition: y,
+        width: w,
+        height: h,
+        containerID: IMAGE_CONTAINER_ID_BASE + i,
+        containerName: c.id,
+        image: c.image as GridImageSpec,
+      }
+    })
+  return { texts: compileGrid({ cells }), images }
 }
 
 // custom ページが grid 描画対象なら GlassPage を返す (mode が単一の分岐軸)。
@@ -432,17 +472,22 @@ export function gridPageOf(page: RuntimePage): GlassPage | null {
   return page.kind === 'custom' && page.page.mode === 'grid' && page.page.grid ? page.page : null
 }
 
-// grid ページが描画可能 chip を 1 つでも持つか (空ページ skip 判定)。
+// grid ページが描画可能な内容を 1 つでも持つか (空ページ skip 判定)。image cell は常に描画内容
+// (icon は静的、sparkline は履歴待ちでも枠は出る) とみなす。
 function hasRenderableGrid(page: GlassPage, d: GlassData, visible?: VisibleMap): boolean {
   return (page.grid?.cells ?? []).some((c) =>
-    gridCellLines(c, page.layout.customLabels, d, visible).some((l) => l.trim() !== ''),
+    c.kind === 'image'
+      ? !!c.image
+      : gridCellLines(c, page.layout.customLabels, d, visible).some((l) => l.trim() !== ''),
   )
 }
 
-// grid ページの平文化 (セルを row,col 順に連結・空行除去・10 行 clamp)。
-// overlay の下地/コンテキスト行に使う近似 (overlay 表示中のみ。通常描画はセル別コンテナ)。
+// grid ページの平文化 (text セルを row,col 順に連結・空行除去・10 行 clamp)。
+// overlay の下地/コンテキスト行に使う近似 (overlay 表示中のみ。image cell は出さない)。
 export function gridPageText(page: GlassPage, d: GlassData, visible?: VisibleMap): string {
-  const cells = [...(page.grid?.cells ?? [])].sort((a, b) => a.row - b.row || a.col - b.col)
+  const cells = [...(page.grid?.cells ?? [])]
+    .filter((c) => c.kind !== 'image')
+    .sort((a, b) => a.row - b.row || a.col - b.col)
   const lines = cells.flatMap((c) => gridCellLines(c, page.layout.customLabels, d, visible))
   return lines
     .filter((l) => l.trim() !== '')

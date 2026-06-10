@@ -1,4 +1,14 @@
-import { cellRowCapacity, GRID_COLS, GRID_ROWS, MAX_ROWS } from '../glass-types'
+import {
+  cellRowCapacity,
+  GLASS_ICON_NAMES,
+  GRID_COLS,
+  GRID_ROWS,
+  IMAGE_CELL_MAX,
+  IMAGE_MAX_H,
+  IMAGE_MAX_W,
+  IMAGE_MIN_PX,
+  MAX_ROWS,
+} from '../glass-types'
 import { segKey } from '../visibility/keys'
 import { BUILTIN_SOURCE_ID, LABEL_SEG } from './constants'
 import { isRightDivider } from './ids'
@@ -10,6 +20,7 @@ import type {
   GlassLayout,
   GlassPage,
   GridCellSpec,
+  GridImageSpec,
   ProfileView,
   SegMeta,
 } from './types'
@@ -126,6 +137,33 @@ function applyCellStyle(cell: GridCellSpec, r: Record<string, unknown>): void {
   if (padding) cell.padding = padding
 }
 
+// image cell の束縛定義を検証する。icon は GLASS_ICON_NAMES 語彙、sparkline は segKey 形式
+// (sourceId|groupId|segId)。不正なら null (セルごと drop)。
+function sanitizeImageSpec(v: unknown): GridImageSpec | null {
+  if (!v || typeof v !== 'object') return null
+  const r = v as Record<string, unknown>
+  if (r.source === 'icon') {
+    const icon = typeof r.icon === 'string' ? r.icon : ''
+    return (GLASS_ICON_NAMES as readonly string[]).includes(icon) ? { source: 'icon', icon } : null
+  }
+  if (r.source === 'sparkline') {
+    const segKey = typeof r.segKey === 'string' ? r.segKey : ''
+    return segKey.split('|').length === 3 ? { source: 'sparkline', segKey } : null
+  }
+  return null
+}
+
+// image cell の px サイズが SDK 制約 (20-288 × 20-144) に収まるか。
+function imageSizeOk(geom: Pick<GridCellSpec, 'col' | 'row' | 'colSpan' | 'rowSpan'>): boolean {
+  const colW = 576 / GRID_COLS
+  const rowH = 288 / GRID_ROWS
+  const x = Math.round(geom.col * colW)
+  const y = Math.round(geom.row * rowH)
+  const w = Math.round((geom.col + geom.colSpan) * colW) - x
+  const h = Math.round((geom.row + geom.rowSpan) * rowH) - y
+  return w >= IMAGE_MIN_PX && w <= IMAGE_MAX_W && h >= IMAGE_MIN_PX && h <= IMAGE_MAX_H
+}
+
 // 1 セル定義を検証する。invalid は null (clamp しない: 座標を丸めると他セルと重なりやすい。
 // drop されたセルの chip は companion の Unplaced 棚に現れるので silent loss にはならない)。
 function sanitizeGridCell(raw: unknown, ids: Set<string>): GridCellSpec | null {
@@ -136,6 +174,12 @@ function sanitizeGridCell(raw: unknown, ids: Set<string>): GridCellSpec | null {
   if (id.length < 1 || id.length > 16 || id === 'evt' || ids.has(id)) return null
   const geom = sanitizeCellGeometry(r)
   if (!geom) return null
+  // image cell: 束縛と px サイズ制約を満たさなければセルごと drop。rows/style は持たない。
+  if (r.kind === 'image') {
+    const image = sanitizeImageSpec(r.image)
+    if (!image || !imageSizeOk(geom)) return null
+    return { id, ...geom, rows: [], kind: 'image', image }
+  }
   const cell: GridCellSpec = { id, ...geom, rows: [] }
   applyCellStyle(cell, r)
   // 行は容量 (style 確定後の cellRowCapacity) まで保持する。超過行を残すと「描画されないのに
@@ -146,7 +190,7 @@ function sanitizeGridCell(raw: unknown, ids: Set<string>): GridCellSpec | null {
   return cell
 }
 
-// 永続化された grid 定義 (GlassPage.grid) を正規化する。セル数は text 上限 7 まで、
+// 永続化された grid 定義 (GlassPage.grid) を正規化する。セル数は text 7 / image 4 まで、
 // overlap は定義順で先勝ち。空 cells は有効 (編集途中の状態)。形が壊れていれば undefined。
 export function normalizeGlassGrid(x: unknown): GlassGrid | undefined {
   if (!x || typeof x !== 'object') return undefined
@@ -154,13 +198,17 @@ export function normalizeGlassGrid(x: unknown): GlassGrid | undefined {
   if (!Array.isArray(cellsRaw)) return undefined
   const cells: GridCellSpec[] = []
   const ids = new Set<string>()
+  let texts = 0
+  let images = 0
   for (const raw of cellsRaw) {
-    if (cells.length >= 7) break
     const c = sanitizeGridCell(raw, ids)
     if (!c) continue
+    if (c.kind === 'image' ? images >= IMAGE_CELL_MAX : texts >= 7) continue
     if (cells.some((p) => cellsIntersect(p, c))) continue
     ids.add(c.id)
     cells.push(c)
+    if (c.kind === 'image') images++
+    else texts++
   }
   return { cells }
 }

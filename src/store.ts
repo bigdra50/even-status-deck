@@ -12,6 +12,7 @@ import {
   sourceUrls,
 } from './config'
 import { fetchStatusFromUrls } from './data'
+import { recordStatusHistory } from './history'
 import { locationStatus } from './location'
 import type { StatusDoc } from './status-types'
 
@@ -201,6 +202,7 @@ function applyResult(def: SourceDef, next: StatusDoc | null): void {
   if (next) {
     const wasUnhealthy = (failCount.get(def.id) ?? 0) > 0
     statuses.set(def.id, next)
+    recordStatusHistory(def.id, next, Date.now()) // sparkline image cell の数値履歴 (メモリ内)
     lastSuccessAt.set(def.id, Date.now())
     failCount.set(def.id, 0)
     clearRetry(def.id)
