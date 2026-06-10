@@ -2,6 +2,9 @@ import {
   CreateStartUpPageContainer,
   type EvenAppBridge,
   type EvenHubEvent,
+  ImageContainerProperty,
+  ImageRawDataUpdate,
+  ImageRawDataUpdateResult,
   OsEventTypeList,
   RebuildPageContainer,
   StartUpPageCreateResult,
@@ -22,10 +25,12 @@ import {
 import { postDialogResult } from './data'
 import { getGlassBattery, setGlassBattery } from './device-state'
 import { startEvents, stopEvents } from './events'
+import { renderImageCell } from './glass-image'
 import { type CompiledCell, compileStatusLine } from './glass-layout'
 import { createOverlayManager, hashStr, type Notif } from './glass-overlay'
 import {
   buildRuntimePages,
+  type CompiledImageCell,
   compileGridPage,
   currentPage,
   type GlassData,
@@ -35,7 +40,8 @@ import {
   type RuntimePage,
   renderRuntimePage,
 } from './glass-render'
-import { createContainerSync } from './glass-sync'
+import { createContainerSync, type SyncImage } from './glass-sync'
+import { historyOf } from './history'
 import { feedImuSample, isImuStarted, setImuConfig, startImu, stopImu } from './imu'
 import { activateKeepAlive, deactivateKeepAlive } from './keep-alive'
 import {
@@ -85,13 +91,14 @@ const displayRuntime: ConditionDisplayRuntime = createConditionDisplayRuntime()
 // 通常ビューのコンテナ集合 (applied-state 同期は glass-sync)。送信は成功 (true) 後にのみ
 // state を確定し、false / 例外は invalidate → 次回 rebuild (bridge 不通からの自動復帰)。
 const sync = createContainerSync({
-  rebuild: (cells) =>
+  rebuild: (cells, images) =>
     gbridge
       ? gbridge
           .rebuildPageContainer(
             new RebuildPageContainer({
-              containerTotalNum: cells.length,
+              containerTotalNum: cells.length + images.length,
               textObject: cells.map((c) => new TextContainerProperty(c)),
+              imageObject: images.map((i) => new ImageContainerProperty(imageGeom(i))),
             }),
           )
           .then((ok) => !!ok)
@@ -104,19 +111,71 @@ const sync = createContainerSync({
           .then((ok) => !!ok)
           .catch(() => false)
       : Promise.resolve(false),
+  // image 実体の送信: client canvas で PNG を描き、gray4 変換はホスト任せ (SDK 契約)。
+  // 描画不能 (canvas 無し等) は true 扱いで黙殺しない — false にすると毎 refresh で
+  // invalidate→rebuild が無限再試行になるため、ここはログのみで成功扱いにする。
+  sendImage: async (img) => {
+    if (!gbridge) return false
+    const samples = img.image.source === 'sparkline' ? historyOf(img.image.segKey) : []
+    const bytes = await renderImageCell(img.image, img.width, img.height, samples).catch(() => null)
+    if (!bytes) return true // 描画不能は送信スキップ (placeholder のまま)
+    return gbridge
+      .updateImageRawData(
+        new ImageRawDataUpdate({
+          containerID: img.containerID,
+          containerName: img.containerName,
+          imageData: Array.from(bytes),
+        }),
+      )
+      .then((r) => ImageRawDataUpdateResult.isSuccess(ImageRawDataUpdateResult.normalize(r)))
+      .catch(() => false)
+  },
 })
+
+// ImageContainerProperty へ渡す幾何 (束縛 spec は送らない)。
+function imageGeom(i: CompiledImageCell): {
+  xPosition: number
+  yPosition: number
+  width: number
+  height: number
+  containerID: number
+  containerName: string
+} {
+  return {
+    xPosition: i.xPosition,
+    yPosition: i.yPosition,
+    width: i.width,
+    height: i.height,
+    containerID: i.containerID,
+    containerName: i.containerName,
+  }
+}
+
+// image 実体の版キー。icon は静的、sparkline は 1 分バケット + サンプル数で間引く
+// (SDK は画像の高頻度送信を非推奨 — 毎 poll の再送を防ぐ)。
+function imageDataKey(i: CompiledImageCell): string {
+  if (i.image.source === 'icon') return `icon:${i.image.icon}`
+  const s = historyOf(i.image.segKey)
+  const last = s[s.length - 1]
+  return `spark:${i.image.segKey}:${s.length}:${last ? Math.floor(last.t / 60_000) : 0}`
+}
 
 // 現在ページのコンテナ集合と、その平文表現 (overlay の下地/コンテキスト行用)。
 // linear/auto ページ = 全面 1 cell (status-line preset)。grid ページ = セル別コンテナ。
 // 絵文字 tofu 対策の sanitize は glass-render(値/ラベル段) と glass-overlay(本文段) が担う。
-function renderCurrentCells(): { cells: CompiledCell[]; base: string } {
+function renderCurrentCells(): { cells: CompiledCell[]; images: SyncImage[]; base: string } {
   const page = currentPage(pages, idx)
   const grid = gridPageOf(page)
   if (grid) {
-    return { cells: compileGridPage(grid, data, visible), base: gridPageText(grid, data, visible) }
+    const { texts, images } = compileGridPage(grid, data, visible)
+    return {
+      cells: texts,
+      images: images.map((i) => ({ ...i, dataKey: imageDataKey(i) })),
+      base: gridPageText(grid, data, visible),
+    }
   }
   const base = renderRuntimePage(page, data, MAX_ROWS, visible)
-  return { cells: [compileStatusLine(base)], base }
+  return { cells: [compileStatusLine(base)], images: [], base }
 }
 
 // bridge 書き込みを 1 件ずつ直列化する (BLE 飽和でグラス切断するのを防ぐ。例外も握る)。
@@ -145,7 +204,7 @@ function refresh(): void {
   // 毎分 glassTick の refresh で値が減る。anchors/suncountdown が無ければ no-op。
   const loc = data.statuses[LOCATION_SOURCE_ID]
   if (loc) data.statuses[LOCATION_SOURCE_ID] = recomputeSunCountdown(loc, Date.now())
-  const { cells, base } = renderCurrentCells()
+  const { cells, images, base } = renderCurrentCells()
 
   if (overlay.isActive()) {
     // 現在ビューの上に active overlay を重ねる。key に下地 (base) の hash も含め、
@@ -176,7 +235,7 @@ function refresh(): void {
   }
 
   lastOverlayKey = null
-  void sync.apply(cells).finally(done)
+  void sync.apply(cells, images).finally(done)
 }
 
 function cycle(dir: number): void {
@@ -490,17 +549,19 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
   // 起動ページ。先頭ページのコンテナ集合 (linear=全面 1 cell / grid=セル別) で作成し、
   // 成功 (success=0) したときのみ差分同期 (sync) の applied state として seed する。
   // 失敗時は seed しない → 最初の refresh が rebuild して復帰する。
-  const { cells } = renderCurrentCells()
+  // 画像実体は起動時に送れない (SDK 仕様) — seed は placeholder 扱いで記録し、最初の refresh が送る。
+  const { cells, images } = renderCurrentCells()
   lastOverlayKey = null
   const created = await bridge
     .createStartUpPageContainer(
       new CreateStartUpPageContainer({
-        containerTotalNum: cells.length,
+        containerTotalNum: cells.length + images.length,
         textObject: cells.map((c) => new TextContainerProperty(c)),
+        imageObject: images.map((i) => new ImageContainerProperty(imageGeom(i))),
       }),
     )
     .catch(() => null)
-  if (created === StartUpPageCreateResult.success) sync.seed(cells)
+  if (created === StartUpPageCreateResult.success) sync.seed(cells, images)
 
   eventUnsub = bridge.onEvenHubEvent(onEvent)
   storeUnsub = subscribe(onStoreUpdate)

@@ -3,7 +3,8 @@
 // 実行: bun test src/glass-sync.test.ts
 import { expect, test } from 'bun:test'
 import type { CompiledCell } from './glass-layout'
-import { createContainerSync, topoKey } from './glass-sync'
+import type { CompiledImageCell } from './glass-render'
+import { createContainerSync, type SyncImage, topoKey } from './glass-sync'
 
 const cell = (over: Partial<CompiledCell> = {}): CompiledCell => ({
   xPosition: 0,
@@ -20,19 +21,39 @@ const cell = (over: Partial<CompiledCell> = {}): CompiledCell => ({
   ...over,
 })
 
-type Call = { kind: 'rebuild' | 'upgrade'; detail: string }
-function harness(results: { rebuild?: boolean[]; upgrade?: boolean[] } = {}) {
+const img = (over: Partial<CompiledImageCell> = {}): SyncImage => ({
+  xPosition: 0,
+  yPosition: 144,
+  width: 96,
+  height: 58,
+  containerID: 30,
+  containerName: 'img1',
+  image: { source: 'icon', icon: 'battery' },
+  dataKey: 'icon:battery',
+  ...over,
+})
+
+type Call = { kind: 'rebuild' | 'upgrade' | 'image'; detail: string }
+function harness(results: { rebuild?: boolean[]; upgrade?: boolean[]; image?: boolean[] } = {}) {
   const calls: Call[] = []
   const rq = [...(results.rebuild ?? [])]
   const uq = [...(results.upgrade ?? [])]
+  const iq = [...(results.image ?? [])]
   const sync = createContainerSync({
-    rebuild: (cells) => {
-      calls.push({ kind: 'rebuild', detail: cells.map((c) => c.containerName).join(',') })
+    rebuild: (cells, images) => {
+      calls.push({
+        kind: 'rebuild',
+        detail: [...cells, ...images].map((c) => c.containerName).join(','),
+      })
       return Promise.resolve(rq.shift() ?? true)
     },
     upgrade: (t) => {
       calls.push({ kind: 'upgrade', detail: `${t.containerName}:${t.content}` })
       return Promise.resolve(uq.shift() ?? true)
+    },
+    sendImage: (i) => {
+      calls.push({ kind: 'image', detail: i.containerName })
+      return Promise.resolve(iq.shift() ?? true)
     },
   })
   return { sync, calls }
@@ -114,4 +135,43 @@ test('topoKey は content を含まず、幾何/様式/順序を含む', () => {
   const a = cell({ containerID: 1, containerName: 'a1', width: 288 })
   const b = cell({ containerID: 2, containerName: 'a2', xPosition: 288, width: 288 })
   expect(topoKey([a, b])).not.toBe(topoKey([b, a]))
+})
+
+test('image: rebuild 成功後に実体を直列送信し、同一 dataKey の再 apply では送らない', async () => {
+  const { sync, calls } = harness()
+  await sync.apply([cell()], [img()])
+  expect(calls).toEqual([
+    { kind: 'rebuild', detail: 'toolbar,img1' },
+    { kind: 'image', detail: 'img1' },
+  ])
+  await sync.apply([cell()], [img()]) // 同一 topo + 同一 dataKey → 無送信
+  expect(calls).toHaveLength(2)
+})
+
+test('image: dataKey 変化 (sparkline 更新) は topo 不変のまま実体だけ再送する', async () => {
+  const { sync, calls } = harness()
+  await sync.apply([cell()], [img()])
+  await sync.apply([cell()], [img({ dataKey: 'spark:v2' })])
+  expect(calls.map((c) => c.kind)).toEqual(['rebuild', 'image', 'image'])
+})
+
+test('image: 送信失敗は invalidate → 次回 rebuild + 全画像再送', async () => {
+  const { sync, calls } = harness({ image: [false, true] })
+  await sync.apply([cell()], [img()]) // rebuild 成功 → image 失敗 → invalidate
+  await sync.apply([cell()], [img()])
+  expect(calls.map((c) => c.kind)).toEqual(['rebuild', 'image', 'rebuild', 'image'])
+})
+
+test('image: 幾何の変化は topo 変化として rebuild させる', async () => {
+  const { sync, calls } = harness()
+  await sync.apply([cell()], [img()])
+  await sync.apply([cell()], [img({ width: 144 })])
+  expect(calls.map((c) => c.kind)).toEqual(['rebuild', 'image', 'rebuild', 'image'])
+})
+
+test('seed: 画像実体は未送信扱い (起動時は placeholder) → 最初の apply で送る', async () => {
+  const { sync, calls } = harness()
+  sync.seed([cell()], [img()])
+  await sync.apply([cell()], [img()])
+  expect(calls).toEqual([{ kind: 'image', detail: 'img1' }])
 })

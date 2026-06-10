@@ -13,6 +13,8 @@ import {
 } from '../config'
 import { resolveDisplayLabels } from '../display-identity'
 import { esc } from '../escape'
+import { glassIconSvg, sparklinePoints } from '../glass-image'
+import { cellRect } from '../glass-layout'
 import {
   type GlassData,
   gridCellLines,
@@ -22,6 +24,7 @@ import {
   summarySections,
 } from '../glass-render'
 import { GRID_COLS, GRID_ROWS } from '../glass-types'
+import { historyOf } from '../history'
 import type { Group, SourceState } from '../status-types'
 import {
   getAllStatuses,
@@ -149,6 +152,20 @@ const rowHtml = ({ left, right }: RowClusters): string =>
 // 実機 px → プレビュー幅基準の cqw (container query width 単位)。576px = 100cqw。
 const toCqw = (px: number): string => `${((px / 576) * 100).toFixed(2)}cqw`
 
+// image cell の中身 (icon = inline SVG / sparkline = 履歴の polyline)。実機は PNG→gray4 だが、
+// プレビューは同じ形状を vector で近似する。
+function imageCellBody(c: GridCellSpec): string {
+  if (c.image?.source === 'icon')
+    return `<div class="gpv-img">${glassIconSvg(c.image.icon) ?? ''}</div>`
+  if (c.image?.source === 'sparkline') {
+    const { w, h } = cellRect(c)
+    const pts = sparklinePoints(historyOf(c.image.segKey), w, h)
+    const points = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ')
+    return `<svg class="gpv-img gpv-spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polyline points="${points}" fill="none" stroke="currentColor" stroke-width="2"/></svg>`
+  }
+  return ''
+}
+
 // grid ページのプレビュー。セルを 12×10 の % で絶対配置し、セル内容は実機と同じ
 // justify 済み文字列 (gridCellLines = 行容量 clamp / セル幅切り詰め込み) を表示する。
 // border / radius / padding は実値を cqw でスケールして反映する (固定 CSS にしない)。
@@ -166,7 +183,10 @@ function gridPreviewHtml(page: GlassPage, d: GlassData, visible: VisibleMap): st
       style.push(`border-width:${toCqw(c.border)}`, `border-radius:${toCqw(c.radius ?? 0)}`)
     }
     const cls = c.border ? 'gpv-cell gpv-cell-border' : 'gpv-cell'
-    const body = lines.map((l) => `<span class="grow">${l ? esc(l) : '&nbsp;'}</span>`).join('')
+    const body =
+      c.kind === 'image'
+        ? imageCellBody(c)
+        : lines.map((l) => `<span class="grow">${l ? esc(l) : '&nbsp;'}</span>`).join('')
     return `<div class="${cls}" style="${style.join(';')}" data-cellid="${esc(c.id)}">${body}</div>`
   }
   const cells = page.grid?.cells ?? []

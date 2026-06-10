@@ -14,12 +14,9 @@ import {
   Thermometer,
   Zap,
 } from 'lucide-static'
+import type { GridImageSpec } from './config'
 import type { GlassIconName } from './glass-types'
 import type { HistorySample } from './history'
-
-export type ImageCellSpec =
-  | { source: 'icon'; icon: GlassIconName }
-  | { source: 'sparkline'; segKey: string }
 
 const ICON_SVGS: Record<GlassIconName, string> = {
   battery: Battery,
@@ -34,8 +31,9 @@ const ICON_SVGS: Record<GlassIconName, string> = {
   home: House,
 }
 
-export function glassIconSvg(name: GlassIconName): string {
-  return ICON_SVGS[name]
+// icon 名 → SVG。語彙外 (config は normalize 済みだが防御) は null。
+export function glassIconSvg(name: string): string | null {
+  return name in ICON_SVGS ? ICON_SVGS[name as GlassIconName] : null
 }
 
 // sparkline の折れ線点列 (px 座標)。値域を [pad, h-pad] に正規化し、x は等間隔。
@@ -52,8 +50,7 @@ export function sparklinePoints(
   const min = Math.min(...vs)
   const max = Math.max(...vs)
   const span = max - min
-  const yOf = (v: number): number =>
-    span === 0 ? h / 2 : pad + (1 - (v - min) / span) * innerH
+  const yOf = (v: number): number => (span === 0 ? h / 2 : pad + (1 - (v - min) / span) * innerH)
   if (samples.length === 1) {
     const y = yOf(vs[0] ?? 0)
     return [
@@ -66,7 +63,10 @@ export function sparklinePoints(
 }
 
 // canvas を白黒 (黒地 + 白描画) で用意する。ブラウザ専用。
-function makeCanvas(w: number, h: number): { canvas: HTMLCanvasElement; g: CanvasRenderingContext2D } | null {
+function makeCanvas(
+  w: number,
+  h: number,
+): { canvas: HTMLCanvasElement; g: CanvasRenderingContext2D } | null {
   if (typeof document === 'undefined') return null
   const canvas = document.createElement('canvas')
   canvas.width = w
@@ -89,8 +89,15 @@ async function canvasToPngBytes(canvas: HTMLCanvasElement): Promise<Uint8Array |
 }
 
 // lucide SVG を白 stroke で描画する (currentColor を白へ固定)。
-async function drawIcon(g: CanvasRenderingContext2D, name: GlassIconName, w: number, h: number): Promise<boolean> {
-  const svg = ICON_SVGS[name].replace(/currentColor/g, '#fff')
+async function drawIcon(
+  g: CanvasRenderingContext2D,
+  name: string,
+  w: number,
+  h: number,
+): Promise<boolean> {
+  const raw = glassIconSvg(name)
+  if (!raw) return false
+  const svg = raw.replace(/currentColor/g, '#fff')
   const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
   const img = new Image()
   const ok = await new Promise<boolean>((resolve) => {
@@ -105,7 +112,12 @@ async function drawIcon(g: CanvasRenderingContext2D, name: GlassIconName, w: num
   return true
 }
 
-function drawSparkline(g: CanvasRenderingContext2D, samples: HistorySample[], w: number, h: number): void {
+function drawSparkline(
+  g: CanvasRenderingContext2D,
+  samples: HistorySample[],
+  w: number,
+  h: number,
+): void {
   const pts = sparklinePoints(samples, w, h)
   if (!pts.length) return
   g.lineWidth = 2
@@ -119,7 +131,7 @@ function drawSparkline(g: CanvasRenderingContext2D, samples: HistorySample[], w:
 
 // image cell を PNG bytes に描画する。ブラウザ以外 / 描画不能は null (送信スキップ)。
 export async function renderImageCell(
-  spec: ImageCellSpec,
+  spec: GridImageSpec,
   w: number,
   h: number,
   samples: HistorySample[] = [],

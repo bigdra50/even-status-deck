@@ -9,6 +9,7 @@ import {
   type GlassLayout,
   type GlassPage,
   type GridCellSpec,
+  type GridImageSpec,
   type GroupMeta,
   type GroupRef,
   isCustomLabelKey,

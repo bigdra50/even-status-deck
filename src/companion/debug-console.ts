@@ -185,6 +185,7 @@ export function renderDbgConsole(): string {
     ? `<span class="cmp-actions">
         <button class="link-btn" data-action="console-copy" title="表示中のログをコピー">Copy</button>
         <button class="link-btn" data-action="console-clear">Clear</button>
+        <button class="link-btn" data-action="dbg-img-probe" title="image cell の実機検証ページを追加">Img probe</button>
       </span>`
     : ''
   const head = `<div class="cmp-label cmp-label-row">

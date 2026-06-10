@@ -531,7 +531,7 @@ export const CLICK_ACTIONS: Record<string, ClickHandler> = {
     // 棚の chip をタップで選択中セルの空きがある最初の行へ追加する (drag の代替。e2e でも安定)。
     const key = t.dataset.segkey
     const { cell } = editingGridCell()
-    if (!cell || !key) return
+    if (!cell || !key || cell.kind === 'image') return // image cell は rows を持たない
     // 空行があればそこへ、無ければ容量内で行を増やし、満杯なら最後の行へ相乗りする。
     const cap = cellCapacity(cell)
     const empty = cell.rows.findIndex((r) => r.length === 0)
@@ -604,6 +604,53 @@ export const CLICK_ACTIONS: Record<string, ClickHandler> = {
   },
 
   // ── misc ──
+  'dbg-img-probe'() {
+    // 実機検証用: icon + sparkline (グラス電池) の image cell を持つ grid ページを 1 枚追加する。
+    // 通常パイプライン (rebuild → updateImageRawData) を通すので、PNG 受理 / gray4 変換を
+    // そのまま確認できる。不要になったらページ削除 UI で消す。
+    const view = activeView(ctx.config)
+    view.pages ??= []
+    view.pages.push({
+      id: genPageId(),
+      name: 'Img probe',
+      layout: emptyGlassLayout(),
+      mode: 'grid',
+      grid: {
+        cells: [
+          {
+            id: 'probetitle',
+            col: 0,
+            row: 0,
+            colSpan: 12,
+            rowSpan: 1,
+            rows: [[`${BUILTIN_SOURCE_ID}|clock|datetime`]],
+          },
+          {
+            id: 'probeicon',
+            col: 0,
+            row: 2,
+            colSpan: 3,
+            rowSpan: 3,
+            rows: [],
+            kind: 'image',
+            image: { source: 'icon', icon: 'battery' },
+          },
+          {
+            id: 'probespark',
+            col: 4,
+            row: 2,
+            colSpan: 6,
+            rowSpan: 3,
+            rows: [],
+            kind: 'image',
+            image: { source: 'sparkline', segKey: `${BUILTIN_SOURCE_ID}|g2|level` },
+          },
+        ],
+      },
+    })
+    void saveConfig(ctx.config)
+    requestRender()
+  },
   async test() {
     await runConnectionTest()
   },

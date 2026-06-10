@@ -190,7 +190,8 @@ Source Edit : 接続先 URL（複数可） + 接続テスト + 「ローカル�
 - linear status line も同じ compiler を通る「全面 1 セル preset」（wire-identical をテストで固定）。1 セル⇄多セルは同一パイプラインの濃淡で、別系統の描画コードを持たない。
 - `layout` は grid 化直前の凍結スナップショットとして保持する（自動投影しない）。旧バージョンへ downgrade すると grid 化前の線形レイアウトに戻る、という予測可能な意味論。現行アプリの表示系 reader はすべて `mode` で分岐し、source 削除 / id remap / 統合 / orphan 掃除は `config/rows.ts` の行集合 visitor が layout と grid の両方を更新する。
 - BLE 同期（`glass-sync.ts`）: 送信 await が true を返した後にのみ applied state を更新し、false / 例外は invalidate → 次回 rebuild（失敗からの自動復帰）。topology（幾何/様式/順序。content 含まず）同一かつ差分 1 セルなら `textContainerUpgrade`（cheap path）、差分 2 セル以上・幾何変化・overlay 出入りは rebuild（逐次 upgrade 中の混在表示を避ける）。
-- 制約: 枠線（border）は rowSpan>=2 のセルのみ（1 行セル ≒28px は line-height 27px を圧迫）。normalize は invalid セルを clamp せず drop する（落ちた chip は Unplaced 棚に現れる）。
+- 制約: 枠線（border）は rowSpan>=2 のセルのみ（1 行セル ≒28px は line-height 27px を圧迫）。normalize は invalid セルを clamp せず drop する（落ちた chip は Unplaced 棚に現れる）。セル行はセル容量（`cellRowCapacity`）まで保持（隠れ行の silent loss 防止）。
+- image cell（`kind:'image'` + `image: {source:'icon'|'sparkline'}`）: client が canvas に白黒描画した PNG bytes を `updateImageRawData` で送る。gray4（4bit）変換はホスト責務（SDK の `imageToGray4Failed` が根拠）。SDK 制約 = 20-288×20-144px・最大 4 枚・containerID は別レンジ（30+）。実体は container 作成では送れず（起動時 placeholder）、rebuild/seed 後に dataKey（icon は静的 / sparkline は 1 分バケット）の差分だけ直列送信する。sparkline の数値履歴はメモリ内 ring buffer（`src/history.ts`、64 サンプル）。
 
 ## 7. メトリック定義
 
