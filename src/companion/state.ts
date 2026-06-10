@@ -31,6 +31,8 @@ export const ctx = {
   layoutEditing: false,
   // explicit デッキ編集中の対象ページ index (pages[pageEditingIdx])。profile 跨ぎでリセット。
   pageEditingIdx: 0,
+  // grid ページ編集中の選択セル id (Issue #17)。ページ/モード切替でリセット。
+  gridCellSel: null as string | null,
 
   // ── Phase 4: プリセット切替の提案 (接続検出ベース。自動適用はしない) ──
   // このセッション中に却下した提案 profileId。一度 dismiss した profile は同セッションで再提示しない。

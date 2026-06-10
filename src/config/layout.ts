@@ -1,4 +1,4 @@
-import { GRID_COLS, GRID_ROWS, MAX_ROWS } from '../glass-types'
+import { cellRowCapacity, GRID_COLS, GRID_ROWS, MAX_ROWS } from '../glass-types'
 import { segKey } from '../visibility/keys'
 import { BUILTIN_SOURCE_ID, LABEL_SEG } from './constants'
 import { isRightDivider } from './ids'
@@ -136,11 +136,13 @@ function sanitizeGridCell(raw: unknown, ids: Set<string>): GridCellSpec | null {
   if (id.length < 1 || id.length > 16 || id === 'evt' || ids.has(id)) return null
   const geom = sanitizeCellGeometry(r)
   if (!geom) return null
-  const rows = (Array.isArray(r.rows) ? r.rows : [])
-    .slice(0, MAX_ROWS)
-    .map((v) => onceDivider(sanitizeRowKeys(v)))
-  const cell: GridCellSpec = { id, ...geom, rows }
+  const cell: GridCellSpec = { id, ...geom, rows: [] }
   applyCellStyle(cell, r)
+  // 行は容量 (style 確定後の cellRowCapacity) まで保持する。超過行を残すと「描画されないのに
+  // 配置済み」になり、chip が表示にも Unplaced 棚にも出ない silent loss になる。
+  cell.rows = (Array.isArray(r.rows) ? r.rows : [])
+    .slice(0, cellRowCapacity(cell))
+    .map((v) => onceDivider(sanitizeRowKeys(v)))
   return cell
 }
 

@@ -123,9 +123,14 @@ export function applyDisplayLabels(): boolean {
 // wake=false: preview は store 更新で再評価されるので窓終了タイマーは張らない (二重 poke 回避)。
 const previewVisibility = createVisibilityRuntime({ wake: false })
 
-// 現在編集中ページ (pageEditingIdx) の layout。auto デッキ (pages 未設定) なら undefined。
+// 現在編集中ページ (pageEditingIdx)。auto デッキ (pages 未設定) なら undefined。
+export function editingPage(): GlassPage | undefined {
+  return activeView(ctx.config).pages?.[ctx.pageEditingIdx]
+}
+
+// 現在編集中ページの layout (grid ページでは凍結スナップショット + customLabels の共有ストア)。
 export function editingLayout(): GlassLayout | undefined {
-  return activeView(ctx.config).pages?.[ctx.pageEditingIdx]?.layout
+  return editingPage()?.layout
 }
 
 // 空の glass layout (新規ページ用。全行空・customLabels なし)。
@@ -250,6 +255,7 @@ export function parseKey(key: string): GroupRef {
 export function applyProfileChange(): void {
   ctx.layoutEditing = false
   ctx.pageEditingIdx = 0
+  ctx.gridCellSel = null // 別 profile の同名セル (cell1 等) を誤編集しない
   void saveConfig(ctx.config)
   syncAll() // 切替先 view を cached status から補充 (変化あれば内部で保存)
   setSourcesFromConfig(ctx.config)
