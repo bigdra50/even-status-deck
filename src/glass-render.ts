@@ -24,8 +24,8 @@ import {
   type GroupMergeUnit,
   normalizeHeading,
 } from './display-identity'
-import { type CompiledCell, cellRect, compileGrid, type GridCell, LINE_H } from './glass-layout'
-import { GLASS_PADDING, GLASS_WIDTH, MAX_ROWS } from './glass-types'
+import { type CompiledCell, cellRect, compileGrid, type GridCell } from './glass-layout'
+import { cellRowCapacity, GLASS_PADDING, GLASS_WIDTH, MAX_ROWS } from './glass-types'
 import { sanitizeGlyphs } from './glyphs'
 import type { Group, StatusDoc } from './status-types'
 import { isVisible, segKey, type VisibleMap } from './visibility'
@@ -392,9 +392,9 @@ export function gridCellLines(
   d: GlassData,
   visible?: VisibleMap,
 ): string[] {
-  const { w, h } = cellRect(cell)
+  const { w } = cellRect(cell)
   const inset = 2 * ((cell.border ?? 0) + (cell.padding ?? 0))
-  const budget = Math.max(1, Math.floor((h - inset) / LINE_H))
+  const budget = cellRowCapacity(cell)
   const count = Math.min(cell.rows.length, budget)
   const innerW = w - inset
   return rowSlotClusters(cell.rows, customLabels, d, visible, count).map((rc) =>

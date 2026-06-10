@@ -255,6 +255,7 @@ export function parseKey(key: string): GroupRef {
 export function applyProfileChange(): void {
   ctx.layoutEditing = false
   ctx.pageEditingIdx = 0
+  ctx.gridCellSel = null // 別 profile の同名セル (cell1 等) を誤編集しない
   void saveConfig(ctx.config)
   syncAll() // 切替先 view を cached status から補充 (変化あれば内部で保存)
   setSourcesFromConfig(ctx.config)

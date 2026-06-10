@@ -390,6 +390,7 @@ export const CLICK_ACTIONS: Record<string, ClickHandler> = {
     view.pages = undefined
     view.glassLayout = undefined
     ctx.pageEditingIdx = 0
+    ctx.gridCellSel = null
     ctx.layoutEditing = false
     void saveConfig(ctx.config)
     requestRender()
@@ -521,6 +522,8 @@ export const CLICK_ACTIONS: Record<string, ClickHandler> = {
     const { cell } = editingGridCell()
     if (!cell || cell.rowSpan < 2) return
     cell.border = cell.border ? undefined : 1
+    // 枠線で容量が減ることがある (padding 併用時)。超過行は棚に戻す (隠れ行の silent loss 防止)。
+    cell.rows = cell.rows.slice(0, cellCapacity(cell))
     void saveConfig(ctx.config)
     requestRender()
   },
@@ -543,6 +546,8 @@ export const CLICK_ACTIONS: Record<string, ClickHandler> = {
     const pages = activeView(ctx.config).pages
     if (pages && Number.isInteger(i) && i >= 0 && i < pages.length) {
       ctx.pageEditingIdx = i
+      // 別ページにも同名セル (cell1 等) があり得るため、選択は持ち越さない。
+      ctx.gridCellSel = null
       requestRender()
     }
   },
@@ -555,6 +560,7 @@ export const CLICK_ACTIONS: Record<string, ClickHandler> = {
       layout: emptyGlassLayout(),
     })
     ctx.pageEditingIdx = view.pages.length - 1
+    ctx.gridCellSel = null
     ctx.layoutEditing = true
     void saveConfig(ctx.config)
     requestRender()

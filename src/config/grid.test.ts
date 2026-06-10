@@ -127,6 +127,23 @@ test('normalize: 枠線は rowSpan>=2 のみ (1 行セルの border は落ちる
   expect(cells?.[1]?.radius).toBe(4)
 })
 
+test('normalize: 行はセル容量まで (rowSpan1 の隠れ 2 行目は drop → chip は棚に導出される)', () => {
+  const cfg = emptyConfig()
+  const hidden = `${BUILTIN_SOURCE_ID}|clock|datetime`
+  withGridPage(cfg, [cellSpec({ rowSpan: 1, rows: [[G2_LEVEL], [hidden]] })])
+  const cell = migratedPage(cfg)?.grid?.cells[0]
+  expect(cell?.rows).toEqual([[G2_LEVEL]]) // 容量 1 行: 隠れ行は保持しない (silent loss 防止)
+})
+
+test('normalize: border+padding は容量を削る (rowSpan2 でも 1 行に clamp)', () => {
+  const cfg = emptyConfig()
+  const second = `${BUILTIN_SOURCE_ID}|clock|datetime`
+  // 58px - 2*(2+6)=16 → 42px/27 = 容量 1 行
+  withGridPage(cfg, [cellSpec({ rowSpan: 2, border: 2, padding: 6, rows: [[G2_LEVEL], [second]] })])
+  const cell = migratedPage(cfg)?.grid?.cells[0]
+  expect(cell?.rows).toEqual([[G2_LEVEL]])
+})
+
 test('normalize: セルは 7 個まで (8 個目以降は drop)', () => {
   const cfg = emptyConfig()
   withGridPage(

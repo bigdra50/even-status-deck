@@ -14,3 +14,23 @@ export const GLASS_PADDING = 8
 // compiler (glass-layout) と config 正規化 (config/layout) の双方が参照する。
 export const GRID_COLS = 12
 export const GRID_ROWS = 10
+
+// glass の line-height (px)。compiler の fitContent / セル行容量の共通基盤。
+export const LINE_H = 27
+
+// grid セルの行容量。edge-based 丸め (compiler の cellRect と同式) の高さから
+// border/padding の inset を引いた行数。描画 (glass-render) / エディタ (companion) /
+// 正規化 (config) が同じ式を使う — ずれると「描画されないのに配置済み」の chip が
+// 棚にも出ず silent loss になる。
+export function cellRowCapacity(c: {
+  row: number
+  rowSpan: number
+  border?: number
+  padding?: number
+}): number {
+  const rowH = GLASS_HEIGHT / GRID_ROWS
+  const y = Math.round(c.row * rowH)
+  const h = Math.round((c.row + c.rowSpan) * rowH) - y
+  const inset = 2 * ((c.border ?? 0) + (c.padding ?? 0))
+  return Math.max(1, Math.floor((h - inset) / LINE_H))
+}

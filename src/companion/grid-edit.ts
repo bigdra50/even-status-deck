@@ -1,8 +1,7 @@
 // grid エディタの純粋ロジック (Issue #17)。DOM/ctx に依存しない: 配置検証・空き矩形探索・
 // セル行容量。UI (glass-edit.ts) とアクション (actions.ts) がここを共有する。
 import type { GlassGrid, GridCellSpec } from '../config'
-import { cellRect, LINE_H } from '../glass-layout'
-import { GRID_COLS, GRID_ROWS } from '../glass-types'
+import { cellRowCapacity, GRID_COLS, GRID_ROWS } from '../glass-types'
 
 export type CellRectSpec = Pick<GridCellSpec, 'col' | 'row' | 'colSpan' | 'rowSpan'>
 
@@ -57,11 +56,9 @@ export function nextCellId(grid: GlassGrid): string {
   }
 }
 
-// セルの行容量 (glass-render の gridCellLines と同じ式)。
+// セルの行容量 (描画 / 正規化と同じ式 = glass-types.cellRowCapacity)。
 export function cellCapacity(cell: GridCellSpec): number {
-  const { h } = cellRect(cell)
-  const inset = 2 * ((cell.border ?? 0) + (cell.padding ?? 0))
-  return Math.max(1, Math.floor((h - inset) / LINE_H))
+  return cellRowCapacity(cell)
 }
 
 // grid 内の全配置 key (placed 集合。Unplaced 棚の導出に使う)。@right 区切りは含めない。
