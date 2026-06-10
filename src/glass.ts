@@ -112,13 +112,13 @@ const sync = createContainerSync({
           .catch(() => false)
       : Promise.resolve(false),
   // image 実体の送信: client canvas で PNG を描き、gray4 変換はホスト任せ (SDK 契約)。
-  // 描画不能 (canvas 無し等) は true 扱いで黙殺しない — false にすると毎 refresh で
-  // invalidate→rebuild が無限再試行になるため、ここはログのみで成功扱いにする。
+  // 描画不能 (canvas 無し等) は 'skip' = applied にも invalidate にもしない (次の apply で再試行。
+  // 'fail' 扱いだと invalidate→rebuild の無限再試行、成功扱いだと永久に placeholder のまま)。
   sendImage: async (img) => {
-    if (!gbridge) return false
+    if (!gbridge) return 'fail'
     const samples = img.image.source === 'sparkline' ? historyOf(img.image.segKey) : []
     const bytes = await renderImageCell(img.image, img.width, img.height, samples).catch(() => null)
-    if (!bytes) return true // 描画不能は送信スキップ (placeholder のまま)
+    if (!bytes) return 'skip'
     return gbridge
       .updateImageRawData(
         new ImageRawDataUpdate({
@@ -127,8 +127,12 @@ const sync = createContainerSync({
           imageData: Array.from(bytes),
         }),
       )
-      .then((r) => ImageRawDataUpdateResult.isSuccess(ImageRawDataUpdateResult.normalize(r)))
-      .catch(() => false)
+      .then((r) =>
+        ImageRawDataUpdateResult.isSuccess(ImageRawDataUpdateResult.normalize(r))
+          ? ('sent' as const)
+          : ('fail' as const),
+      )
+      .catch(() => 'fail' as const)
   },
 })
 
@@ -561,7 +565,11 @@ export async function initGlass(bridge: EvenAppBridge): Promise<void> {
       }),
     )
     .catch(() => null)
-  if (created === StartUpPageCreateResult.success) sync.seed(cells, images)
+  if (created === StartUpPageCreateResult.success) {
+    sync.seed(cells, images)
+    // SDK: container 作成成功後は即時 updateImageRawData する (placeholder を放置しない)。
+    if (images.length) await sync.apply(cells, images)
+  }
 
   eventUnsub = bridge.onEvenHubEvent(onEvent)
   storeUnsub = subscribe(onStoreUpdate)

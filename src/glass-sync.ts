@@ -16,12 +16,14 @@ export type UpgradeTarget = { containerID: number; containerName: string; conten
 // 同期対象の image (dataKey = 実体の版。sparkline の履歴更新などで変わると再送する)。
 export type SyncImage = CompiledImageCell & { dataKey: string }
 
-// glass.ts が bridge 呼び出しを注入する。例外は投げず false を返すこと。
+// glass.ts が bridge 呼び出しを注入する。例外は投げず false / 'fail' を返すこと。
 // sendImage は bytes 描画 (canvas) 込み — 直列に await される (SDK: 画像の並行送信禁止)。
+// 'skip' = 描画不能 (canvas 無し等)。applied にせず invalidate もしない (次の apply で再試行)。
+export type SendImageResult = 'sent' | 'skip' | 'fail'
 export type ContainerOps = {
   rebuild(cells: CompiledCell[], images: CompiledImageCell[]): Promise<boolean>
   upgrade(target: UpgradeTarget): Promise<boolean>
-  sendImage(img: CompiledImageCell): Promise<boolean>
+  sendImage(img: CompiledImageCell): Promise<SendImageResult>
 }
 
 // content / 画像実体を除いた幾何/様式/順序の正規化キー。これが変わったら rebuild。
@@ -85,16 +87,17 @@ export function createContainerSync(ops: ContainerOps): ContainerSync {
     if (ok) applied.set(cell.containerName, cell.content)
     else invalidate()
   }
-  // dataKey が変わった image を直列に送る。失敗で invalidate (次回 rebuild で全再送)。
+  // dataKey が変わった image を直列に送る。'fail' で invalidate (次回 rebuild で全再送)、
+  // 'skip' (描画不能) は applied にしない = 次の apply で再試行する。
   async function syncImages(images: SyncImage[]): Promise<void> {
     for (const img of images) {
       if (appliedImages.get(img.containerName) === img.dataKey) continue
-      const ok = await ops.sendImage(img)
-      if (!ok) {
+      const r = await ops.sendImage(img)
+      if (r === 'fail') {
         invalidate()
         return
       }
-      appliedImages.set(img.containerName, img.dataKey)
+      if (r === 'sent') appliedImages.set(img.containerName, img.dataKey)
     }
   }
 

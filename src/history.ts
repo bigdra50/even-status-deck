@@ -7,10 +7,26 @@ import { segKey } from './visibility/keys'
 export type HistorySample = { t: number; v: number }
 
 const MAX_SAMPLES = 64
+// series (segKey) 数の全体上限。超過時は最終更新が最古の series を捨てる
+// (動的 segment id や source 削除でキーが増え続けるのを防ぐ)。
+const MAX_SERIES = 256
 // 同一 t (同じ poll) の重複記録を避ける最小間隔。
 const MIN_INTERVAL_MS = 5_000
 
 const series = new Map<string, HistorySample[]>()
+
+function evictStalest(): void {
+  let oldest: string | null = null
+  let oldestT = Number.POSITIVE_INFINITY
+  for (const [k, s] of series) {
+    const t = s[s.length - 1]?.t ?? 0
+    if (t < oldestT) {
+      oldestT = t
+      oldest = k
+    }
+  }
+  if (oldest) series.delete(oldest)
+}
 
 // segment 値から数値を取り出す。数値が無ければ null。
 export function numericValueOf(seg: { value: string; percent?: number }): number | null {
@@ -20,6 +36,7 @@ export function numericValueOf(seg: { value: string; percent?: number }): number
 }
 
 export function recordHistory(key: string, v: number, t: number): void {
+  if (!series.has(key) && series.size >= MAX_SERIES) evictStalest()
   const s = series.get(key) ?? []
   const last = s[s.length - 1]
   if (last && t - last.t < MIN_INTERVAL_MS) {

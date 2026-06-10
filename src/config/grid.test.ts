@@ -285,3 +285,50 @@ test('normalize: image cell は 4 枚まで・text 7 枠とは別勘定', () => 
   expect(cells?.filter((c) => c.kind === 'image')).toHaveLength(4)
   expect(cells?.some((c) => c.id === 'txt')).toBe(true) // text は別勘定で生存
 })
+
+test('removeSource: sparkline image の segKey も掃除されセルごと落ちる (visitor 経由)', () => {
+  const cfg = emptyConfig()
+  const src = addServer(cfg, 'Test', 'http://x')
+  activeProfile(cfg).view.pages = [
+    {
+      id: 'p1',
+      name: 'P1',
+      layout: { rows: emptyRows(), customLabels: {} },
+      mode: 'grid',
+      grid: {
+        cells: [
+          cellSpec({
+            id: 'sp',
+            colSpan: 4,
+            rowSpan: 2,
+            rows: [],
+            kind: 'image',
+            image: { source: 'sparkline', segKey: `${src.id}|grp|seg` },
+          }),
+        ],
+      },
+    },
+  ]
+  removeSource(cfg, src.id)
+  const cell = activeProfile(cfg).view.pages?.[0]?.grid?.cells[0]
+  expect(cell?.image).toEqual({ source: 'sparkline', segKey: '' }) // 空 = 次の load で drop
+  const reloaded = migrate(cfg as unknown as Record<string, unknown>)
+  expect(activeProfile(reloaded).view.pages?.[0]?.grid?.cells).toHaveLength(0)
+})
+
+test('normalize: 空要素入り segKey / 未知 kind のセルは drop', () => {
+  const cfg = emptyConfig()
+  withGridPage(cfg, [
+    cellSpec({
+      id: 'bad1',
+      colSpan: 4,
+      rowSpan: 2,
+      rows: [],
+      kind: 'image',
+      image: { source: 'sparkline', segKey: '||' },
+    }),
+    cellSpec({ id: 'bad2', col: 4, kind: 'video' as unknown as 'text' }),
+    cellSpec({ id: 'ok', col: 8, colSpan: 4 }),
+  ])
+  expect(migratedPage(cfg)?.grid?.cells.map((c) => c.id)).toEqual(['ok'])
+})

@@ -148,7 +148,10 @@ function sanitizeImageSpec(v: unknown): GridImageSpec | null {
   }
   if (r.source === 'sparkline') {
     const segKey = typeof r.segKey === 'string' ? r.segKey : ''
-    return segKey.split('|').length === 3 ? { source: 'sparkline', segKey } : null
+    const parts = segKey.split('|')
+    return parts.length === 3 && parts.every((p) => p !== '')
+      ? { source: 'sparkline', segKey }
+      : null
   }
   return null
 }
@@ -174,6 +177,8 @@ function sanitizeGridCell(raw: unknown, ids: Set<string>): GridCellSpec | null {
   if (id.length < 1 || id.length > 16 || id === 'evt' || ids.has(id)) return null
   const geom = sanitizeCellGeometry(r)
   if (!geom) return null
+  // 未知の kind は drop (将来の kind を text と誤解釈して描画しない)。
+  if (r.kind !== undefined && r.kind !== 'text' && r.kind !== 'image') return null
   // image cell: 束縛と px サイズ制約を満たさなければセルごと drop。rows/style は持たない。
   if (r.kind === 'image') {
     const image = sanitizeImageSpec(r.image)

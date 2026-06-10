@@ -236,7 +236,9 @@ function clientProducer(
 
 async function refreshSource(def: SourceDef): Promise<void> {
   if (def.kind === 'builtin') {
-    statuses.set(def.id, localStatus())
+    const doc = localStatus()
+    statuses.set(def.id, doc)
+    recordStatusHistory(def.id, doc, Date.now()) // builtin (g2 電池等) も sparkline の履歴対象
     notify()
     return
   }
@@ -294,7 +296,9 @@ export function refreshBuiltins(): void {
   let changed = false
   for (const def of defs) {
     if (def.kind === 'builtin') {
-      statuses.set(def.id, localStatus())
+      const doc = localStatus()
+      statuses.set(def.id, doc)
+      recordStatusHistory(def.id, doc, Date.now()) // 電池 notify 経由の更新も履歴へ
       changed = true
     }
   }

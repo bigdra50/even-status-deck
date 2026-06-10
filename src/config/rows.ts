@@ -21,19 +21,33 @@ function layoutRowSet(lay: { rows: string[][] }): RowSet {
 }
 
 // grid は cells の rows を連結して 1 集合に見せる (write は各セルの行数で切り戻す)。
-// 変換は行単位 (行数を変えない) である前提。
+// 変換は行単位 (行数を変えない) である前提。sparkline image の segKey も合成 1 行として
+// 含める (source 削除/remap が image 束縛にも届く。書き戻しで空になったら segKey='' =
+// normalize が次の load でセルごと drop する)。
 // 注: normalize 前に走るため cells 自体が配列でない壊れた config も来る (Array.isArray 必須)。
 function gridRowSet(page: GlassPage): RowSet | null {
   const raw = page.grid?.cells
-  const cells = (Array.isArray(raw) ? raw : []).filter((c) => Array.isArray(c?.rows))
-  if (!cells.length) return null
+  const all = Array.isArray(raw) ? raw : []
+  const cells = all.filter((c) => Array.isArray(c?.rows))
+  const sparks = all.filter(
+    (c) =>
+      c?.kind === 'image' && c.image?.source === 'sparkline' && typeof c.image.segKey === 'string',
+  )
+  if (!cells.length && !sparks.length) return null
   return {
-    read: () => cells.flatMap((c) => c.rows),
+    read: () => [
+      ...cells.flatMap((c) => c.rows),
+      ...sparks.map((c) => (c.image?.source === 'sparkline' ? [c.image.segKey] : [])),
+    ],
     write: (rows) => {
       let i = 0
       for (const c of cells) {
         c.rows = rows.slice(i, i + c.rows.length)
         i += c.rows.length
+      }
+      for (const c of sparks) {
+        const r = rows[i++] ?? []
+        if (c.image?.source === 'sparkline') c.image.segKey = r[0] ?? ''
       }
     },
   }

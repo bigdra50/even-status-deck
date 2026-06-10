@@ -34,7 +34,8 @@ const img = (over: Partial<CompiledImageCell> = {}): SyncImage => ({
 })
 
 type Call = { kind: 'rebuild' | 'upgrade' | 'image'; detail: string }
-function harness(results: { rebuild?: boolean[]; upgrade?: boolean[]; image?: boolean[] } = {}) {
+type ImgResult = 'sent' | 'skip' | 'fail'
+function harness(results: { rebuild?: boolean[]; upgrade?: boolean[]; image?: ImgResult[] } = {}) {
   const calls: Call[] = []
   const rq = [...(results.rebuild ?? [])]
   const uq = [...(results.upgrade ?? [])]
@@ -53,7 +54,7 @@ function harness(results: { rebuild?: boolean[]; upgrade?: boolean[]; image?: bo
     },
     sendImage: (i) => {
       calls.push({ kind: 'image', detail: i.containerName })
-      return Promise.resolve(iq.shift() ?? true)
+      return Promise.resolve(iq.shift() ?? 'sent')
     },
   })
   return { sync, calls }
@@ -156,7 +157,7 @@ test('image: dataKey 変化 (sparkline 更新) は topo 不変のまま実体だ
 })
 
 test('image: 送信失敗は invalidate → 次回 rebuild + 全画像再送', async () => {
-  const { sync, calls } = harness({ image: [false, true] })
+  const { sync, calls } = harness({ image: ['fail', 'sent'] })
   await sync.apply([cell()], [img()]) // rebuild 成功 → image 失敗 → invalidate
   await sync.apply([cell()], [img()])
   expect(calls.map((c) => c.kind)).toEqual(['rebuild', 'image', 'rebuild', 'image'])
@@ -174,4 +175,12 @@ test('seed: 画像実体は未送信扱い (起動時は placeholder) → 最初
   sync.seed([cell()], [img()])
   await sync.apply([cell()], [img()])
   expect(calls).toEqual([{ kind: 'image', detail: 'img1' }])
+})
+
+test("image: 'skip' (描画不能) は applied にせず invalidate もしない → 次の apply で再試行", async () => {
+  const { sync, calls } = harness({ image: ['skip', 'sent'] })
+  await sync.apply([cell()], [img()]) // rebuild + skip
+  await sync.apply([cell()], [img()]) // 再試行 → sent
+  await sync.apply([cell()], [img()]) // applied 済 → 無送信
+  expect(calls.map((c) => c.kind)).toEqual(['rebuild', 'image', 'image'])
 })
