@@ -6,11 +6,12 @@ import {
   BUILTIN_GROUP_LABELS,
   BUILTIN_SOURCE_ID,
   type Config,
+  type GroupMeta,
   type GroupRef,
   type ProfileView,
   type SourceDef,
 } from './config'
-import type { StatusDoc } from './status-types'
+import type { Group, StatusDoc } from './status-types'
 import { segKey } from './visibility/keys'
 
 // source の表示オーナー。明示 displayOwner があればそれ、無ければ source.label にフォールバック。
@@ -72,6 +73,20 @@ export function computeGroupMergeUnits(config: Config, view: ProfileView): Group
   return units
 }
 
+// 1 group が持つ category 付き segment ぶん、ownersByCat に owner を登録する (collisionCategories の内側ループ)。
+function registerCategoryOwners(
+  ownersByCat: Map<string, Set<string>>,
+  owner: string,
+  meta: GroupMeta,
+): void {
+  for (const sm of meta.segments) {
+    if (!sm.category) continue
+    const set = ownersByCat.get(sm.category) ?? new Set<string>()
+    set.add(owner)
+    ownersByCat.set(sm.category, set)
+  }
+}
+
 // 「同一 category leaf を 2 つ以上の異なる owner が出す」category 集合。
 // ここに属する category の segment だけが owner prefix で区別される(構造的・status 非依存)。
 export function collisionCategories(config: Config): Set<string> {
@@ -80,18 +95,35 @@ export function collisionCategories(config: Config): Set<string> {
     const groups = config.groups[src.id]
     if (!groups) continue
     const owner = effectiveOwner(src)
-    for (const meta of Object.values(groups)) {
-      for (const sm of meta.segments) {
-        if (!sm.category) continue
-        const set = ownersByCat.get(sm.category) ?? new Set<string>()
-        set.add(owner)
-        ownersByCat.set(sm.category, set)
-      }
-    }
+    for (const meta of Object.values(groups)) registerCategoryOwners(ownersByCat, owner, meta)
   }
   const out = new Set<string>()
   for (const [cat, owners] of ownersByCat) if (owners.size >= 2) out.add(cat)
   return out
+}
+
+// 1 group ぶんの segment を解決し、out に書き込む (resolveDisplayLabels の内側ループ)。
+// live status に無い(offline/未取得)segment は触らない(map に含めない = 既存値を維持)。
+function resolveGroupDisplayLabels(
+  out: Map<string, string | null>,
+  sourceId: string,
+  owner: string,
+  gid: string,
+  meta: GroupMeta,
+  liveGroup: Group | undefined,
+  collide: Set<string>,
+): void {
+  for (const sm of meta.segments) {
+    if (!sm.category) continue
+    const liveSeg = liveGroup?.segments.find((s) => s.id === sm.id)
+    if (!liveSeg) continue // offline/未取得は触らない(揺らさない)
+    const key = segKey(sourceId, gid, sm.id)
+    if (!collide.has(sm.category)) {
+      out.set(key, null) // 非衝突 → クリア
+      continue
+    }
+    out.set(key, liveSeg.label ? `${owner} ${liveSeg.label}` : owner)
+  }
 }
 
 // 各 segment の desired displayLabel を解決する。返り値 segKey -> string(設定) | null(クリア)。
@@ -114,17 +146,7 @@ export function resolveDisplayLabels(
     const doc = statuses[src.id]
     for (const [gid, meta] of Object.entries(groups)) {
       const liveGroup = doc?.groups.find((g) => g.id === gid)
-      for (const sm of meta.segments) {
-        if (!sm.category) continue
-        const liveSeg = liveGroup?.segments.find((s) => s.id === sm.id)
-        if (!liveSeg) continue // offline/未取得は触らない(揺らさない)
-        const key = segKey(src.id, gid, sm.id)
-        if (!collide.has(sm.category)) {
-          out.set(key, null) // 非衝突 → クリア
-          continue
-        }
-        out.set(key, liveSeg.label ? `${owner} ${liveSeg.label}` : owner)
-      }
+      resolveGroupDisplayLabels(out, src.id, owner, gid, meta, liveGroup, collide)
     }
   }
   return out

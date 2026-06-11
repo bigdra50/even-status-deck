@@ -63,6 +63,19 @@ export type ContainerSync = {
   apply(cells: CompiledCell[], images?: SyncImage[]): Promise<void>
 }
 
+// cheap path (BLE upgrade) が使えるかの判定。topology が同一かつ差分 1 セル以下のときだけ
+// 変更セル列 (0 or 1 件) を返す。topology 変化 or 差分 2 セル以上は null (= rebuild へ)。
+function cheapPathChanged(
+  cells: CompiledCell[],
+  images: SyncImage[],
+  topo: string | null,
+  applied: Map<string, string>,
+): CompiledCell[] | null {
+  if (topoKey(cells, images) !== topo) return null
+  const changed = cells.filter((c) => applied.get(c.containerName) !== c.content)
+  return changed.length <= 1 ? changed : null
+}
+
 export function createContainerSync(ops: ContainerOps): ContainerSync {
   let topo: string | null = null
   let applied = new Map<string, string>() // containerName -> 送信済み content
@@ -105,13 +118,11 @@ export function createContainerSync(ops: ContainerOps): ContainerSync {
     invalidate,
     seed: (cells, images = []) => record(cells, images),
     async apply(cells: CompiledCell[], images: SyncImage[] = []): Promise<void> {
-      if (topoKey(cells, images) === topo) {
-        const changed = cells.filter((c) => applied.get(c.containerName) !== c.content)
-        if (changed.length <= 1) {
-          if (changed.length === 1 && changed[0]) await upgradeOne(changed[0])
-          if (topo !== null) await syncImages(images) // upgrade 失敗 (invalidate 済) なら送らない
-          return
-        }
+      const changed = cheapPathChanged(cells, images, topo, applied)
+      if (changed) {
+        if (changed.length === 1 && changed[0]) await upgradeOne(changed[0])
+        if (topo !== null) await syncImages(images) // upgrade 失敗 (invalidate 済) なら送らない
+        return
       }
       const ok = await ops.rebuild(cells, images)
       if (!ok) {

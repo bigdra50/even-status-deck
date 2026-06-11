@@ -231,6 +231,60 @@ function showsGroupLabel(vg: ViewGroup, groupId: string): boolean {
   return vg.showDefaultLabel ?? defaultShowGroupLabel(groupId)
 }
 
+// renderKeys の 1 segment key 解決結果。表示対象外 (フィルタで弾かれた) は null。
+type ResolvedSegmentItem = {
+  sourceId: string
+  groupId: string
+  vg: ViewGroup
+  liveGroup: Group | undefined
+  body: string
+  headKey: string
+}
+
+// 1 つの segment key を enabled/表示条件/status で解決する (renderKeys から分離)。
+// 通らなければ null (rows からは消さず描画時 skip)。
+function resolveSegmentItem(
+  key: string,
+  d: GlassData,
+  view: ProfileView,
+  visible?: VisibleMap,
+): ResolvedSegmentItem | null {
+  const [sourceId, groupId, segId] = key.split('|')
+  if (!sourceId || !groupId || !segId) return null
+  if (segId === LABEL_SEG) return null // 旧 @label 配置 chip は廃止 (migration で除去済)
+  const vg = view.groups[sourceId]?.[groupId]
+  if (!vg?.enabled) return null // group 無効
+  const meta = d.config.groups[sourceId]?.[groupId]
+  if (!meta?.segments.some((s) => s.id === segId)) return null // 素材に存在しない segment
+  if (!(vg.segments[segId] ?? true)) return null // segment 無効
+  if (!isVisible(visible, key)) return null // 表示タイミング条件
+  const liveGroup = findGroup(d, { sourceId, groupId })
+  const seg = liveGroup?.segments.find((s) => s.id === segId)
+  if (!seg) return null // status 欠落 (missing) → 描画時 skip (rows からは消さない)
+  const v = formatSegmentValue(seg.value, seg.widthChars, seg.isNumeric ?? false)
+  const body = seg.label ? `${seg.label} ${v}` : v
+  // run の識別は merge identity (effectiveGroupHeading)。表示フォールバック (groupLabelText の
+  // source label / groupId) を混ぜると、空見出しの別 group 同士が誤って dedup される。
+  // 空見出しは merge unit と同じく決して他 group と dedup しない (per-group キー)。
+  const headingKey = normalizeHeading(effectiveGroupHeading(d.config, sourceId, groupId))
+  const headKey = headingKey ? `h:${sourceId}\u0000${headingKey}` : `g:${sourceId}\u0000${groupId}`
+  return { sourceId, groupId, vg, liveGroup, body, headKey }
+}
+
+// default-label: ON かつこの run でまだ見出しを出していなければ group 名を前置する (ラベル文言は
+// 表示用の groupLabelText。解決は出すときだけ = label OFF の segment で余計な status 検索をしない)。
+// 戻り値の labeled は呼び出し元の runLabeled 更新用 (見出しを実際に出したときのみ true)。
+function labeledPart(
+  d: GlassData,
+  item: ResolvedSegmentItem,
+  runLabeled: boolean,
+): { part: string; labeled: boolean } {
+  const { sourceId, groupId, vg, liveGroup, body } = item
+  if (!showsGroupLabel(vg, groupId) || runLabeled) return { part: body, labeled: runLabeled }
+  const gl = groupLabelText(d, sourceId, groupId, liveGroup)
+  return gl ? { part: `${gl} ${body}`, labeled: true } : { part: body, labeled: runLabeled }
+}
+
 // items を解決して 1 クラスタの文字列を連結する。各 segment は値 (segLabel value) を出し、group の
 // default-label が ON なら group 名を前置する。隣接する「同見出し」(同 source + 正規化見出し一致 =
 // merge unit と同じ規則) の run では先頭 1 回だけ (dedup)。見出しを実際に出すまで run を「ラベル済」
@@ -256,44 +310,15 @@ function renderKeys(
       }
       continue
     }
-    const [sourceId, groupId, segId] = key.split('|')
-    if (!sourceId || !groupId || !segId) continue
-    if (segId === LABEL_SEG) continue // 旧 @label 配置 chip は廃止 (migration で除去済)
-    const vg = view.groups[sourceId]?.[groupId]
-    if (!vg?.enabled) continue // group 無効
-    const meta = d.config.groups[sourceId]?.[groupId]
-    if (!meta?.segments.some((s) => s.id === segId)) continue // 素材に存在しない segment
-    if (!(vg.segments[segId] ?? true)) continue // segment 無効
-    if (!isVisible(visible, key)) continue // 表示タイミング条件
-    const liveGroup = findGroup(d, { sourceId, groupId })
-    const seg = liveGroup?.segments.find((s) => s.id === segId)
-    if (!seg) continue // status 欠落 (missing) → 描画時 skip (rows からは消さない)
-    const v = formatSegmentValue(seg.value, seg.widthChars, seg.isNumeric ?? false)
-    const body = seg.label ? `${seg.label} ${v}` : v
-    // run の識別は merge identity (effectiveGroupHeading)。表示フォールバック (groupLabelText の
-    // source label / groupId) を混ぜると、空見出しの別 group 同士が誤って dedup される。
-    // 空見出しは merge unit と同じく決して他 group と dedup しない (per-group キー)。
-    const headingKey = normalizeHeading(effectiveGroupHeading(d.config, sourceId, groupId))
-    const headKey = headingKey
-      ? `h:${sourceId}\u0000${headingKey}`
-      : `g:${sourceId}\u0000${groupId}`
-    if (headKey !== runKey) {
-      runKey = headKey
+    const item = resolveSegmentItem(key, d, view, visible)
+    if (!item) continue
+    if (item.headKey !== runKey) {
+      runKey = item.headKey
       runLabeled = false
     }
-    // default-label: ON かつこの run でまだ見出しを出していなければ前置 (ラベル文言は表示用の
-    // groupLabelText。解決は出すときだけ = label OFF の segment で余計な status 検索をしない)
-    if (showsGroupLabel(vg, groupId) && !runLabeled) {
-      const gl = groupLabelText(d, sourceId, groupId, liveGroup)
-      if (gl) {
-        parts.push(`${gl} ${body}`)
-        runLabeled = true
-      } else {
-        parts.push(body)
-      }
-    } else {
-      parts.push(body)
-    }
+    const { part, labeled } = labeledPart(d, item, runLabeled)
+    parts.push(part)
+    runLabeled = labeled
   }
   // 値は formatSegmentValue で sanitize 済 (切り詰め前)。ラベル/custom テキストはここで sanitize する。
   // justify は本関数の出力(クラスタ文字列)を px 計測するので、出力段で sanitize すれば幅は整合する。
@@ -524,6 +549,39 @@ export function summaryBody(d: GlassData, visible?: VisibleMap): string[] {
   return all.length ? all : ['(no metric)']
 }
 
+// detail 用 1 segment の表示行。percent あれば bar 表示 (name は 8 桁 pad + reset 付記)、
+// 無ければ "label value" (label は 8 桁 pad)。値は formatSegmentValue で sanitize 済。
+function detailSegmentLine(seg: Group['segments'][number]): string {
+  const v = formatSegmentValue(seg.value, seg.widthChars, seg.isNumeric ?? false) // 値は sanitize 済
+  // ラベルは pad(幅計算) の前に sanitize する。reset も同様にグラスへ渡る前に通す。
+  const label = seg.label ? sanitizeGlyphs(seg.label) : ''
+  if (typeof seg.percent === 'number') {
+    const name = label ? pad(label, 8) : ''
+    const reset = seg.reset ? ` ${sanitizeGlyphs(seg.reset)}` : ''
+    return `${name} ${bar(seg.percent)} ${v}${reset}`.trim()
+  }
+  return label ? `${pad(label, 8)} ${v}` : v
+}
+
+// detail 用 1 member の表示行列。enabled かつ live (status あり) でなければ null
+// (disabled member は供出しない / offline member はスキップ。呼び出し元が live フラグを判定する)。
+function detailMemberLines(
+  d: GlassData,
+  ref: GroupRef,
+  view: ProfileView,
+  visible?: VisibleMap,
+): string[] | null {
+  if (!view.groups[ref.sourceId]?.[ref.groupId]?.enabled) return null // disabled member は供出しない
+  const g = findGroup(d, ref)
+  if (!g) return null // offline member はスキップ (代表欠落でも summary へはフォールバックしない)
+  const lines: string[] = []
+  for (const seg of g.segments) {
+    if (!isVisible(visible, segKey(ref.sourceId, ref.groupId, seg.id))) continue
+    lines.push(detailSegmentLine(seg))
+  }
+  return lines
+}
+
 // 詳細本文: unit の enabled な live member 全ての (表示条件を満たす) segment を bar 表示
 // (percent あれば)。見出しは unit で 1 回。segment の ON/OFF (vg.segments) は意図的に見ない
 // (detail はその unit の全データを見る画面)。全 member が status 欠落なら summary へフォールバック。
@@ -533,23 +591,10 @@ function detailBody(d: GlassData, unit: GroupMergeUnit, visible?: VisibleMap): s
   const lines: string[] = heading ? [heading] : []
   let live = false
   for (const ref of unit.members) {
-    if (!view.groups[ref.sourceId]?.[ref.groupId]?.enabled) continue // disabled member は供出しない
-    const g = findGroup(d, ref)
-    if (!g) continue // offline member はスキップ (代表欠落でも summary へはフォールバックしない)
+    const memberLines = detailMemberLines(d, ref, view, visible)
+    if (!memberLines) continue
     live = true
-    for (const seg of g.segments) {
-      if (!isVisible(visible, segKey(ref.sourceId, ref.groupId, seg.id))) continue
-      const v = formatSegmentValue(seg.value, seg.widthChars, seg.isNumeric ?? false) // 値は sanitize 済
-      // ラベルは pad(幅計算) の前に sanitize する。reset も同様にグラスへ渡る前に通す。
-      const label = seg.label ? sanitizeGlyphs(seg.label) : ''
-      if (typeof seg.percent === 'number') {
-        const name = label ? pad(label, 8) : ''
-        const reset = seg.reset ? ` ${sanitizeGlyphs(seg.reset)}` : ''
-        lines.push(`${name} ${bar(seg.percent)} ${v}${reset}`.trim())
-      } else {
-        lines.push(label ? `${pad(label, 8)} ${v}` : v)
-      }
-    }
+    lines.push(...memberLines)
   }
   if (!live) return summaryBody(d, visible)
   return lines
