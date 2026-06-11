@@ -32,8 +32,8 @@ bun run test:sim      # evenhub-simulator のグラス表示 e2e (e2e-sim/run.ts
 - `lint:deps` — dependency-cruiser
 - `knip` — 未使用 export / dep
 - `lint:dup` — jscpd 重複率 3% 未満
-- `lint:fta` — FTA score-cap 120（src / server 共通。companion・config 分割後の worst は 83）
-- `test:coverage` + Codecov — `bun test --coverage`（patch は informational）
+- `lint:fta` — FTA score-cap 100（src / server 共通。companion・config 分割後の worst は 83）
+- `test:coverage` + Codecov — `bun test --coverage`（patch カバレッジ 50% 未満で fail）
 
 | workflow | トリガ | 内容 |
 |---|---|---|
@@ -42,6 +42,12 @@ bun run test:sim      # evenhub-simulator のグラス表示 e2e (e2e-sim/run.ts
 | `sim-e2e.yml` | push main / dispatch | simulator E2E（ジョブが重いので PR では回さない） |
 | `pack.yml` | tag `v*` / dispatch | `.ehpk` を artifact / Release 化（[RELEASE.md](./RELEASE.md) 参照） |
 | `badges.yml` | push main / dispatch | jscpd 重複率と FTA score のバッジ JSON を badges ブランチへ push |
+
+### biome cognitive-complexity の凍結
+
+`noExcessiveCognitiveComplexity` の warning 44 件（2026-06-11 時点）は凍結リストとして扱う。新規コードで警告を増やさない。警告件数の確認は `bunx biome check .`。
+
+error 化（warning → error）は Phase 2（#86）の複雑度分割完了後に行う予定。
 
 ## 実機への載せ方
 
