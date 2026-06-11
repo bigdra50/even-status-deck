@@ -11,6 +11,7 @@
 // 単位/フォーマットは source 単位の表示オプション(#36 基盤の SourceDef.options)で選び、producer へ渡す。
 import { formatProfile } from './builtins'
 import type { OptionValues } from './config'
+import { getRoundedPosition } from './geo-position'
 import {
   type Group,
   parseStatusDoc,
@@ -18,14 +19,19 @@ import {
   type SourceState,
   type StatusDoc,
 } from './status-types'
+import {
+  type GeoCacheEntry,
+  isCacheFresh,
+  isCacheStaleOk,
+  readGeoCache,
+  writeGeoCache,
+} from './ttl-cache'
 
 export const WEATHER_GROUP_ID = 'weather'
 
 const CACHE_KEY = 'toolbar.weather.cache'
 const FRESH_MS = 30 * 60_000 // この間は再取得しない(cache をそのまま返す)
 const STALE_MAX_MS = 6 * 60 * 60_000 // 失敗時に cache を stale 表示してよい上限
-const GEO_TIMEOUT_MS = 10_000
-const GEO_MAX_AGE_MS = 30 * 60_000 // OS の位置キャッシュ許容(初回以外は許可ダイアログを出さない)
 const OPEN_METEO_TIMEOUT_MS = 8_000 // fetch がハングして weather が永遠に pending(灰色)になるのを防ぐ
 
 // source 単位の表示オプション(#40)。値の永続は SourceDef.options、スキーマ宣言は options.ts。
@@ -78,10 +84,6 @@ export function readWeatherOptions(bag: OptionValues | undefined): WeatherOption
     rainThreshold: pickNum('rainThreshold', 0, 5, 0.1),
     rainGranularity: pick('rainGranularity', ['auto', 'hourly'] as const, 'auto'),
   }
-}
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100
 }
 
 // WMO weather_code → 短い ASCII ラベル(glass 9 桁枠に収まる範囲)。
@@ -498,7 +500,7 @@ function withState(doc: StatusDoc, state: SourceState, message: string): StatusD
 }
 
 // cache は単位/フォーマット選択(optSig)込みで保持する。option を変えたら fresh でも再取得して即反映する。
-type Cache = { lat: number; lon: number; fetchedAt: number; optSig: string; doc: StatusDoc }
+type Cache = GeoCacheEntry<StatusDoc>
 
 function optSig(opts: WeatherOptions): string {
   return [
@@ -512,55 +514,6 @@ function optSig(opts: WeatherOptions): string {
     String(opts.rainThreshold),
     opts.rainGranularity,
   ].join('|')
-}
-
-function readCache(): Cache | null {
-  try {
-    if (typeof window === 'undefined') return null
-    const raw = window.localStorage.getItem(CACHE_KEY)
-    if (!raw) return null
-    const c = JSON.parse(raw) as Partial<Cache>
-    if (typeof c.lat !== 'number' || typeof c.lon !== 'number' || typeof c.fetchedAt !== 'number') {
-      return null
-    }
-    // localStorage は古いバージョン/改竄で壊れ得る境界。doc を StatusDoc 形に検証してから採用する
-    // (壊れた cache を store へ注入して描画前提を壊さない)。
-    const doc = parseStatusDoc(c.doc)
-    if (!doc) return null
-    return {
-      lat: c.lat,
-      lon: c.lon,
-      fetchedAt: c.fetchedAt,
-      optSig: typeof c.optSig === 'string' ? c.optSig : '',
-      doc,
-    }
-  } catch {
-    return null
-  }
-}
-
-function writeCache(c: Cache): void {
-  try {
-    if (typeof window === 'undefined') return
-    window.localStorage.setItem(CACHE_KEY, JSON.stringify(c))
-  } catch {
-    // quota 等は無視(キャッシュは best-effort)
-  }
-}
-
-// 現在地を 1 回取得する(コールバック API を Promise 化)。初回のみ OS 許可ダイアログが出る。
-function getPosition(): Promise<{ lat: number; lon: number }> {
-  return new Promise((resolve, reject) => {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      reject(new Error('geolocation unavailable'))
-      return
-    }
-    navigator.geolocation.getCurrentPosition(
-      (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude }),
-      (e) => reject(new Error(`geolocation error ${e.code}: ${e.message}`)),
-      { enableHighAccuracy: false, timeout: GEO_TIMEOUT_MS, maximumAge: GEO_MAX_AGE_MS },
-    )
-  })
 }
 
 // open-meteo の現在天気 URL。外部 fetch 先を限定するため host は api.open-meteo.com 固定。
@@ -731,8 +684,8 @@ let lastFailMsg = 'weather unavailable'
 
 // 失敗/backoff 時の degrade した StatusDoc。stale cache 範囲なら最後の値、無ければ error (source は残す)。
 function degraded(cache: Cache | null, now: number, msg: string): StatusDoc {
-  if (cache && now - cache.fetchedAt < STALE_MAX_MS) {
-    return withState(cache.doc, 'stale', 'using cached weather')
+  if (isCacheStaleOk(cache, now, STALE_MAX_MS)) {
+    return withState(cache.payload, 'stale', 'using cached weather')
   }
   return errorDoc(msg, now)
 }
@@ -754,24 +707,24 @@ export async function weatherStatus(
   const opts = resolveSunFormat(readWeatherOptions(options))
   const sig = optSig(opts)
   const now = Date.now()
-  const cache = readCache()
+  // payload(doc)型ガードは parseStatusDoc。localStorage は古いバージョン/改竄で壊れ得る境界なので、
+  // doc を StatusDoc 形に検証してから採用する(壊れた cache を store へ注入して描画前提を壊さない)。
+  const cache = readGeoCache(CACHE_KEY, parseStatusDoc)
   // 新鮮 かつ 同一 option: 何もしない。option を変えたら fresh でも下へ進んで再取得する。
-  if (cache && cache.optSig === sig && now - cache.fetchedAt < FRESH_MS) return cache.doc
+  if (isCacheFresh(cache, now, FRESH_MS, sig)) return cache.payload
   // 直近失敗の backoff 中は再取得もログもしない (poll 毎の geolocation/network/ログ churn を防ぐ)。
   if (now - lastFailAt < FAIL_BACKOFF_MS) return degraded(cache, now, lastFailMsg)
   // 実機の devtools 無し環境で経路を追えるよう、デバッグコンソールへ進捗を出す(座標は出さない=PII)。
   console.log('[weather] requesting location…')
   try {
-    const pos = await getPosition()
+    const { lat, lon } = await getRoundedPosition()
     if (signal.aborted) return null
-    const lat = round2(pos.lat)
-    const lon = round2(pos.lon)
     const r = await fetchOpenMeteo(lat, lon, opts, signal)
     if (signal.aborted) return null
     lastFailAt = 0 // 成功で backoff 解除
     console.log(`[weather] ok ${Math.round(r.temp)}${opts.tempUnit} ${weatherCodeText(r.code)}`)
     const doc = buildWeatherDoc(r, opts, Date.now())
-    writeCache({ lat, lon, fetchedAt: Date.now(), optSig: sig, doc })
+    writeGeoCache(CACHE_KEY, { lat, lon, fetchedAt: Date.now(), optSig: sig, payload: doc })
     return doc
   } catch (err) {
     if (signal.aborted) return null
