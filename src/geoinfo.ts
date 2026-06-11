@@ -6,15 +6,21 @@
 // cache には「生の reading」を保存し、毎回 opts で doc を rebuild する(単位変更は再 fetch 不要で即反映)。
 // 現地の live clock(now segment)は毎分 glassTick 再計算が要るため別途(#38 と同機構)。本 source は静的値のみ。
 import type { OptionValues } from './config'
+import { getRoundedPosition } from './geo-position'
 import type { Group, Segment, SourceState, StatusDoc } from './status-types'
+import {
+  type GeoCacheEntry,
+  isCacheFresh,
+  isCacheStaleOk,
+  readGeoCache,
+  writeGeoCache,
+} from './ttl-cache'
 
 export const GEOINFO_GROUP_ID = 'geoinfo'
 
 const CACHE_KEY = 'toolbar.geoinfo.cache'
 const FRESH_MS = 6 * 60 * 60_000 // 標高/TZ は変化が遅い。6h は再取得しない。
 const STALE_MAX_MS = 24 * 60 * 60_000 // 失敗時に cache を stale 表示してよい上限。
-const GEO_TIMEOUT_MS = 10_000
-const GEO_MAX_AGE_MS = 30 * 60_000
 const FETCH_TIMEOUT_MS = 8_000
 
 // source 単位の表示オプション(#36 基盤の SourceDef.options)。標高の単位のみ。
@@ -110,55 +116,18 @@ function errorDoc(message: string, ts: number): StatusDoc {
   return { version: 1, ts, groups: [group] }
 }
 
-function round2(n: number): number {
-  return Math.round(n * 100) / 100
+// cache の payload(reading)型ガード。壊れた JSON / 型不一致のフィールドは落とす。
+function parseGeoinfoReading(raw: unknown): GeoinfoReading | null {
+  if (!raw || typeof raw !== 'object') return null
+  const rd = raw as Record<string, unknown>
+  const reading: GeoinfoReading = {}
+  if (typeof rd.elevationM === 'number') reading.elevationM = rd.elevationM
+  if (typeof rd.utcOffsetSec === 'number') reading.utcOffsetSec = rd.utcOffsetSec
+  if (typeof rd.timezone === 'string') reading.timezone = rd.timezone
+  return reading
 }
 
-type Cache = { lat: number; lon: number; fetchedAt: number; reading: GeoinfoReading }
-
-function readCache(): Cache | null {
-  try {
-    if (typeof window === 'undefined') return null
-    const raw = window.localStorage.getItem(CACHE_KEY)
-    if (!raw) return null
-    const c = JSON.parse(raw) as Partial<Cache>
-    if (typeof c.lat !== 'number' || typeof c.lon !== 'number' || typeof c.fetchedAt !== 'number') {
-      return null
-    }
-    const rd = c.reading
-    if (!rd || typeof rd !== 'object') return null
-    const reading: GeoinfoReading = {}
-    if (typeof rd.elevationM === 'number') reading.elevationM = rd.elevationM
-    if (typeof rd.utcOffsetSec === 'number') reading.utcOffsetSec = rd.utcOffsetSec
-    if (typeof rd.timezone === 'string') reading.timezone = rd.timezone
-    return { lat: c.lat, lon: c.lon, fetchedAt: c.fetchedAt, reading }
-  } catch {
-    return null
-  }
-}
-
-function writeCache(c: Cache): void {
-  try {
-    if (typeof window === 'undefined') return
-    window.localStorage.setItem(CACHE_KEY, JSON.stringify(c))
-  } catch {
-    // quota 等は無視(best-effort)
-  }
-}
-
-function getPosition(): Promise<{ lat: number; lon: number }> {
-  return new Promise((resolve, reject) => {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      reject(new Error('geolocation unavailable'))
-      return
-    }
-    navigator.geolocation.getCurrentPosition(
-      (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude }),
-      (e) => reject(new Error(`geolocation error ${e.code}: ${e.message}`)),
-      { enableHighAccuracy: false, timeout: GEO_TIMEOUT_MS, maximumAge: GEO_MAX_AGE_MS },
-    )
-  })
-}
+type Cache = GeoCacheEntry<GeoinfoReading>
 
 export function elevationUrl(lat: number, lon: number): string {
   return `https://api.open-meteo.com/v1/elevation?latitude=${lat}&longitude=${lon}`
@@ -226,8 +195,8 @@ let lastFailAt = 0
 let lastFailMsg = 'location info unavailable'
 
 function degraded(cache: Cache | null, opts: GeoinfoOptions, now: number, msg: string): StatusDoc {
-  if (cache && now - cache.fetchedAt < STALE_MAX_MS) {
-    return buildGeoinfoDoc(cache.reading, opts, now, 'stale', 'using cached location info')
+  if (isCacheStaleOk(cache, now, STALE_MAX_MS)) {
+    return buildGeoinfoDoc(cache.payload, opts, now, 'stale', 'using cached location info')
   }
   return errorDoc(msg, now)
 }
@@ -240,23 +209,21 @@ export async function geoinfoStatus(
 ): Promise<StatusDoc | null> {
   const opts = readGeoinfoOptions(options)
   const now = Date.now()
-  const cache = readCache()
-  if (cache && now - cache.fetchedAt < FRESH_MS) {
-    return buildGeoinfoDoc(cache.reading, opts, cache.fetchedAt) // 単位は opts で都度 rebuild
+  const cache = readGeoCache(CACHE_KEY, parseGeoinfoReading)
+  if (isCacheFresh(cache, now, FRESH_MS)) {
+    return buildGeoinfoDoc(cache.payload, opts, cache.fetchedAt) // 単位は opts で都度 rebuild
   }
   if (now - lastFailAt < FAIL_BACKOFF_MS) return degraded(cache, opts, now, lastFailMsg)
   console.log('[geoinfo] requesting location…')
   try {
-    const pos = await getPosition()
+    const { lat, lon } = await getRoundedPosition()
     if (signal.aborted) return null
-    const lat = round2(pos.lat)
-    const lon = round2(pos.lon)
     const reading = await fetchGeoinfo(lat, lon, signal)
     if (signal.aborted) return null
     lastFailAt = 0
     console.log(`[geoinfo] ok elev=${reading.elevationM ?? 'n/a'} tz=${reading.timezone ?? 'n/a'}`)
     const at = Date.now()
-    writeCache({ lat, lon, fetchedAt: at, reading })
+    writeGeoCache(CACHE_KEY, { lat, lon, fetchedAt: at, payload: reading })
     return buildGeoinfoDoc(reading, opts, at)
   } catch (err) {
     if (signal.aborted) return null

@@ -5,7 +5,15 @@
 // whitelist に追加が要る(本 PR で追加)。地名は localityLanguage=en で英語化して取得し、さらに asciiFold で
 // アクセント(São→Sao 等)を除去して実機 tofu を避ける。表示オプションは無し(英語固定)。
 import type { OptionValues } from './config'
+import { getRoundedPosition } from './geo-position'
 import type { Group, Segment, SourceState, StatusDoc } from './status-types'
+import {
+  type GeoCacheEntry,
+  isCacheFresh,
+  isCacheStaleOk,
+  readGeoCache,
+  writeGeoCache,
+} from './ttl-cache'
 
 export const GEOCODE_GROUP_ID = 'geocode'
 
@@ -13,8 +21,6 @@ const HOST = 'https://api.bigdatacloud.net'
 const CACHE_KEY = 'toolbar.geocode.cache'
 const FRESH_MS = 30 * 60_000 // 移動しても市レベルは変化が遅い。30分は再取得しない。
 const STALE_MAX_MS = 6 * 60 * 60_000
-const GEO_TIMEOUT_MS = 10_000
-const GEO_MAX_AGE_MS = 30 * 60_000
 const FETCH_TIMEOUT_MS = 8_000
 
 // 文字列を ASCII へ畳む。NFD 分解 → 結合文字(アクセント)除去 → 非 ASCII を空白化。実機フォントの
@@ -80,55 +86,18 @@ function errorDoc(message: string, ts: number): StatusDoc {
   return { version: 1, ts, groups: [group] }
 }
 
-function round2(n: number): number {
-  return Math.round(n * 100) / 100
-}
-
-type Cache = { lat: number; lon: number; fetchedAt: number; reading: GeocodeReading }
-
-function readCache(): Cache | null {
-  try {
-    if (typeof window === 'undefined') return null
-    const raw = window.localStorage.getItem(CACHE_KEY)
-    if (!raw) return null
-    const c = JSON.parse(raw) as Partial<Cache>
-    if (typeof c.lat !== 'number' || typeof c.lon !== 'number' || typeof c.fetchedAt !== 'number') {
-      return null
-    }
-    const rd = c.reading
-    if (!rd || typeof rd !== 'object') return null
-    const reading: GeocodeReading = {}
-    for (const k of ['city', 'area', 'region', 'country'] as const) {
-      if (typeof rd[k] === 'string') reading[k] = rd[k]
-    }
-    return { lat: c.lat, lon: c.lon, fetchedAt: c.fetchedAt, reading }
-  } catch {
-    return null
+// cache の payload(reading)型ガード。壊れた JSON / 型不一致のフィールドは落とす。
+function parseGeocodeReading(raw: unknown): GeocodeReading | null {
+  if (!raw || typeof raw !== 'object') return null
+  const rd = raw as Record<string, unknown>
+  const reading: GeocodeReading = {}
+  for (const k of ['city', 'area', 'region', 'country'] as const) {
+    if (typeof rd[k] === 'string') reading[k] = rd[k]
   }
+  return reading
 }
 
-function writeCache(c: Cache): void {
-  try {
-    if (typeof window === 'undefined') return
-    window.localStorage.setItem(CACHE_KEY, JSON.stringify(c))
-  } catch {
-    // quota 等は無視(best-effort)
-  }
-}
-
-function getPosition(): Promise<{ lat: number; lon: number }> {
-  return new Promise((resolve, reject) => {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      reject(new Error('geolocation unavailable'))
-      return
-    }
-    navigator.geolocation.getCurrentPosition(
-      (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude }),
-      (e) => reject(new Error(`geolocation error ${e.code}: ${e.message}`)),
-      { enableHighAccuracy: false, timeout: GEO_TIMEOUT_MS, maximumAge: GEO_MAX_AGE_MS },
-    )
-  })
-}
+type Cache = GeoCacheEntry<GeocodeReading>
 
 export function geocodeUrl(lat: number, lon: number): string {
   return `${HOST}/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`
@@ -181,8 +150,8 @@ let lastFailAt = 0
 let lastFailMsg = 'place unavailable'
 
 function degraded(cache: Cache | null, now: number, msg: string): StatusDoc {
-  if (cache && now - cache.fetchedAt < STALE_MAX_MS) {
-    return buildGeocodeDoc(cache.reading, undefined, now, 'stale', 'using cached place')
+  if (isCacheStaleOk(cache, now, STALE_MAX_MS)) {
+    return buildGeocodeDoc(cache.payload, undefined, now, 'stale', 'using cached place')
   }
   return errorDoc(msg, now)
 }
@@ -193,22 +162,20 @@ export async function geocodeStatus(
   _options?: OptionValues,
 ): Promise<StatusDoc | null> {
   const now = Date.now()
-  const cache = readCache()
-  if (cache && now - cache.fetchedAt < FRESH_MS)
-    return buildGeocodeDoc(cache.reading, undefined, cache.fetchedAt)
+  const cache = readGeoCache(CACHE_KEY, parseGeocodeReading)
+  if (isCacheFresh(cache, now, FRESH_MS))
+    return buildGeocodeDoc(cache.payload, undefined, cache.fetchedAt)
   if (now - lastFailAt < FAIL_BACKOFF_MS) return degraded(cache, now, lastFailMsg)
   console.log('[geocode] requesting location…')
   try {
-    const pos = await getPosition()
+    const { lat, lon } = await getRoundedPosition()
     if (signal.aborted) return null
-    const lat = round2(pos.lat)
-    const lon = round2(pos.lon)
     const reading = await fetchGeocode(lat, lon, signal)
     if (signal.aborted) return null
     lastFailAt = 0
     console.log(`[geocode] ok ${reading.city ?? 'n/a'}`)
     const at = Date.now()
-    writeCache({ lat, lon, fetchedAt: at, reading })
+    writeGeoCache(CACHE_KEY, { lat, lon, fetchedAt: at, payload: reading })
     return buildGeocodeDoc(reading, undefined, at)
   } catch (err) {
     if (signal.aborted) return null
