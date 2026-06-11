@@ -5,7 +5,7 @@
 // holdMs だけ表示。transient(onChange) の状態は呼び出し側 (runtime shell) が保持し、ここは pure に
 // 受け渡す。config / status-types は型のみ参照。
 import { activeView, type Config } from '../config'
-import type { Segment, StatusDoc } from '../status-types'
+import type { Group, Segment, StatusDoc } from '../status-types'
 import {
   type ConditionTruth,
   type ConditionTruthMap,
@@ -55,6 +55,61 @@ function combineTruth(results: LeafResult[], combinator: 'and' | 'or'): Conditio
   return hasUnknown ? 'unknown' : false
 }
 
+// present leaf を評価する。同 group 内の対象 segment が live で値を持つか (不在検出が目的なので常に bool・na にしない)。
+function evalPresent(leaf: Extract<VisibilityLeaf, { kind: 'present' }>, group: Group): LeafResult {
+  const t = group.segments.find((s) => s.id === leaf.seg)
+  const has = !!t && t.value.trim() !== ''
+  return leaf.absent ? !has : has
+}
+
+// onChange leaf を評価する。対象不在は変化観測不能 → false。状態キーに対象 id を含め、対象切替直後の
+// 誤発火を防ぐ。states へ次回参照用の状態を書き込み、活性中なら wakeAt 候補を返す。
+function evalOnChange(
+  leaf: Extract<VisibilityLeaf, { kind: 'onChange' }>,
+  target: Segment,
+  lkey: string,
+  prev: VisStates,
+  states: VisStates,
+  now: number,
+): { result: LeafResult; wakeAt?: number } {
+  const cur = target.value
+  const before = prev.get(lkey)
+  let activeUntil = before?.activeUntil ?? 0
+  if (before && before.prevValue !== cur) activeUntil = now + leaf.holdMs
+  states.set(lkey, { prevValue: cur, activeUntil })
+  const wakeAt = activeUntil > now ? activeUntil : undefined
+  return { result: now < activeUntil, wakeAt }
+}
+
+// leaf 1件を評価する。present は group 内対象の有無、threshold/onChange は対象 (peer or self) を解決して評価する。
+// 戻り値の wakeAt は onChange が活性中のときのみ設定される (それ以外は undefined)。
+function evalLeaf(
+  leaf: VisibilityLeaf,
+  i: number,
+  group: Group,
+  seg: Segment,
+  key: string,
+  prev: VisStates,
+  states: VisStates,
+  now: number,
+): { result: LeafResult; wakeAt?: number } {
+  if (leaf.kind === 'present') {
+    // 同 group 内の対象 segment が live で値を持つか。不在検出が目的なので常に bool(na にしない)。
+    return { result: evalPresent(leaf, group) }
+  }
+  // threshold / onChange: 対象 = peer(leaf.seg 指定時) or self。明示 peer の不在は false
+  // (na にすると単独条件で fail-open し「B が満たしたら A」と矛盾する)。
+  const target = leaf.seg ? group.segments.find((s) => s.id === leaf.seg) : seg
+  if (leaf.kind === 'threshold') {
+    if (!target) return { result: false }
+    return { result: evalThreshold(leaf, target) } // percent 欠落は 'na'(self/peer 共通)
+  }
+  // onChange: 対象不在は変化観測不能 → false。
+  if (!target) return { result: false }
+  const lkey = `${key}#${i}:${leaf.seg ?? seg.id}`
+  return evalOnChange(leaf, target, lkey, prev, states, now)
+}
+
 // 全 segment の可視マップを算出する (pure・状態受け渡し)。prev (onChange leaf の前回値/活性期限) を読み、
 // 新 states + map + 次回 wake 時刻を返す。条件無し (conditions 空) と status 未到着は map に載せない
 // (isVisible 既定 true、map を小さく保つ)。runtime shell が states を保持し wakeAt でタイマーを張る。
@@ -63,6 +118,34 @@ function combineTruth(results: LeafResult[], combinator: 'and' | 'or'): Conditio
 //                   activeUntil=0 (非表示、フラッシュ防止)。leaf 結果 = now < activeUntil。
 //   結合: inline=combineVisible(fail-open) / 発火=combineTruth(strict tri-state)
 //   display 指定 segment は inline を出さない (map に false) = 排他。truthMap で発火判定する。
+// 1 segment 分の可視判定を算出し、map/truthMap/states へ書き込む。条件無し/status 未到着は何もしない
+// (呼び出し側で skip 済み)。戻り値は onChange leaf が活性中なら wakeAt 候補、なければ null。
+function computeSegmentVisibility(
+  sm: { id: string; visibility?: VisibilityCond },
+  group: Group,
+  key: string,
+  prev: VisStates,
+  states: VisStates,
+  now: number,
+  map: VisibleMap,
+  truthMap: ConditionTruthMap,
+): number | null {
+  const cond = sm.visibility
+  if (!cond || cond.conditions.length === 0) return null // 条件無し = 常時表示 (map に載せない)
+  const seg = group.segments.find((s) => s.id === sm.id)
+  if (!seg) return null
+  let wakeAt: number | null = null
+  const results: LeafResult[] = cond.conditions.map((leaf, i) => {
+    const { result, wakeAt: leafWakeAt } = evalLeaf(leaf, i, group, seg, key, prev, states, now)
+    if (leafWakeAt != null) wakeAt = wakeAt == null ? leafWakeAt : Math.min(wakeAt, leafWakeAt)
+    return result
+  })
+  truthMap.set(key, combineTruth(results, cond.combinator)) // 発火判定 (strict)
+  // display 指定 = inline を出さず選んだ UI で提示 (排他)。それ以外は fail-open で inline 表示。
+  map.set(key, cond.display ? false : combineVisible(results, cond.combinator))
+  return wakeAt
+}
+
 export function computeVisibleMap(
   config: Config,
   statuses: Record<string, StatusDoc | null>,
@@ -80,39 +163,9 @@ export function computeVisibleMap(
     const group = statuses[ref.sourceId]?.groups.find((g) => g.id === ref.groupId)
     if (!group) continue
     for (const sm of meta.segments) {
-      const cond = sm.visibility
-      if (!cond || cond.conditions.length === 0) continue // 条件無し = 常時表示 (map に載せない)
-      const seg = group.segments.find((s) => s.id === sm.id)
-      if (!seg) continue
       const key = segKey(ref.sourceId, ref.groupId, sm.id)
-      const results: LeafResult[] = cond.conditions.map((leaf, i) => {
-        if (leaf.kind === 'present') {
-          // 同 group 内の対象 segment が live で値を持つか。不在検出が目的なので常に bool(na にしない)。
-          const t = group.segments.find((s) => s.id === leaf.seg)
-          const has = !!t && t.value.trim() !== ''
-          return leaf.absent ? !has : has
-        }
-        // threshold / onChange: 対象 = peer(leaf.seg 指定時) or self。明示 peer の不在は false
-        // (na にすると単独条件で fail-open し「B が満たしたら A」と矛盾する)。
-        const target = leaf.seg ? group.segments.find((s) => s.id === leaf.seg) : seg
-        if (leaf.kind === 'threshold') {
-          if (!target) return false
-          return evalThreshold(leaf, target) // percent 欠落は 'na'(self/peer 共通)
-        }
-        // onChange: 対象不在は変化観測不能 → false。状態キーに対象 id を含め、対象切替直後の誤発火を防ぐ。
-        if (!target) return false
-        const lkey = `${key}#${i}:${leaf.seg ?? seg.id}`
-        const cur = target.value
-        const before = prev.get(lkey)
-        let activeUntil = before?.activeUntil ?? 0
-        if (before && before.prevValue !== cur) activeUntil = now + leaf.holdMs
-        states.set(lkey, { prevValue: cur, activeUntil })
-        if (activeUntil > now) wakeAt = wakeAt == null ? activeUntil : Math.min(wakeAt, activeUntil)
-        return now < activeUntil
-      })
-      truthMap.set(key, combineTruth(results, cond.combinator)) // 発火判定 (strict)
-      // display 指定 = inline を出さず選んだ UI で提示 (排他)。それ以外は fail-open で inline 表示。
-      map.set(key, cond.display ? false : combineVisible(results, cond.combinator))
+      const segWakeAt = computeSegmentVisibility(sm, group, key, prev, states, now, map, truthMap)
+      if (segWakeAt != null) wakeAt = wakeAt == null ? segWakeAt : Math.min(wakeAt, segWakeAt)
     }
   }
   return { map, truthMap, states, wakeAt }
