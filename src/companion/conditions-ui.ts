@@ -14,7 +14,7 @@ import { setSegmentOption, setSourceOption } from '../options'
 import { refreshSourceById, setSourcesFromConfig } from '../store'
 import type { DisplayUi, VisibilityCond, VisibilityLeaf } from '../visibility'
 import { requestRender } from './render-port'
-import { segChoicesFor } from './rows'
+import { segChoicesFor } from './rows-visibility'
 import { ctx } from './state'
 import { applyProfileChange, parseKey } from './sync'
 

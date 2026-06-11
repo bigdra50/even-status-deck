@@ -4,6 +4,7 @@
 import { diagCounts } from '../diag-counters'
 import { esc } from '../escape'
 import { icon } from '../icons'
+import { actionButton, attrsHtml } from './html'
 
 type DbgLevel = 'log' | 'info' | 'warn' | 'error'
 type DbgEntry = { t: number; level: DbgLevel; text: string }
@@ -191,20 +192,20 @@ export function renderDbgConsole(): string {
   const caret = icon(dbgOpen ? 'chevron-down' : 'chevron-right', { size: 16 })
   const actions = dbgOpen
     ? `<span class="cmp-actions">
-        <button class="link-btn" data-action="console-copy" title="表示中のログをコピー">Copy</button>
-        <button class="link-btn" data-action="console-clear">Clear</button>
-        <button class="link-btn" data-action="dbg-img-probe" title="image cell の実機検証ページを追加">Img probe</button>
+        ${actionButton('console-copy', 'Copy', { cls: 'link-btn', title: '表示中のログをコピー' })}
+        ${actionButton('console-clear', 'Clear', { cls: 'link-btn' })}
+        ${actionButton('dbg-img-probe', 'Img probe', { cls: 'link-btn', title: 'image cell の実機検証ページを追加' })}
       </span>`
     : ''
   const head = `<div class="cmp-label cmp-label-row">
-      <button class="dbgc-toggle" data-action="console-toggle">${caret} Console <span id="dbg-count" class="dbgc-count">${dbgLogs.length}</span></button>
+      ${actionButton('console-toggle', `${caret} Console <span id="dbg-count" class="dbgc-count">${dbgLogs.length}</span>`, { cls: 'dbgc-toggle' })}
       ${actions}
     </div>`
   if (!dbgOpen) return head
   return `${head}
     <div class="dbgc">
       <div class="dbgc-diag">${diagLine()}</div>
-      <input class="dbgc-filter" type="text" placeholder="Filter…" value="${esc(dbgFilter)}" aria-label="Filter logs" />
+      <input${attrsHtml({ class: 'dbgc-filter', type: 'text', placeholder: 'Filter…', value: dbgFilter, 'aria-label': 'Filter logs' })} />
       <div id="dbg-list" class="dbgc-list">${dbgListInnerHtml()}</div>
     </div>`
 }

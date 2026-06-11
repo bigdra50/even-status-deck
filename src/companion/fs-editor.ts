@@ -13,6 +13,7 @@ import { esc } from '../escape'
 import { MAX_ROWS, splitRowClusters } from '../glass-render'
 import { icon } from '../icons'
 import { rowOverflow } from './glass-edit'
+import { actionButton } from './html'
 import { requestRender } from './render-port'
 import { allPlaceableKeys, segLabelParts } from './rows'
 import { ctx } from './state'
@@ -55,7 +56,11 @@ function fsChip(key: string, showGroup: boolean, rightSide: boolean): string {
   const { group } = segLabelParts(key)
   const grp = !label && showGroup && group ? `<span class="fs-grp">${esc(group)}</span>` : ''
   const cls = `fs-chip${label ? ' fs-chip-label' : rightSide ? ' fs-chip-r' : ''}`
-  const x = `<button class="fs-x" data-action="fs-unplace" data-segkey="${esc(key)}" aria-label="Unplace">${icon('x', { size: 12 })}</button>`
+  const x = actionButton('fs-unplace', icon('x', { size: 12 }), {
+    cls: 'fs-x',
+    attrs: { 'data-segkey': key },
+    ariaLabel: 'Unplace',
+  })
   return `<span class="${cls}" data-segkey="${esc(key)}">${grp}<span class="fs-txt">${esc(fsChipText(key))}</span>${x}</span>`
 }
 
@@ -121,10 +126,12 @@ function renderFsBodyHtml(): string {
       const collapsed = fsCollapsedSources.has(sid)
       const label =
         sid === FS_CUSTOM_SECTION ? 'Labels' : (sourceById(ctx.config, sid)?.label ?? sid)
-      const head =
-        `<button class="fs-li-head" data-action="fs-toggle-source" data-src="${esc(sid)}">` +
+      const head = actionButton(
+        'fs-toggle-source',
         `${icon(collapsed ? 'chevron-right' : 'chevron-down', { size: 14 })}` +
-        `<span class="fs-li-head-label">${esc(label)}</span><span class="fs-li-count">${keys.length}</span></button>`
+          `<span class="fs-li-head-label">${esc(label)}</span><span class="fs-li-count">${keys.length}</span>`,
+        { cls: 'fs-li-head', attrs: { 'data-src': sid } },
+      )
       return head + (collapsed ? '' : keys.map(fsListItem).join(''))
     })
     .join('')
@@ -139,7 +146,7 @@ function renderFsBodyHtml(): string {
 function renderFsShell(): string {
   return `<div class="fs-stage">
       <div class="fs-bar"><span class="fs-title">Glass layout — drag items onto the preview</span>
-        <button class="fs-done" data-action="fs-done">Done</button></div>
+        ${actionButton('fs-done', 'Done', { cls: 'fs-done' })}</div>
       <div class="fs-body">${renderFsBodyHtml()}</div>
     </div>
     <div class="fs-hint">Rotate your phone to landscape ↻</div>`
