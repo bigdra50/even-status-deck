@@ -24,7 +24,26 @@ const DB = join(homedir(), 'Library/Group Containers/group.com.apple.usernoted/d
 const POLL_MS = 2_000
 const PROVIDER_ID = 'mac-notifications'
 
-type Row = { recId: number; identifier: string; hex: string }
+export type Row = { recId: number; identifier: string; hex: string }
+
+// sqlite3 -separator '\x01' の 1 行を Row にする。rec_id が数値でない / hex が空の行は null (スキップ)。
+export function parseRecordLine(line: string): Row | null {
+  if (!line) return null
+  const [rec, identifier, hex] = line.split('')
+  const recId = Number.parseInt(rec ?? '', 10)
+  if (!Number.isFinite(recId) || !hex) return null
+  return { recId, identifier: identifier ?? '', hex }
+}
+
+// sqlite3 の stdout 全体 (改行区切り) を Row[] にする。壊れた行は黙ってスキップする。
+export function parseSqliteRows(stdout: string): Row[] {
+  const rows: Row[] = []
+  for (const line of stdout.split('\n')) {
+    const row = parseRecordLine(line)
+    if (row) rows.push(row)
+  }
+  return rows
+}
 
 // immutable=1 で live DB をロックせず読む。app テーブルを join して bundle id を得る。
 async function queryNewRows(lastRecId: number): Promise<Row[]> {
@@ -35,14 +54,7 @@ async function queryNewRows(lastRecId: number): Promise<Row[]> {
   const { stdout } = await pexec('sqlite3', ['-separator', '', `file:${DB}?immutable=1`, sql], {
     maxBuffer: 32 * 1024 * 1024,
   })
-  const rows: Row[] = []
-  for (const line of stdout.split('\n')) {
-    if (!line) continue
-    const [rec, identifier, hex] = line.split('')
-    const recId = Number.parseInt(rec ?? '', 10)
-    if (Number.isFinite(recId) && hex) rows.push({ recId, identifier: identifier ?? '', hex })
-  }
-  return rows
+  return parseSqliteRows(stdout)
 }
 
 async function maxRecId(): Promise<number> {
@@ -58,9 +70,9 @@ async function maxRecId(): Promise<number> {
   }
 }
 
-type Notif = { title: string; sub: string; body: string }
+export type Notif = { title: string; sub: string; body: string }
 
-function pickStr(o: unknown, keys: string[]): string {
+export function pickStr(o: unknown, keys: string[]): string {
   if (!o || typeof o !== 'object') return ''
   const rec = o as Record<string, unknown>
   for (const k of keys) if (typeof rec[k] === 'string') return rec[k] as string
@@ -68,7 +80,7 @@ function pickStr(o: unknown, keys: string[]): string {
 }
 
 // plist JSON から通知文面を取り出す。req 配下 or root 直下のどちらにも対応する。
-function extractFromJson(j: unknown): Notif {
+export function extractFromJson(j: unknown): Notif {
   const root = j && typeof j === 'object' ? (j as Record<string, unknown>) : {}
   const req = root.req && typeof root.req === 'object' ? root.req : root
   return {
@@ -79,7 +91,7 @@ function extractFromJson(j: unknown): Notif {
 }
 
 // XML plist から正規表現で取り出す (JSON 変換が失敗する binary 混在 plist 用のフォールバック)。
-function extractFromXml(xml: string, key: string): string {
+export function extractFromXml(xml: string, key: string): string {
   const m = new RegExp(`<key>${key}</key>\\s*<string>([\\s\\S]*?)</string>`).exec(xml)
   if (!m?.[1]) return ''
   return m[1]
@@ -157,17 +169,10 @@ async function emit(endpoint: string, recId: number, n: Notif): Promise<void> {
   }
 }
 
-// watcher 本体。引数なしでこの process が生き続ける限りポーリングし続ける。
-export async function runMacNotificationsWatcher(): Promise<void> {
-  const cfg = await loadServerConfig()
-  const envPort = Number(process.env.EVENG2_PORT)
-  const port = cfg.port ?? (Number.isInteger(envPort) && envPort > 0 ? envPort : 8723)
-  const endpoint = `http://127.0.0.1:${port}/api/emit`
-
-  // 起動時の最大 rec_id を起点にする (過去の通知を遡って洪水しない)。
-  let lastRecId: number
+// 起動時の最大 rec_id を起点にする (過去の通知を遡って洪水しない)。読めなければ詳細ログを出して exit(1)。
+async function initialRecId(): Promise<number> {
   try {
-    lastRecId = await maxRecId()
+    return await maxRecId()
   } catch (e) {
     console.error(
       '[mac-notifications] 通知 DB を読めません。Full Disk Access を付与してください ' +
@@ -177,6 +182,45 @@ export async function runMacNotificationsWatcher(): Promise<void> {
     console.error('  詳細:', e instanceof Error ? e.message : e)
     process.exit(1)
   }
+}
+
+// 1 行 (1 通知) を decode してフィルタを通し、必要なら emit する。lastRecId を更新して返す。
+async function processRow(
+  row: Row,
+  lastRecId: number,
+  tmpFile: string,
+  endpoint: string,
+  rule: MacNotificationsWatcherConfig | undefined,
+): Promise<number> {
+  const nextRecId = Math.max(lastRecId, row.recId)
+  const n = await decodeNotif(row.hex, tmpFile)
+  if (!n) return nextRecId
+  if (!n.title && !n.sub && !n.body) return nextRecId // 空通知はスキップ
+  if (!shouldForward(row.identifier, n.title, rule)) return nextRecId // allow/deny で除外
+  await emit(endpoint, row.recId, n)
+  return nextRecId
+}
+
+// 1 tick 分のポーリング: 新着行を取得し、1 件ずつ processRow へ渡して lastRecId を進める。
+async function pollOnce(lastRecId: number, tmpFile: string, endpoint: string): Promise<number> {
+  // 転送フィルタは tick ごとに最新 config から取る (loadServerConfig は TTL キャッシュ済み)。
+  const rule = (await loadServerConfig()).watchers?.['mac-notifications']
+  const rows = await queryNewRows(lastRecId)
+  let next = lastRecId
+  for (const row of rows) {
+    next = await processRow(row, next, tmpFile, endpoint, rule)
+  }
+  return next
+}
+
+// watcher 本体。引数なしでこの process が生き続ける限りポーリングし続ける。
+export async function runMacNotificationsWatcher(): Promise<void> {
+  const cfg = await loadServerConfig()
+  const envPort = Number(process.env.EVENG2_PORT)
+  const port = cfg.port ?? (Number.isInteger(envPort) && envPort > 0 ? envPort : 8723)
+  const endpoint = `http://127.0.0.1:${port}/api/emit`
+
+  let lastRecId = await initialRecId()
 
   const dir = await mkdtemp(join(tmpdir(), 'status-deck-noti-'))
   const tmpFile = join(dir, 'n.plist')
@@ -185,17 +229,7 @@ export async function runMacNotificationsWatcher(): Promise<void> {
   // 簡易ループ。エラーは握りつぶして次の tick へ (一過性のロック等で落とさない)。
   for (;;) {
     try {
-      // 転送フィルタは tick ごとに最新 config から取る (loadServerConfig は TTL キャッシュ済み)。
-      const rule = (await loadServerConfig()).watchers?.['mac-notifications']
-      const rows = await queryNewRows(lastRecId)
-      for (const row of rows) {
-        lastRecId = Math.max(lastRecId, row.recId)
-        const n = await decodeNotif(row.hex, tmpFile)
-        if (!n) continue
-        if (!n.title && !n.sub && !n.body) continue // 空通知はスキップ
-        if (!shouldForward(row.identifier, n.title, rule)) continue // allow/deny で除外
-        await emit(endpoint, row.recId, n)
-      }
+      lastRecId = await pollOnce(lastRecId, tmpFile, endpoint)
     } catch (e) {
       console.error('[mac-notifications] poll error:', e instanceof Error ? e.message : e)
     }

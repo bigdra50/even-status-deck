@@ -13,6 +13,7 @@ import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { CONFIG_DIR, PROVIDER_DIR } from './config.ts'
+import { asGroup } from './group-validate.ts'
 import { claudeProvider } from './providers/claude.ts'
 import { codexProvider } from './providers/codex.ts'
 import { SYSTEM_GROUP_ID, systemProvider } from './providers/system.ts'
@@ -43,16 +44,6 @@ const DEFAULT_BUILTIN_TTL_MS = 5_000
 const DEFAULT_SUBPROCESS_TTL_MS = 30_000
 
 // --- JS plugin autoload --------------------------------------------------------------
-// 受信値を Group として検証する (vite.config.ts:452-459 の単一 Group 検証を移植)。
-function asGroup(x: unknown): Group | null {
-  if (!x || typeof x !== 'object') return null
-  const g = x as { id?: unknown; label?: unknown; segments?: unknown }
-  if (typeof g.id !== 'string' || typeof g.label !== 'string' || !Array.isArray(g.segments)) {
-    return null
-  }
-  return x as Group
-}
-
 // パス単位キャッシュ。ファイルを置けば再起動なしで次 poll から有効 (編集の反映は再起動要)。
 // この Map は status.ts が所有する (移植元は vite.config.ts:463 のモジュールスコープ)。
 const loaded = new Map<string, ProviderDef>()
@@ -82,23 +73,19 @@ async function importProvider(path: string, expectedId: string): Promise<Provide
   return null
 }
 
-// JS plugin を autoload する。
-//
-// gate (C-1 / OD-A): 「providers/ に置けば動く」は廃止。**明示登録された id の `<id>.<ext>` だけを import する**。
-// 未登録のファイルは一切 import しない (= top-level コードも走らない)。これにより sync ツールや
-// malware が providers/ に置いただけのファイルは実行されない。登録 = config セクション or ledger
-// 注入 (cfg.providers[id] が存在し、builtin でも subprocess でもないこと)。ファイル名は id に一致させる。
-async function getUserProviders(cfg: ServerConfig): Promise<ProviderDef[]> {
+// 登録済みのうち builtin でも subprocess (command 持ち) でもなく、無効化されていない id = JS plugin。
+// enabled=false は import もしない (top-level 副作用も走らせない)。再 enable で次回 import される。
+function listJsProviderIds(cfg: ServerConfig): string[] {
   const builtinIds = new Set(BUILTINS.map((b) => b.id))
-  // 登録済みのうち builtin でも subprocess (command 持ち) でもなく、無効化されていない id = JS plugin。
-  // enabled=false は import もしない (top-level 副作用も走らせない)。再 enable で次回 import される。
-  const jsIds = Object.entries(cfg.providers)
+  return Object.entries(cfg.providers)
     .filter(
       ([id, opts]) => !builtinIds.has(id) && !isSubprocessEntry(opts) && opts?.enabled !== false,
     )
     .map(([id]) => id)
+}
 
-  // providers/ の <basename>.<ext> → path。`.tmp-*` (install ステージング) は除外。決定的に扱う。
+// providers/ の <basename> → ファイル path。`.tmp-*` (install ステージング) は除外。決定的に扱う (先勝ち)。
+async function jsProviderFilesByName(): Promise<Map<string, string>> {
   const byName = new Map<string, string>()
   try {
     for (const f of (await readdir(PROVIDER_DIR)).sort()) {
@@ -108,6 +95,52 @@ async function getUserProviders(cfg: ServerConfig): Promise<ProviderDef[]> {
   } catch {
     // ディレクトリ無し → JS plugin 無し
   }
+  return byName
+}
+
+// 登録 id に一致するファイルを import (or キャッシュから取得) する。失敗/不一致は null。
+async function loadJsProvider(path: string, id: string): Promise<ProviderDef | null> {
+  let def = loaded.get(path)
+  if (!def) {
+    try {
+      const imported = await importProvider(path, id)
+      if (!imported) return null
+      def = imported
+      loaded.set(path, def)
+      console.log(`[providers] loaded ${path}`)
+    } catch (e) {
+      console.warn(`[providers] ${path} の読み込みに失敗:`, e)
+      return null
+    }
+  }
+  if (def.id !== id) {
+    console.warn(
+      `[providers] ${path}: manifest id '${def.id}' が登録 id '${id}' と不一致 (ファイル名=id にしてください)`,
+    )
+    return null
+  }
+  return def
+}
+
+// 参照されなくなった (ファイル削除 / 登録解除) loaded を片付ける。dispose で timer/socket を解放。
+function pruneUnusedLoaded(usedPaths: Set<string>): void {
+  for (const path of [...loaded.keys()]) {
+    if (usedPaths.has(path)) continue
+    const d = loaded.get(path)
+    if (d?.dispose) Promise.resolve(d.dispose()).catch(() => {}) // 解放失敗は無視
+    loaded.delete(path)
+  }
+}
+
+// JS plugin を autoload する。
+//
+// gate (C-1 / OD-A): 「providers/ に置けば動く」は廃止。**明示登録された id の `<id>.<ext>` だけを import する**。
+// 未登録のファイルは一切 import しない (= top-level コードも走らない)。これにより sync ツールや
+// malware が providers/ に置いただけのファイルは実行されない。登録 = config セクション or ledger
+// 注入 (cfg.providers[id] が存在し、builtin でも subprocess でもないこと)。ファイル名は id に一致させる。
+async function getUserProviders(cfg: ServerConfig): Promise<ProviderDef[]> {
+  const jsIds = listJsProviderIds(cfg)
+  const byName = await jsProviderFilesByName()
 
   const out: ProviderDef[] = []
   const usedPaths = new Set<string>()
@@ -115,34 +148,10 @@ async function getUserProviders(cfg: ServerConfig): Promise<ProviderDef[]> {
     const path = byName.get(id) // 登録 id に一致するファイルのみ (未登録ファイルは触らない)
     if (!path) continue // 登録あるがファイル無し (無害にスキップ)
     usedPaths.add(path)
-    let def = loaded.get(path)
-    if (!def) {
-      try {
-        const imported = await importProvider(path, id)
-        if (!imported) continue
-        def = imported
-        loaded.set(path, def)
-        console.log(`[providers] loaded ${path}`)
-      } catch (e) {
-        console.warn(`[providers] ${path} の読み込みに失敗:`, e)
-        continue
-      }
-    }
-    if (def.id !== id) {
-      console.warn(
-        `[providers] ${path}: manifest id '${def.id}' が登録 id '${id}' と不一致 (ファイル名=id にしてください)`,
-      )
-      continue
-    }
-    out.push(def)
+    const def = await loadJsProvider(path, id)
+    if (def) out.push(def)
   }
-  // 参照されなくなった (ファイル削除 / 登録解除) loaded を片付ける。dispose で timer/socket を解放。
-  for (const path of [...loaded.keys()]) {
-    if (usedPaths.has(path)) continue
-    const d = loaded.get(path)
-    if (d?.dispose) Promise.resolve(d.dispose()).catch(() => {}) // 解放失敗は無視
-    loaded.delete(path)
-  }
+  pruneUnusedLoaded(usedPaths)
   return out
 }
 
