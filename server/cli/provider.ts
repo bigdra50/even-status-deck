@@ -4,6 +4,7 @@
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { loadLedger, loadServerConfig, PROVIDER_DIR } from '../config.ts'
+import type { Ledger, ServerConfig } from '../types.ts'
 import {
   appendSection,
   hasSection,
@@ -53,6 +54,50 @@ function printTable(rows: string[][]): void {
   }
 }
 
+// 1 provider 分の status を決める (active/disabled/drift)。drift はファイル I/O を伴うため
+// async (managed js かつ active のときだけ実ファイル sha を再計算する)。
+async function resolveProviderStatus(
+  id: string,
+  opts: ServerConfig['providers'][string] | undefined,
+  led: Ledger['providers'][string] | undefined,
+  files: Map<string, string>,
+): Promise<string> {
+  // builtin は config 無し (opts undefined) でも有効。registered なら enabled で判定。
+  const status = opts === undefined ? 'active' : opts.enabled !== false ? 'active' : 'disabled'
+  // drift: managed js の実ファイル sha が ledger と不一致 (インストール後に手で書き換え)。
+  if (led?.kind === 'js' && status === 'active') {
+    const file = files.get(id)
+    if (file && (await fileSha(join(PROVIDER_DIR, file))) !== led.installedSha256) return 'drift'
+  }
+  return status
+}
+
+// 1 provider 分の表示行を組み立てる。
+async function buildProviderRow(
+  id: string,
+  cfg: ServerConfig,
+  ledger: Ledger,
+  files: Map<string, string>,
+): Promise<string[]> {
+  const opts = cfg.providers[id]
+  const kind = BUILTIN_IDS.has(id) ? 'builtin' : isSubprocess(opts) ? 'subprocess' : 'js'
+  const led = ledger.providers[id]
+  const status = await resolveProviderStatus(id, opts, led, files)
+  // NAME: manifest 由来の表示名 (js のみ。無ければ '-')。
+  const name = led?.kind === 'js' && led.name ? led.name : '-'
+  return [id, kind, status, led ? 'managed' : '-', name]
+}
+
+// 未登録ファイル (providers/ にあるが builtin でも登録済みでもない) を警告表示する。
+function printUnregisteredFiles(files: Map<string, string>, ids: Set<string>): void {
+  const unregistered = [...files.keys()].filter((id) => !ids.has(id))
+  for (const id of unregistered) {
+    console.log(
+      `\nunregistered: providers/${files.get(id)} (未登録 → \`provider enable ${id}\` で有効化)`,
+    )
+  }
+}
+
 async function cmdList(): Promise<void> {
   const cfg = await loadServerConfig()
   const ledger = await loadLedger()
@@ -61,30 +106,24 @@ async function cmdList(): Promise<void> {
   const ids = new Set<string>([...BUILTIN_IDS, ...Object.keys(cfg.providers)])
   const rows: string[][] = [['ID', 'KIND', 'STATUS', 'MANAGED', 'NAME']]
   for (const id of [...ids].sort()) {
-    const opts = cfg.providers[id]
-    const kind = BUILTIN_IDS.has(id) ? 'builtin' : isSubprocess(opts) ? 'subprocess' : 'js'
-    // builtin は config 無し (opts undefined) でも有効。registered なら enabled で判定。
-    let status = opts === undefined ? 'active' : opts.enabled !== false ? 'active' : 'disabled'
-    const led = ledger.providers[id]
-    // drift: managed js の実ファイル sha が ledger と不一致 (インストール後に手で書き換え)。
-    if (led?.kind === 'js' && status === 'active') {
-      const file = files.get(id)
-      if (file && (await fileSha(join(PROVIDER_DIR, file))) !== led.installedSha256)
-        status = 'drift'
-    }
-    // NAME: manifest 由来の表示名 (js のみ。無ければ '-')。
-    const name = led?.kind === 'js' && led.name ? led.name : '-'
-    rows.push([id, kind, status, led ? 'managed' : '-', name])
+    rows.push(await buildProviderRow(id, cfg, ledger, files))
   }
   printTable(rows)
+  printUnregisteredFiles(files, ids)
+}
 
-  // 未登録ファイル (providers/ にあるが builtin でも登録済みでもない) を警告。
-  const unregistered = [...files.keys()].filter((id) => !ids.has(id))
-  for (const id of unregistered) {
-    console.log(
-      `\nunregistered: providers/${files.get(id)} (未登録 → \`provider enable ${id}\` で有効化)`,
-    )
-  }
+// ledger.providers[id] が存在すれば enabled を更新する。戻り値は実際に更新できたか
+// (id が ledger に無ければ呼び出し側で no-op 扱い)。
+async function setLedgerEnabled(id: string, enabled: boolean): Promise<boolean> {
+  let changed = false
+  await updateLedger((l) => {
+    const e = l.providers[id]
+    if (e) {
+      e.enabled = enabled
+      changed = true
+    }
+  })
+  return changed
 }
 
 // 反映は実行中サーバーの次 poll (最大 3s)。restart 不要。
@@ -100,14 +139,7 @@ async function cmdEnable(id: string): Promise<void> {
   }
   const ledger = await loadLedger()
   if (ledger.providers[id]) {
-    let changed = false
-    await updateLedger((l) => {
-      const e = l.providers[id]
-      if (e) {
-        e.enabled = true
-        changed = true
-      }
-    })
+    const changed = await setLedgerEnabled(id, true)
     done(id, changed ? 'enabled (ledger)' : 'ledger から消えていました (no-op)')
     return
   }
@@ -134,14 +166,7 @@ async function cmdDisable(id: string): Promise<void> {
   }
   const ledger = await loadLedger()
   if (ledger.providers[id]) {
-    let changed = false
-    await updateLedger((l) => {
-      const e = l.providers[id]
-      if (e) {
-        e.enabled = false
-        changed = true
-      }
-    })
+    const changed = await setLedgerEnabled(id, false)
     done(id, changed ? 'disabled (ledger)' : 'ledger から消えていました (no-op)')
     return
   }
@@ -154,9 +179,7 @@ function done(id: string, what: string): void {
   console.log(`${id}: ${what}. 反映は実行中サーバーの次 poll (最大 3s)、restart 不要。`)
 }
 
-// 簡易フラグ parser。--force / --keep-file / --all / --timeout / --ttl と positional を分ける。
-// `--` 以降は passthrough (add-subprocess の command 引数として渡す)。
-function parseArgs(rest: string[]): {
+export type ParsedArgs = {
   positional: string[]
   passthrough: string[]
   force: boolean
@@ -164,38 +187,62 @@ function parseArgs(rest: string[]): {
   all: boolean
   timeoutMs?: number
   ttlMs?: number
-} {
-  const positional: string[] = []
-  let passthrough: string[] = []
-  let force = false
-  let keepFile = false
-  let all = false
-  let timeoutMs: number | undefined
-  let ttlMs: number | undefined
-  const num = (s: string | undefined): number | undefined => {
-    const v = Number(s)
-    return Number.isInteger(v) && v > 0 ? v : undefined
+}
+
+function toPositiveInt(s: string | undefined): number | undefined {
+  const v = Number(s)
+  return Number.isInteger(v) && v > 0 ? v : undefined
+}
+
+// --timeout / --ttl <value> を解釈し flags へ反映する。値が不正なら警告して既定値のまま。
+// 戻り値は消費した追加 token 数 (値を読んだら 1)。
+function applyDurationFlag(
+  flags: ParsedArgs,
+  name: '--timeout' | '--ttl',
+  value: string | undefined,
+): void {
+  const p = toPositiveInt(value)
+  if (p === undefined) {
+    console.warn(`warning: ${name} の値 '${value}' が不正です (正の整数のみ)。既定値を使います`)
+    return
+  }
+  if (name === '--timeout') flags.timeoutMs = p
+  else flags.ttlMs = p
+}
+
+// 1 token を解釈して flags/positional に反映する。`--` を見つけたら true を返す (呼び出し側が break)。
+function applyArg(flags: ParsedArgs, rest: string[], i: number): boolean {
+  const a = rest[i] ?? ''
+  if (a === '--') {
+    flags.passthrough = rest.slice(i + 1) // 以降はそのまま (command の引数)
+    return true
+  }
+  if (a === '--force') flags.force = true
+  else if (a === '--keep-file') flags.keepFile = true
+  else if (a === '--all') flags.all = true
+  else if (a === '--timeout' || a === '--ttl') applyDurationFlag(flags, a, rest[i + 1])
+  else if (a.startsWith('--')) console.warn(`warning: 未知のフラグ ${a} を無視します`)
+  else flags.positional.push(a)
+  return false
+}
+
+// 簡易フラグ parser。--force / --keep-file / --all / --timeout / --ttl と positional を分ける。
+// `--` 以降は passthrough (add-subprocess の command 引数として渡す)。
+export function parseArgs(rest: string[]): ParsedArgs {
+  const flags: ParsedArgs = {
+    positional: [],
+    passthrough: [],
+    force: false,
+    keepFile: false,
+    all: false,
   }
   for (let i = 0; i < rest.length; i++) {
-    const a = rest[i] ?? ''
-    if (a === '--') {
-      passthrough = rest.slice(i + 1) // 以降はそのまま (command の引数)
-      break
-    }
-    if (a === '--force') force = true
-    else if (a === '--keep-file') keepFile = true
-    else if (a === '--all') all = true
-    else if (a === '--timeout' || a === '--ttl') {
-      const v = rest[++i]
-      const p = num(v)
-      if (p === undefined)
-        console.warn(`warning: ${a} の値 '${v}' が不正です (正の整数のみ)。既定値を使います`)
-      else if (a === '--timeout') timeoutMs = p
-      else ttlMs = p
-    } else if (a.startsWith('--')) console.warn(`warning: 未知のフラグ ${a} を無視します`)
-    else positional.push(a)
+    if (applyArg(flags, rest, i)) break
+    // --timeout/--ttl はその次の token を値として消費する。
+    const a = rest[i]
+    if (a === '--timeout' || a === '--ttl') i++
   }
-  return { positional, passthrough, force, keepFile, all, timeoutMs, ttlMs }
+  return flags
 }
 
 async function cmdUpdateAll(): Promise<void> {
@@ -229,6 +276,40 @@ function requireValidId(sub: string, id: string | undefined): id is string {
   return true
 }
 
+// 引数の形で判別: 1 つ = JS plugin (id は manifest 由来)、2 つ以上 = subprocess (id + command)。
+async function cmdInstall(flags: ParsedArgs): Promise<void> {
+  const pos = flags.positional
+  if (pos.length === 0) {
+    console.error(
+      'usage:\n' +
+        '  provider install <https-url|abs-path>                 # JS plugin\n' +
+        '  provider install <id> <command> [-- args...] [--timeout ms] [--ttl ms]   # subprocess\n' +
+        '  共通: [--force]',
+    )
+    process.exitCode = 1
+    return
+  }
+  if (pos.length === 1) {
+    await addJs(pos[0] as string, { force: flags.force })
+    return
+  }
+  const id = pos[0] as string
+  const command = pos[1] as string
+  if (!requireValidId('install', id)) return
+  if (/^https?:\/\//i.test(command)) {
+    console.error(
+      'command が URL です。JS plugin のインストールは引数 1 つ: `provider install <url>`',
+    )
+    process.exitCode = 1
+    return
+  }
+  await addSubprocess(id, command, flags.passthrough, {
+    timeoutMs: flags.timeoutMs,
+    ttlMs: flags.ttlMs,
+    force: flags.force,
+  })
+}
+
 export async function runProviderCli(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv
   const flags = parseArgs(rest)
@@ -244,40 +325,9 @@ export async function runProviderCli(argv: string[]): Promise<void> {
       else await cmdDisable(id)
       return
     }
-    case 'install': {
-      // 引数の形で判別: 1 つ = JS plugin (id は manifest 由来)、2 つ以上 = subprocess (id + command)。
-      const pos = flags.positional
-      if (pos.length === 0) {
-        console.error(
-          'usage:\n' +
-            '  provider install <https-url|abs-path>                 # JS plugin\n' +
-            '  provider install <id> <command> [-- args...] [--timeout ms] [--ttl ms]   # subprocess\n' +
-            '  共通: [--force]',
-        )
-        process.exitCode = 1
-        return
-      }
-      if (pos.length === 1) {
-        await addJs(pos[0] as string, { force: flags.force })
-        return
-      }
-      const id = pos[0] as string
-      const command = pos[1] as string
-      if (!requireValidId('install', id)) return
-      if (/^https?:\/\//i.test(command)) {
-        console.error(
-          'command が URL です。JS plugin のインストールは引数 1 つ: `provider install <url>`',
-        )
-        process.exitCode = 1
-        return
-      }
-      await addSubprocess(id, command, flags.passthrough, {
-        timeoutMs: flags.timeoutMs,
-        ttlMs: flags.ttlMs,
-        force: flags.force,
-      })
+    case 'install':
+      await cmdInstall(flags)
       return
-    }
     case 'remove': {
       const id = flags.positional[0]
       if (!requireValidId(sub, id)) return

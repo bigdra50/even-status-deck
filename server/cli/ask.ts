@@ -52,18 +52,15 @@ async function getJson(url: string): Promise<Record<string, unknown> | null> {
   }
 }
 
-export async function runAskCli(argv: string[]): Promise<void> {
-  const p = parseArgs(argv)
-  if (!p) {
-    console.error('usage: ask [--title T] [--timeout ms] <message> [action1 action2 ...]')
-    process.exit(2)
-  }
-  const cfg = await loadServerConfig()
+// ベース URL を決める (cfg.port > $EVENG2_PORT > 既定 8723)。
+function resolveBaseUrl(cfg: { port?: number }): string {
   const envPort = Number(process.env.EVENG2_PORT)
   const port = cfg.port ?? (Number.isInteger(envPort) && envPort > 0 ? envPort : 8723)
-  const base = `http://127.0.0.1:${port}`
-  const id = `ask-${randomBytes(6).toString('hex')}`
+  return `http://127.0.0.1:${port}`
+}
 
+// dialog を emit し、requestId を払い出す。失敗時は process.exit(2) (戻らない)。
+async function emitDialog(base: string, id: string, p: Parsed): Promise<string> {
   const emit = await postJson(`${base}/api/emit`, {
     providerId: 'ask-cli',
     id,
@@ -77,27 +74,46 @@ export async function runAskCli(argv: string[]): Promise<void> {
     console.error(`ask: emit に失敗 (${emit?.reason ?? emit?.error ?? 'サーバーに繋がりません'})`)
     process.exit(2)
   }
-  const requestId = emit.requestId
+  return emit.requestId
+}
+
+// 1 回分の long-poll 結果を処理する。pending なら null を返して呼び出し側が再ポーリングする。
+// completed/dismissed/expired は process.exit で戻らない。
+async function handlePollResult(base: string, requestId: string): Promise<'pending' | never> {
+  const r = await getJson(`${base}/api/action-result?requestId=${requestId}&waitMs=30000`)
+  if (!r?.ok) {
+    console.error(`ask: 結果取得に失敗 (${r?.error ?? '接続エラー'})`)
+    process.exit(2)
+  }
+  if (r.status === 'pending') return 'pending' // long-poll タイムアウト → 再ポーリング
+  if (r.status === 'completed') {
+    const result = r.result as { index: number; action: string } | undefined
+    if (result) {
+      process.stdout.write(`${result.action}\n`) // stdout = 選択ラベル
+      console.error(`ask: 選択 = ${result.action} (index ${result.index})`)
+      process.exit(0)
+    }
+  }
+  console.error(`ask: ${r.status}`) // dismissed / expired
+  process.exit(1)
+}
+
+export async function runAskCli(argv: string[]): Promise<void> {
+  const p = parseArgs(argv)
+  if (!p) {
+    console.error('usage: ask [--title T] [--timeout ms] <message> [action1 action2 ...]')
+    process.exit(2)
+  }
+  const cfg = await loadServerConfig()
+  const base = resolveBaseUrl(cfg)
+  const id = `ask-${randomBytes(6).toString('hex')}`
+
+  const requestId = await emitDialog(base, id, p)
   console.error(`ask: 質問を送信しました。グラスで選択を待っています... (requestId=${requestId})`)
 
   const deadline = Date.now() + p.ttlMs + 5_000
   while (Date.now() < deadline) {
-    const r = await getJson(`${base}/api/action-result?requestId=${requestId}&waitMs=30000`)
-    if (!r?.ok) {
-      console.error(`ask: 結果取得に失敗 (${r?.error ?? '接続エラー'})`)
-      process.exit(2)
-    }
-    if (r.status === 'pending') continue // long-poll タイムアウト → 再ポーリング
-    if (r.status === 'completed') {
-      const result = r.result as { index: number; action: string } | undefined
-      if (result) {
-        process.stdout.write(`${result.action}\n`) // stdout = 選択ラベル
-        console.error(`ask: 選択 = ${result.action} (index ${result.index})`)
-        process.exit(0)
-      }
-    }
-    console.error(`ask: ${r.status}`) // dismissed / expired
-    process.exit(1)
+    await handlePollResult(base, requestId)
   }
   console.error('ask: タイムアウト')
   process.exit(1)

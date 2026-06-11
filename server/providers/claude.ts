@@ -16,14 +16,14 @@ const PRICING: Record<string, Pricing> = {
   haiku: { input: 0.8, output: 4, cacheWrite: 1, cacheRead: 0.08 },
 }
 
-function pricingFor(model: string): Pricing {
+export function pricingFor(model: string): Pricing {
   if (model.includes('opus')) return PRICING.opus
   if (model.includes('haiku')) return PRICING.haiku
   return PRICING.sonnet
 }
 
 // ローカルタイムの YYYY-MM-DD。今日分の usage 行を絞り込むキーに使う。
-function localDateKey(d: Date): string {
+export function localDateKey(d: Date): string {
   const y = d.getFullYear()
   const m = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')
@@ -55,6 +55,63 @@ type UsageResult = {
   error?: string
 }
 
+// 集計の累積値。ファイル/行をまたいで加算していく可変アキュムレータ。
+export type UsageAccum = {
+  input: number
+  output: number
+  cacheWrite: number
+  cacheRead: number
+  messages: number
+  cost: number
+}
+
+export function newAccum(): UsageAccum {
+  return { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, messages: 0, cost: 0 }
+}
+
+// jsonl 1 行を解析し、今日分の assistant usage であれば acc に加算する (純粋・副作用は acc のみ)。
+export function addUsageLine(acc: UsageAccum, line: string, todayKey: string): void {
+  if (!line.includes('"usage"')) return
+  let obj: UsageLine
+  try {
+    obj = JSON.parse(line) as UsageLine
+  } catch {
+    return
+  }
+  const u = obj.message?.usage
+  if (obj.type !== 'assistant' || !u || !obj.timestamp) return
+  if (localDateKey(new Date(obj.timestamp)) !== todayKey) return
+  const model = obj.message?.model ?? 'sonnet'
+  const inT = u.input_tokens ?? 0
+  const outT = u.output_tokens ?? 0
+  const cwT = u.cache_creation_input_tokens ?? 0
+  const crT = u.cache_read_input_tokens ?? 0
+  acc.input += inT
+  acc.output += outT
+  acc.cacheWrite += cwT
+  acc.cacheRead += crT
+  acc.messages += 1
+  const p = pricingFor(model)
+  acc.cost += (inT * p.input + outT * p.output + cwT * p.cacheWrite + crT * p.cacheRead) / 1e6
+}
+
+// 1 ファイル分の usage 行を集計する。mtime が古ければスキップ、読めなければ何もしない。
+async function addUsageFile(
+  acc: UsageAccum,
+  file: string,
+  todayKey: string,
+  sinceMs: number,
+): Promise<void> {
+  try {
+    const st = await stat(file)
+    if (st.mtimeMs < sinceMs) return
+    const text = await readFile(file, 'utf8')
+    for (const line of text.split('\n')) addUsageLine(acc, line, todayKey)
+  } catch {
+    /* skip unreadable */
+  }
+}
+
 async function collectUsage(): Promise<UsageResult> {
   const root = join(homedir(), '.claude', 'projects')
   const todayKey = localDateKey(new Date())
@@ -65,54 +122,18 @@ async function collectUsage(): Promise<UsageResult> {
   } catch {
     return { date: todayKey, error: 'no ~/.claude/projects' }
   }
-  let input = 0
-  let output = 0
-  let cacheWrite = 0
-  let cacheRead = 0
-  let messages = 0
-  let cost = 0
+  const acc = newAccum()
   for (const r of rel) {
-    const file = join(root, r)
-    try {
-      const st = await stat(file)
-      if (st.mtimeMs < sinceMs) continue
-      const text = await readFile(file, 'utf8')
-      for (const line of text.split('\n')) {
-        if (!line.includes('"usage"')) continue
-        let obj: UsageLine
-        try {
-          obj = JSON.parse(line) as UsageLine
-        } catch {
-          continue
-        }
-        const u = obj.message?.usage
-        if (obj.type !== 'assistant' || !u || !obj.timestamp) continue
-        if (localDateKey(new Date(obj.timestamp)) !== todayKey) continue
-        const model = obj.message?.model ?? 'sonnet'
-        const inT = u.input_tokens ?? 0
-        const outT = u.output_tokens ?? 0
-        const cwT = u.cache_creation_input_tokens ?? 0
-        const crT = u.cache_read_input_tokens ?? 0
-        input += inT
-        output += outT
-        cacheWrite += cwT
-        cacheRead += crT
-        messages += 1
-        const p = pricingFor(model)
-        cost += (inT * p.input + outT * p.output + cwT * p.cacheWrite + crT * p.cacheRead) / 1e6
-      }
-    } catch {
-      /* skip unreadable */
-    }
+    await addUsageFile(acc, join(root, r), todayKey, sinceMs)
   }
   return {
     date: todayKey,
-    messages,
-    input,
-    output,
-    cacheWrite,
-    cacheRead,
-    estCostUsd: Math.round(cost * 100) / 100,
+    messages: acc.messages,
+    input: acc.input,
+    output: acc.output,
+    cacheWrite: acc.cacheWrite,
+    cacheRead: acc.cacheRead,
+    estCostUsd: Math.round(acc.cost * 100) / 100,
   }
 }
 

@@ -5,6 +5,7 @@
 import { spawn } from 'node:child_process'
 import { isAbsolute } from 'node:path'
 import { parseStatusDoc } from '../src/status-types.ts'
+import { asGroup } from './group-validate.ts'
 import type { Group, SubprocessProviderConfig } from './types.ts'
 
 // stdout の累積上限。これを超えたら kill しエラーにする (途中バッファは parse しない)。
@@ -26,16 +27,6 @@ export function resolveArgs(args: string[], configDir: string): string[] | null 
     result.push(expanded)
   }
   return result
-}
-
-// vite.config.ts:452-459 の単一 Group 検証を移植。
-function asGroup(x: unknown): Group | null {
-  if (!x || typeof x !== 'object') return null
-  const g = x as { id?: unknown; label?: unknown; segments?: unknown }
-  if (typeof g.id !== 'string' || typeof g.label !== 'string' || !Array.isArray(g.segments)) {
-    return null
-  }
-  return x as Group
 }
 
 // StatusDoc を試し、null なら単一 Group として解釈する 2 段デコード (PROTOCOL §9c は両形式可)。

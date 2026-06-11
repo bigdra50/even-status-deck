@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { loadLedger, PROVIDER_DIR } from '../config.ts'
-import type { LedgerEntryJs, LedgerEntrySubprocess } from '../types.ts'
+import type { Ledger, LedgerEntry, LedgerEntryJs, LedgerEntrySubprocess } from '../types.ts'
 import {
   appendSection,
   hasSection,
@@ -74,58 +74,75 @@ function skipString(src: string, i: number): number {
 // 静的抽出する文字列キー (値が quoted string のもの)。group 等の関数値は対象外。
 const MANIFEST_STRING_KEYS = new Set(['id', 'name', 'description', 'author', 'version'])
 
-export function parseManifestStatic(src: string): ParsedManifest | null {
+// i が文字列リテラル / 行コメント / ブロックコメントの開始であれば、その終端の次の index を返す。
+// どれでもなければ null (= スキップ対象ではない、呼び出し側が i を進める)。
+// phase 1 (export default { 探索) と phase 2 (フィールド走査) で共通の skip ロジック。
+function skipStringOrComment(src: string, i: number): number | null {
   const n = src.length
-  // 1. 文字列/コメントを飛ばしつつ `export` `default` `{` の並びを探す。
+  const c = src[i]
+  if (c === '"' || c === "'" || c === '`') return skipString(src, i)
+  if (c === '/' && src[i + 1] === '/') {
+    const nl = src.indexOf('\n', i)
+    return nl < 0 ? n : nl + 1
+  }
+  if (c === '/' && src[i + 1] === '*') {
+    const e = src.indexOf('*/', i + 2)
+    return e < 0 ? n : e + 2
+  }
+  return null
+}
+
+// 文字列/コメントを飛ばしつつ `export default {` の並びを探し、`{` の次の index を返す。
+// 見つからなければ -1 (object manifest 形でない → reject)。
+function findExportDefaultObjectStart(src: string): number {
+  const n = src.length
   let i = 0
-  let start = -1
   while (i < n) {
-    const c = src[i]
-    if (c === '"' || c === "'" || c === '`') {
-      i = skipString(src, i)
-      continue
-    }
-    if (c === '/' && src[i + 1] === '/') {
-      const nl = src.indexOf('\n', i)
-      i = nl < 0 ? n : nl + 1
-      continue
-    }
-    if (c === '/' && src[i + 1] === '*') {
-      const e = src.indexOf('*/', i + 2)
-      i = e < 0 ? n : e + 2
+    const skipped = skipStringOrComment(src, i)
+    if (skipped !== null) {
+      i = skipped
       continue
     }
     if (src.startsWith('export', i) && /\s/.test(src[i + 6] ?? '')) {
       const m = /^export\s+default\s*\{/.exec(src.slice(i))
-      if (m) {
-        start = i + m[0].length
-        break
-      }
+      if (m) return i + m[0].length
     }
     i++
   }
-  if (start < 0) return null // object manifest 形でない → reject
+  return -1
+}
 
-  // 2. start (object の中) から depth 1 のキーを拾い、matching } まで進む。
+// 1 つの `key: value` フィールドを処理する。MANIFEST_STRING_KEYS なら fields に記録する。
+// 戻り値は値の開始 index (呼び出し側はここから走査を続ける。文字列/括弧として自然にスキップされる)。
+// マッチしなければ null (key: 形でない → 呼び出し側は i++ で 1 文字進む)。
+function tryConsumeField(src: string, i: number, fields: Map<string, string>): number | null {
+  const n = src.length
+  if (!/[A-Za-z_$]/.test(src[i] ?? '')) return null
+  const km = /^([A-Za-z_$][\w$]*)\s*:/.exec(src.slice(i))
+  if (!km) return null
+  const key = km[1] as string
+  let vi = i + km[0].length
+  while (vi < n && /\s/.test(src[vi] ?? '')) vi++
+  if (MANIFEST_STRING_KEYS.has(key)) {
+    const sm = /^(['"])((?:\\.|(?!\1).)*)\1/.exec(src.slice(vi))
+    if (sm?.[2] !== undefined) fields.set(key, sm[2])
+  }
+  return vi
+}
+
+// start (object の中、depth=1) から depth 1 のキーを拾い、matching } まで進んで fields を返す。
+function scanObjectFields(src: string, start: number): Map<string, string> {
+  const n = src.length
   const fields = new Map<string, string>()
   let depth = 1
-  i = start
+  let i = start
   while (i < n && depth > 0) {
+    const skipped = skipStringOrComment(src, i)
+    if (skipped !== null) {
+      i = skipped
+      continue
+    }
     const c = src[i]
-    if (c === '"' || c === "'" || c === '`') {
-      i = skipString(src, i)
-      continue
-    }
-    if (c === '/' && src[i + 1] === '/') {
-      const nl = src.indexOf('\n', i)
-      i = nl < 0 ? n : nl + 1
-      continue
-    }
-    if (c === '/' && src[i + 1] === '*') {
-      const e = src.indexOf('*/', i + 2)
-      i = e < 0 ? n : e + 2
-      continue
-    }
     if (c === '{' || c === '[' || c === '(') {
       depth++
       i++
@@ -136,22 +153,23 @@ export function parseManifestStatic(src: string): ParsedManifest | null {
       i++
       continue
     }
-    if (depth === 1 && /[A-Za-z_$]/.test(c ?? '')) {
-      const km = /^([A-Za-z_$][\w$]*)\s*:/.exec(src.slice(i))
-      if (km) {
-        const key = km[1] as string
-        let vi = i + km[0].length
-        while (vi < n && /\s/.test(src[vi] ?? '')) vi++
-        if (MANIFEST_STRING_KEYS.has(key)) {
-          const sm = /^(['"])((?:\\.|(?!\1).)*)\1/.exec(src.slice(vi))
-          if (sm?.[2] !== undefined) fields.set(key, sm[2])
-        }
-        i = vi // 値は次の反復で文字列/括弧として自然にスキップされる
+    if (depth === 1) {
+      const next = tryConsumeField(src, i, fields)
+      if (next !== null) {
+        i = next
         continue
       }
     }
     i++
   }
+  return fields
+}
+
+export function parseManifestStatic(src: string): ParsedManifest | null {
+  const start = findExportDefaultObjectStart(src)
+  if (start < 0) return null // object manifest 形でない → reject
+
+  const fields = scanObjectFields(src, start)
 
   const id = fields.get('id')
   if (!id) return null // id を静的に読めない → reject
@@ -373,14 +391,51 @@ export async function addSubprocess(
 }
 
 // --- check-updates --------------------------------------------------------------------
+// id 指定なら該当エントリ 1 件 (無ければ空配列で呼び出し側がエラー表示)、未指定なら全件。
+function entriesToCheck(ledger: Ledger, id: string | undefined): LedgerEntry[] {
+  if (!id) return Object.values(ledger.providers)
+  const e = ledger.providers[id]
+  return e ? [e] : []
+}
+
+// JS provider 1 件の更新有無を表示する。https source は HEAD の ETag、ローカルは sha 再計算。
+async function checkJsEntry(e: LedgerEntryJs): Promise<void> {
+  const src = e.source.startsWith('local:') ? e.source.slice('local:'.length) : e.source
+  if (/^https:\/\//i.test(src)) {
+    let etag: string | null = null
+    try {
+      etag = (await fetch(src, { method: 'HEAD' })).headers.get('etag')
+    } catch {
+      /* ネットワーク不可 */
+    }
+    if (etag && e.etag)
+      console.log(`${e.id}: ${etag === e.etag ? 'up to date' : 'update available'}`)
+    else console.log(`${e.id}: ETag 非対応 (確認は \`provider update ${e.id}\`)`)
+    return
+  }
+  const sha = await fileSha(src)
+  if (sha === null) console.log(`${e.id}: source を読めません (${src})`)
+  else
+    console.log(
+      `${e.id}: ${sha === e.installedSha256 ? 'up to date' : 'update available (local 変更)'}`,
+    )
+}
+
+// subprocess provider 1 件の drift を表示する (command の sha 再計算)。
+async function checkSubprocessEntry(e: LedgerEntrySubprocess): Promise<void> {
+  if (!(e.installedSha256 && isAbsolute(e.command))) {
+    console.log(`${e.id}: sha 不明 (bare command / 記録なし)`)
+    return
+  }
+  const sha = await fileSha(e.command)
+  if (sha === null) console.log(`${e.id}: command を読めません`)
+  else console.log(`${e.id}: ${sha === e.installedSha256 ? 'up to date' : 'drift (command 変更)'}`)
+}
+
 // managed provider の更新有無を表示する (ファイルは DL せず、HEAD の ETag / command の sha 再計算)。
 export async function checkUpdates(id?: string): Promise<void> {
   const ledger = await loadLedger()
-  const entries = id
-    ? ledger.providers[id]
-      ? [ledger.providers[id]]
-      : []
-    : Object.values(ledger.providers)
+  const entries = entriesToCheck(ledger, id)
   if (id && !entries.length) {
     console.error(`${id}: managed provider ではありません`)
     process.exitCode = 1
@@ -388,38 +443,7 @@ export async function checkUpdates(id?: string): Promise<void> {
   }
   for (const e of entries) {
     if (e === undefined) continue
-    if (e.kind === 'js') {
-      const src = e.source.startsWith('local:') ? e.source.slice('local:'.length) : e.source
-      if (/^https:\/\//i.test(src)) {
-        let etag: string | null = null
-        try {
-          etag = (await fetch(src, { method: 'HEAD' })).headers.get('etag')
-        } catch {
-          /* ネットワーク不可 */
-        }
-        if (etag && e.etag)
-          console.log(`${e.id}: ${etag === e.etag ? 'up to date' : 'update available'}`)
-        else console.log(`${e.id}: ETag 非対応 (確認は \`provider update ${e.id}\`)`)
-      } else {
-        const sha = await fileSha(src)
-        if (sha === null) console.log(`${e.id}: source を読めません (${src})`)
-        else
-          console.log(
-            `${e.id}: ${sha === e.installedSha256 ? 'up to date' : 'update available (local 変更)'}`,
-          )
-      }
-    } else {
-      // subprocess: command の sha 再計算で drift 検出。
-      if (e.installedSha256 && isAbsolute(e.command)) {
-        const sha = await fileSha(e.command)
-        if (sha === null) console.log(`${e.id}: command を読めません`)
-        else
-          console.log(
-            `${e.id}: ${sha === e.installedSha256 ? 'up to date' : 'drift (command 変更)'}`,
-          )
-      } else {
-        console.log(`${e.id}: sha 不明 (bare command / 記録なし)`)
-      }
-    }
+    if (e.kind === 'js') await checkJsEntry(e)
+    else await checkSubprocessEntry(e)
   }
 }

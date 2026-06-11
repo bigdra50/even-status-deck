@@ -59,6 +59,22 @@ function parseIntParam(v: string | null, fallback: number): number {
   return Number.isFinite(n) ? n : fallback
 }
 
+// POST body を読んで JSON.parse する。サイズ超過/不正 JSON は自前でエラーレスポンスを送り、
+// undefined を返す (呼び出し側はその場で return する)。
+async function readJsonBody(req: IncomingMessage, res: ServerResponse): Promise<unknown> {
+  const raw = await readBody(req, EMIT_BODY_MAX_BYTES)
+  if (raw == null) {
+    sendJson(res, 413, { ok: false, error: 'body too large' })
+    return undefined
+  }
+  try {
+    return JSON.parse(raw)
+  } catch {
+    sendJson(res, 400, { ok: false, error: 'invalid json' })
+    return undefined
+  }
+}
+
 // GET /api/events?since=<seq>&waitMs=<ms> : long-poll。pending か reset で即返す。
 async function handleEvents(res: ServerResponse, url: URL): Promise<void> {
   const since = Math.max(0, parseIntParam(url.searchParams.get('since'), 0))
@@ -82,18 +98,8 @@ async function handleEmit(req: IncomingMessage, res: ServerResponse): Promise<vo
     sendJson(res, 403, { ok: false, error: 'loopback only' })
     return
   }
-  const raw = await readBody(req, EMIT_BODY_MAX_BYTES)
-  if (raw == null) {
-    sendJson(res, 413, { ok: false, error: 'body too large' })
-    return
-  }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    sendJson(res, 400, { ok: false, error: 'invalid json' })
-    return
-  }
+  const parsed = await readJsonBody(req, res)
+  if (parsed === undefined) return
   const input = parseEmitInput(parsed)
   if (!input) {
     sendJson(res, 400, { ok: false, error: 'invalid event' })
@@ -118,18 +124,8 @@ async function handleEmit(req: IncomingMessage, res: ServerResponse): Promise<vo
 // POST /api/action : dialog の選択結果を受ける (client → server、LAN 受理)。
 // 正当性は requestId(unguessable) + index/action 検証 + 単一受理で守る。
 async function handleAction(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const raw = await readBody(req, EMIT_BODY_MAX_BYTES)
-  if (raw == null) {
-    sendJson(res, 413, { ok: false, error: 'body too large' })
-    return
-  }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    sendJson(res, 400, { ok: false, error: 'invalid json' })
-    return
-  }
+  const parsed = await readJsonBody(req, res)
+  if (parsed === undefined) return
   const input = parseDialogResult(parsed)
   if (!input) {
     sendJson(res, 400, { ok: false, error: 'invalid result' })
@@ -186,49 +182,65 @@ function printAddresses(port: number): void {
   }
 }
 
+// CORS preflight。glass は別オリジンから JSON POST(/api/action) しうるため OPTIONS を許可する。
+// (client は text/plain で simple request 化もしているが、念のため preflight も通す)。
+function handleOptions(res: ServerResponse): void {
+  res.writeHead(204, {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Max-Age': '86400',
+  })
+  res.end()
+}
+
+// pathname/method からルートを解決して処理する。マッチしたら true (呼び出し側はそこで終了)。
+// 各ルートのガード (loopback 限定・POST 限定) はルートと一緒にここへ移してある。
+async function routeRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  pathname: string,
+): Promise<boolean> {
+  if (pathname === '/api/machine') {
+    sendJson(res, 200, await machineInfo())
+    return true
+  }
+  if (pathname === '/api/status') {
+    sendJson(res, 200, await buildStatusDoc(await loadServerConfig()))
+    return true
+  }
+  if (pathname === '/api/events') {
+    await handleEvents(res, url)
+    return true
+  }
+  if (pathname === '/api/emit' && req.method === 'POST') {
+    await handleEmit(req, res)
+    return true
+  }
+  if (pathname === '/api/action' && req.method === 'POST') {
+    await handleAction(req, res)
+    return true
+  }
+  if (pathname === '/api/action-result') {
+    await handleActionResult(req, res, url)
+    return true
+  }
+  return false
+}
+
 // cfg は将来 serve オプションを config 駆動にする余地のため受けるが、現状は未使用
 // (ハンドラが毎リクエスト loadServerConfig() で最新を読むため)。port のみ使う。
 export function startServer(_cfg: ServerConfig, port: number): void {
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const pathname = url.pathname
-    // CORS preflight。glass は別オリジンから JSON POST(/api/action) しうるため OPTIONS を許可する。
-    // (client は text/plain で simple request 化もしているが、念のため preflight も通す)。
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-        'Access-Control-Max-Age': '86400',
-      })
-      res.end()
+      handleOptions(res)
       return
     }
     try {
-      if (pathname === '/api/machine') {
-        sendJson(res, 200, await machineInfo())
-        return
-      }
-      if (pathname === '/api/status') {
-        sendJson(res, 200, await buildStatusDoc(await loadServerConfig()))
-        return
-      }
-      if (pathname === '/api/events') {
-        await handleEvents(res, url)
-        return
-      }
-      if (pathname === '/api/emit' && req.method === 'POST') {
-        await handleEmit(req, res)
-        return
-      }
-      if (pathname === '/api/action' && req.method === 'POST') {
-        await handleAction(req, res)
-        return
-      }
-      if (pathname === '/api/action-result') {
-        await handleActionResult(req, res, url)
-        return
-      }
+      if (await routeRequest(req, res, url, pathname)) return
     } catch (e) {
       // 詳細 (ローカルパス等) は LAN クライアントに返さずサーバーログへ。
       console.error(`[api] ${pathname} failed:`, e)

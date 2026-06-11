@@ -35,8 +35,47 @@ function has(name) {
   return process.argv.includes(name)
 }
 
-// credentials.yaml をパースする。YAML の折りたたみブロックスカラー (`key: >-` の次行に値) と
-// インライン (`key: value`) の両方に対応。evenhub login が書く形式。値は表示しない。
+// YAML の折りたたみブロックスカラー (`key: >-` 等) の続き行を集めて連結する
+// (token は単一トークン=空白なし結合)。インデント行が続く限り読み、空行は無視、
+// それ以外の行に当たったら止める。戻り値は連結した値と、次に処理すべき行 index。
+function parseFoldedBlock(lines, startIndex) {
+  const parts = []
+  let j = startIndex
+  for (; j < lines.length; j++) {
+    if (/^\s+\S/.test(lines[j])) parts.push(lines[j].trim())
+    else if (lines[j].trim() === '') continue
+    else break
+  }
+  return { value: parts.join(''), nextIndex: j }
+}
+
+// インライン値 (`key: value`) の前後の引用符を取り除く。
+function parseInlineValue(raw) {
+  return raw.replace(/^["']|["']$/g, '')
+}
+
+// credentials.yaml のテキストを `{ key: value }` にパースする。YAML の折りたたみ
+// ブロックスカラー (`key: >-` の次行に値) とインライン (`key: value`) の両方に対応。
+function parseCredsText(text) {
+  const lines = text.split('\n')
+  const out = {}
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^([a-z_]+)\s*:\s*(.*)$/)
+    if (!m) continue
+    const [, key, rest] = m
+    const v = rest.trim()
+    if (/^[>|][+-]?$/.test(v)) {
+      const { value, nextIndex } = parseFoldedBlock(lines, i + 1)
+      out[key] = value
+      i = nextIndex - 1 // for ループの i++ で nextIndex から再開
+    } else {
+      out[key] = parseInlineValue(v)
+    }
+  }
+  return out
+}
+
+// credentials.yaml をパースする。evenhub login が書く形式。値は表示しない。
 function readCreds() {
   let text
   try {
@@ -46,27 +85,7 @@ function readCreds() {
       `認証情報が読めません: ${CRED}\nまず自分のターミナルで \`evenhub login\` を実行してください。`,
     )
   }
-  const lines = text.split('\n')
-  const out = {}
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/^([a-z_]+)\s*:\s*(.*)$/)
-    if (!m) continue
-    const [, key, rest] = m
-    const v = rest.trim()
-    if (/^[>|][+-]?$/.test(v)) {
-      // ブロックスカラー: 後続のインデント行を集めて連結 (token は単一トークン=空白なし結合)
-      const parts = []
-      for (let j = i + 1; j < lines.length; j++) {
-        if (/^\s+\S/.test(lines[j])) parts.push(lines[j].trim())
-        else if (lines[j].trim() === '') continue
-        else break
-      }
-      out[key] = parts.join('')
-    } else {
-      out[key] = v.replace(/^["']|["']$/g, '')
-    }
-  }
-  return out
+  return parseCredsText(text)
 }
 
 // 更新トークンを credentials.yaml に書き戻す (インライン plain scalar。JWT は YAML 特殊文字を含まない)。

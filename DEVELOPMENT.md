@@ -28,7 +28,7 @@ bun run test:sim      # evenhub-simulator のグラス表示 e2e (e2e-sim/run.ts
 
 コード品質ゲート（`ci.yml` の build ジョブ）:
 
-- `lint` — Biome（`noExcessiveCognitiveComplexity` warn、閾値 15）
+- `lint` — Biome（`noExcessiveCognitiveComplexity` error、閾値 15）
 - `lint:deps` — dependency-cruiser
 - `knip` — 未使用 export / dep
 - `lint:dup` — jscpd 重複率 3% 未満
@@ -43,11 +43,9 @@ bun run test:sim      # evenhub-simulator のグラス表示 e2e (e2e-sim/run.ts
 | `pack.yml` | tag `v*` / dispatch | `.ehpk` を artifact / Release 化（[RELEASE.md](./RELEASE.md) 参照） |
 | `badges.yml` | push main / dispatch | jscpd 重複率と FTA score のバッジ JSON を badges ブランチへ push |
 
-### biome cognitive-complexity の凍結
+### biome cognitive-complexity
 
-`noExcessiveCognitiveComplexity` の warning 44 件（2026-06-11 時点）は凍結リストとして扱う。新規コードで警告を増やさない。警告件数の確認は `bunx biome check .`。
-
-error 化（warning → error）は Phase 2（#86）の複雑度分割完了後に行う予定。
+`noExcessiveCognitiveComplexity`（閾値 15）は Phase 5（#89）で warning 0 件まで分割を終え、error に昇格済み。新規に閾値を超える関数を追加すると CI（`lint`）が fail する。
 
 ## 実機への載せ方
 
