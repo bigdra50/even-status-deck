@@ -29,7 +29,7 @@
     "knip": "knip",
     "lint:deps": "depcruise src server",
     "lint:dup": "jscpd src server",
-    "lint:fta": "fta src --score-cap 120 && fta server --score-cap 120",
+    "lint:fta": "fta src --score-cap 100 && fta server --score-cap 100",
     "test:coverage": "bun test server src --coverage",
     "watch:mac": "bun run server/index.ts watch mac-notifications",
     "test:unit": "bun test server src",

@@ -40,6 +40,28 @@ module.exports = {
       },
     },
     {
+      name: 'companion-state-hub',
+      comment:
+        'companion 配下の各モジュールは index.ts (hub) を import してはならない (src/companion/state.ts 冒頭の規律)。',
+      severity: 'error',
+      from: { path: '^src/companion/(?!index\\.ts$)' },
+      to: { path: '^src/companion/index\\.ts$' },
+    },
+    {
+      name: 'config-not-to-companion',
+      comment: 'src/config/ は companion に依存してはならない。',
+      severity: 'error',
+      from: { path: '^src/config/' },
+      to: { path: '^src/companion/' },
+    },
+    {
+      name: 'glass-not-to-companion',
+      comment: 'src/glass*.ts (グラス表示) は companion に依存してはならない。',
+      severity: 'error',
+      from: { path: '^src/glass[^/]*\\.ts$' },
+      to: { path: '^src/companion/' },
+    },
+    {
       name: 'no-orphans',
       comment: '孤立モジュール検出 (型定義・設定・テストは除外)。',
       severity: 'info',
