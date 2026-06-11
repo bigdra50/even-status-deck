@@ -3,7 +3,7 @@ import type { CondDisplay, DisplayUi, VisibilityCond, VisibilityLeaf } from '../
 import { defaultShowGroupLabel } from './ids'
 import { normalizeGlassLayout } from './layout'
 import { emptyProfileView } from './profiles'
-import type { Config, GroupMeta, OptionValues, Profile, SourceDef } from './types'
+import type { Config, GroupMeta, OptionValues, Profile, SegMeta, SourceDef } from './types'
 
 // 旧 url? を urls[0] へ正規化する (urls 不在なら url から、両方あれば url を先頭に補完)。
 export function normalizeSourceUrls(s: SourceDef): void {
@@ -11,26 +11,38 @@ export function normalizeSourceUrls(s: SourceDef): void {
   if (s.url && !s.urls.includes(s.url)) s.urls.unshift(s.url)
 }
 
+// threshold leaf を sanitize する。op/value が不正なら null。
+function sanitizeThresholdLeaf(o: Record<string, unknown>): VisibilityLeaf | null {
+  if (
+    !(o.kind === 'threshold' && (o.op === 'lte' || o.op === 'gte') && typeof o.value === 'number')
+  )
+    return null
+  const leaf: VisibilityLeaf = { kind: 'threshold', op: o.op, value: o.value }
+  if (typeof o.seg === 'string' && o.seg !== '') leaf.seg = o.seg // 対象 = 同 group 内の兄弟。空=self
+  return leaf
+}
+
+// onChange leaf を sanitize する。holdMs が不正なら null。
+function sanitizeOnChangeLeaf(o: Record<string, unknown>): VisibilityLeaf | null {
+  if (!(o.kind === 'onChange' && typeof o.holdMs === 'number')) return null
+  const leaf: VisibilityLeaf = { kind: 'onChange', holdMs: o.holdMs }
+  if (typeof o.seg === 'string' && o.seg !== '') leaf.seg = o.seg
+  return leaf
+}
+
+// present leaf を sanitize する。seg が不正なら null。
+function sanitizePresentLeaf(o: Record<string, unknown>): VisibilityLeaf | null {
+  if (!(o.kind === 'present' && typeof o.seg === 'string' && o.seg !== '')) return null
+  const leaf: VisibilityLeaf = { kind: 'present', seg: o.seg }
+  if (o.absent === true) leaf.absent = true
+  return leaf
+}
+
 // 1 leaf を sanitize する。不正なら null。threshold は op/value、onChange は holdMs を検証。
 function sanitizeLeaf(x: unknown): VisibilityLeaf | null {
   if (!x || typeof x !== 'object') return null
   const o = x as Record<string, unknown>
-  if (o.kind === 'threshold' && (o.op === 'lte' || o.op === 'gte') && typeof o.value === 'number') {
-    const leaf: VisibilityLeaf = { kind: 'threshold', op: o.op, value: o.value }
-    if (typeof o.seg === 'string' && o.seg !== '') leaf.seg = o.seg // 対象 = 同 group 内の兄弟。空=self
-    return leaf
-  }
-  if (o.kind === 'onChange' && typeof o.holdMs === 'number') {
-    const leaf: VisibilityLeaf = { kind: 'onChange', holdMs: o.holdMs }
-    if (typeof o.seg === 'string' && o.seg !== '') leaf.seg = o.seg
-    return leaf
-  }
-  if (o.kind === 'present' && typeof o.seg === 'string' && o.seg !== '') {
-    const leaf: VisibilityLeaf = { kind: 'present', seg: o.seg }
-    if (o.absent === true) leaf.absent = true
-    return leaf
-  }
-  return null
+  return sanitizeThresholdLeaf(o) ?? sanitizeOnChangeLeaf(o) ?? sanitizePresentLeaf(o)
 }
 
 const DISPLAY_UIS: ReadonlySet<string> = new Set(['toast', 'notification'])
@@ -87,20 +99,19 @@ function normalizeOptionsBag(bag: unknown): OptionValues | undefined {
   return Object.keys(out).length ? out : undefined
 }
 
+// options バッグ持ちオブジェクトの options を sanitize 結果で置き換える (空なら delete)。
+function applyNormalizedOptions(target: { options?: OptionValues }): void {
+  const next = normalizeOptionsBag(target.options)
+  if (next) target.options = next
+  else delete target.options
+}
+
 // 全 source / 素材 segment の options バッグを sanitize する (壊れた options でクラッシュさせない)。
 export function normalizeOptionsAll(c: Config): void {
-  for (const s of c.sources) {
-    const next = normalizeOptionsBag(s.options)
-    if (next) s.options = next
-    else delete s.options
-  }
+  for (const s of c.sources) applyNormalizedOptions(s)
   for (const groups of Object.values(c.groups ?? {})) {
     for (const meta of Object.values(groups)) {
-      for (const sm of meta.segments) {
-        const next = normalizeOptionsBag(sm.options)
-        if (next) sm.options = next
-        else delete sm.options
-      }
+      for (const sm of meta.segments) applyNormalizedOptions(sm)
     }
   }
 }
@@ -149,27 +160,30 @@ export function normalizeSourceDisplayOwner(c: Config): void {
   }
 }
 
+// 1 segment の tags を sanitize する (配列以外は外す / 非文字列・空を除去 / 重複除去 / 長さ制限)。
+function normalizeSegTags(sm: SegMeta): void {
+  if (sm.tags === undefined) return
+  if (!Array.isArray(sm.tags)) {
+    delete sm.tags
+    return
+  }
+  const cleaned = [
+    ...new Set(
+      sm.tags
+        .filter((t): t is string => typeof t === 'string' && t !== '')
+        .map((t) => t.slice(0, MAX_TAG_LEN)),
+    ),
+  ]
+  if (cleaned.length) sm.tags = cleaned
+  else delete sm.tags
+}
+
 // 素材 segment の tags を sanitize する (配列以外は外す / 非文字列・空を除去 / 重複除去 / 長さ制限)。
 // Phase1 は producer が tags を出さないので大半 undefined。型と正規化だけ先に確定させる (Phase3 再移行回避)。
 export function normalizeTagsAll(c: Config): void {
   for (const groups of Object.values(c.groups ?? {})) {
     for (const meta of Object.values(groups)) {
-      for (const sm of meta.segments) {
-        if (sm.tags === undefined) continue
-        if (!Array.isArray(sm.tags)) {
-          delete sm.tags
-          continue
-        }
-        const cleaned = [
-          ...new Set(
-            sm.tags
-              .filter((t): t is string => typeof t === 'string' && t !== '')
-              .map((t) => t.slice(0, MAX_TAG_LEN)),
-          ),
-        ]
-        if (cleaned.length) sm.tags = cleaned
-        else delete sm.tags
-      }
+      for (const sm of meta.segments) normalizeSegTags(sm)
     }
   }
 }
@@ -199,29 +213,32 @@ export function normalizeProfileView(p: Profile): void {
   }
 }
 
-// group displayName / lastLabel の sanitize。旧 'auto'(衝突自動命名 'Claude (limits)' 世代) は
+// 1 group の displayName / lastLabel を sanitize する。旧 'auto'(衝突自動命名 'Claude (limits)' 世代) は
 // displayName ごと一掃する (リネーム廃止→同見出し group はマージ表示へ移行)。'auto' 完全一致以外の
 // displayName はユーザー命名として保全し、廃止フィールド displayNameSource は常に落とす。
 // lastLabel は非文字列/空を外すだけ (sync が live label を再捕捉する)。冪等。
+function sanitizeGroupDisplayName(meta: GroupMeta): void {
+  const legacy = meta as GroupMeta & { displayNameSource?: unknown }
+  if (legacy.displayNameSource === 'auto') delete meta.displayName
+  delete legacy.displayNameSource
+  if (
+    meta.displayName !== undefined &&
+    (typeof meta.displayName !== 'string' || meta.displayName === '')
+  ) {
+    delete meta.displayName
+  }
+  if (
+    meta.lastLabel !== undefined &&
+    (typeof meta.lastLabel !== 'string' || meta.lastLabel === '')
+  ) {
+    delete meta.lastLabel
+  }
+}
+
+// group displayName / lastLabel の sanitize を全 group に適用する。
 function normalizeGroupDisplayNames(c: Config): void {
   for (const groups of Object.values(c.groups ?? {})) {
-    for (const meta of Object.values(groups)) {
-      const legacy = meta as GroupMeta & { displayNameSource?: unknown }
-      if (legacy.displayNameSource === 'auto') delete meta.displayName
-      delete legacy.displayNameSource
-      if (
-        meta.displayName !== undefined &&
-        (typeof meta.displayName !== 'string' || meta.displayName === '')
-      ) {
-        delete meta.displayName
-      }
-      if (
-        meta.lastLabel !== undefined &&
-        (typeof meta.lastLabel !== 'string' || meta.lastLabel === '')
-      ) {
-        delete meta.lastLabel
-      }
-    }
+    for (const meta of Object.values(groups)) sanitizeGroupDisplayName(meta)
   }
 }
 
