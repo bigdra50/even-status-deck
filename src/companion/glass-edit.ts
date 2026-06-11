@@ -24,6 +24,7 @@ import { MAX_ROWS, splitRowClusters } from '../glass-render'
 import { GRID_COLS, GRID_ROWS } from '../glass-types'
 import { icon } from '../icons'
 import { canPlace, cellCapacity, findFreeRect, gridPlacedKeys } from './grid-edit'
+import { actionButton } from './html'
 import { requestPreviewUpdate, requestRender } from './render-port'
 import { allPlaceableKeys, groupHeadingCollides, segLabelParts } from './rows'
 import { ctx } from './state'
@@ -105,12 +106,21 @@ function wysChip(key: string, opts: { tapAdd?: boolean } = {}): string {
   if (isCustomLabelKey(key)) {
     const id = customLabelId(key)
     const text = editingLayout()?.customLabels[id]?.text ?? ''
-    const del = `<button class="wys-x" data-action="label-delete" data-label-id="${esc(id)}" title="Delete label" aria-label="Delete label">${icon('x', { size: 10 })}</button>`
+    const del = actionButton('label-delete', icon('x', { size: 10 }), {
+      cls: 'wys-x',
+      attrs: { 'data-label-id': id },
+      title: 'Delete label',
+      ariaLabel: 'Delete label',
+    })
     return `<span class="wys-chip wys-label-chip wys-custom-chip" data-segkey="${esc(key)}"${tap} title="${esc(text)}">${grip}<span class="wys-txt">${esc(text)}</span>${del}</span>`
   }
   const [sourceId, groupId, segId] = key.split('|')
   const { group, seg } = segLabelParts(key)
-  const x = `<button class="wys-x" data-action="layout-item-remove" data-segkey="${esc(key)}" aria-label="Unplace">${icon('x', { size: 10 })}</button>`
+  const x = actionButton('layout-item-remove', icon('x', { size: 10 }), {
+    cls: 'wys-x',
+    attrs: { 'data-segkey': key },
+    ariaLabel: 'Unplace',
+  })
   const sg = statusGroup(sourceId, groupId)?.segments.find((s) => s.id === segId)
   const text = sg ? (sg.label ? `${sg.label} ${sg.value}` : sg.value) : seg
   // default-label ON の group のみ group 名を薄く前置表示 (実機の前置ラベルに対応)
@@ -160,9 +170,9 @@ function renderGlassEdit(lay: GlassLayout): string {
     <div class="wys-cell wys-shelf" data-shelf="1">${shelf}</div>
     <div class="field-row wys-add">
       <input class="lay-add-input" type="text" maxlength="64" placeholder="Custom label (heading / divider …)" />
-      <button class="save-btn sm" data-action="label-add">${icon('plus', { size: 14 })}Add label</button>
+      ${actionButton('label-add', `${icon('plus', { size: 14 })}Add label`, { cls: 'save-btn sm' })}
     </div>
-    <button class="danger-btn" data-action="layout-reset">Reset to auto</button>`
+    ${actionButton('layout-reset', 'Reset to auto', { cls: 'danger-btn' })}`
 }
 
 // ── grid ページの編集 UI (Issue #17) ──
@@ -192,25 +202,57 @@ function renderGridCanvas(page: GlassPage): string {
 function renderGridCellControls(page: GlassPage, sel: GridCellSpec): string {
   const grid = page.grid ?? { cells: [] }
   const can = (rect: Partial<GridCellSpec>): boolean => canPlace(grid, { ...sel, ...rect }, sel.id)
-  const dis = (ok: boolean): string => (ok ? '' : 'disabled')
+  const moveBtn = (
+    dx: number,
+    dy: number,
+    title: string,
+    iconName: Parameters<typeof icon>[0],
+    ok: boolean,
+  ): string =>
+    actionButton('grid-cell-move', icon(iconName, { size: 14 }), {
+      cls: 'gear-btn',
+      attrs: { 'data-dx': dx, 'data-dy': dy },
+      title,
+      ariaLabel: title,
+      disabled: !ok,
+    })
   const move = `
-    <button class="gear-btn" data-action="grid-cell-move" data-dx="-1" data-dy="0" title="Move left" aria-label="Move left" ${dis(can({ col: sel.col - 1 }))}>${icon('chevron-left', { size: 14 })}</button>
-    <button class="gear-btn" data-action="grid-cell-move" data-dx="1" data-dy="0" title="Move right" aria-label="Move right" ${dis(can({ col: sel.col + 1 }))}>${icon('chevron-right', { size: 14 })}</button>
-    <button class="gear-btn" data-action="grid-cell-move" data-dx="0" data-dy="-1" title="Move up" aria-label="Move up" ${dis(can({ row: sel.row - 1 }))}>${icon('chevron-up', { size: 14 })}</button>
-    <button class="gear-btn" data-action="grid-cell-move" data-dx="0" data-dy="1" title="Move down" aria-label="Move down" ${dis(can({ row: sel.row + 1 }))}>${icon('chevron-down', { size: 14 })}</button>`
+    ${moveBtn(-1, 0, 'Move left', 'chevron-left', can({ col: sel.col - 1 }))}
+    ${moveBtn(1, 0, 'Move right', 'chevron-right', can({ col: sel.col + 1 }))}
+    ${moveBtn(0, -1, 'Move up', 'chevron-up', can({ row: sel.row - 1 }))}
+    ${moveBtn(0, 1, 'Move down', 'chevron-down', can({ row: sel.row + 1 }))}`
+  const resizeBtn = (
+    dim: 'w' | 'h',
+    delta: number,
+    title: string,
+    label: string,
+    ok: boolean,
+  ): string =>
+    actionButton('grid-cell-resize', label, {
+      cls: 'gear-btn',
+      attrs: { 'data-dim': dim, 'data-delta': delta },
+      title,
+      ariaLabel: title,
+      disabled: !ok,
+    })
   const size = `
-    <button class="gear-btn" data-action="grid-cell-resize" data-dim="w" data-delta="-1" title="Narrower" aria-label="Narrower" ${dis(sel.colSpan > 1)}>W−</button>
-    <button class="gear-btn" data-action="grid-cell-resize" data-dim="w" data-delta="1" title="Wider" aria-label="Wider" ${dis(can({ colSpan: sel.colSpan + 1 }))}>W+</button>
-    <button class="gear-btn" data-action="grid-cell-resize" data-dim="h" data-delta="-1" title="Shorter" aria-label="Shorter" ${dis(sel.rowSpan > 1)}>H−</button>
-    <button class="gear-btn" data-action="grid-cell-resize" data-dim="h" data-delta="1" title="Taller" aria-label="Taller" ${dis(can({ rowSpan: sel.rowSpan + 1 }))}>H+</button>`
+    ${resizeBtn('w', -1, 'Narrower', 'W−', sel.colSpan > 1)}
+    ${resizeBtn('w', 1, 'Wider', 'W+', can({ colSpan: sel.colSpan + 1 }))}
+    ${resizeBtn('h', -1, 'Shorter', 'H−', sel.rowSpan > 1)}
+    ${resizeBtn('h', 1, 'Taller', 'H+', can({ rowSpan: sel.rowSpan + 1 }))}`
   // 枠線は rowSpan>=2 のみ (1 行セルは line-height を圧迫。config normalize とも一致)。
   const borderOk = sel.rowSpan >= 2
   const borderOn = (sel.border ?? 0) > 0
-  const border = `<button class="gear-btn${borderOn ? ' seg-on' : ''}" data-action="grid-cell-border" title="Toggle border" aria-label="Toggle border" ${borderOk ? '' : 'disabled'}>${icon('layout', { size: 14 })}</button>`
+  const border = actionButton('grid-cell-border', icon('layout', { size: 14 }), {
+    cls: `gear-btn${borderOn ? ' seg-on' : ''}`,
+    title: 'Toggle border',
+    ariaLabel: 'Toggle border',
+    disabled: !borderOk,
+  })
   return `<div class="grid-ctl">
       <span class="grid-ctl-lbl">${esc(sel.id)} — ${sel.colSpan}×${sel.rowSpan} @ (${sel.col},${sel.row})</span>
       <div class="grid-ctl-row"><span class="cmp-sub">Move</span>${move}<span class="cmp-sub">Size</span>${size}${border}
-        <button class="gear-btn danger" data-action="grid-cell-remove" title="Delete cell" aria-label="Delete cell">${icon('trash', { size: 14 })}</button></div>
+        ${actionButton('grid-cell-remove', icon('trash', { size: 14 }), { cls: 'gear-btn danger', title: 'Delete cell', ariaLabel: 'Delete cell' })}</div>
     </div>`
 }
 
@@ -249,16 +291,16 @@ function renderGridEdit(page: GlassPage): string {
     : '<span class="cmp-sub">Nothing unplaced</span>'
   const addOk = grid.cells.length < 7 && findFreeRect(grid) !== null
   return `${renderGridCanvas(page)}
-    <div class="field-row grid-add-row"><button class="save-btn sm" data-action="grid-cell-add" ${addOk ? '' : 'disabled'}>${icon('plus', { size: 14 })}Add cell</button></div>
+    <div class="field-row grid-add-row">${actionButton('grid-cell-add', `${icon('plus', { size: 14 })}Add cell`, { cls: 'save-btn sm', disabled: !addOk })}</div>
     ${sel ? renderGridCellControls(page, sel) : '<div class="cmp-sub">Tap a cell on the canvas to move / resize it and fill its rows.</div>'}
     ${sel && sel.kind !== 'image' ? renderGridCellRows(sel) : ''}
     <div class="cmp-label">Unplaced${sel ? ' — tap a chip to add it to the selected cell' : ''}</div>
     <div class="wys-cell wys-shelf" data-shelf="1">${shelf}</div>
     <div class="field-row wys-add">
       <input class="lay-add-input" type="text" maxlength="64" placeholder="Custom label (heading / divider …)" />
-      <button class="save-btn sm" data-action="label-add">${icon('plus', { size: 14 })}Add label</button>
+      ${actionButton('label-add', `${icon('plus', { size: 14 })}Add label`, { cls: 'save-btn sm' })}
     </div>
-    <button class="danger-btn" data-action="layout-reset">Reset to auto</button>`
+    ${actionButton('layout-reset', 'Reset to auto', { cls: 'danger-btn' })}`
 }
 
 // auto モード (glassLayout 未設定) の group 並べ替え行。grip + group 名 + owner のみ (設定は出さない)。
@@ -298,10 +340,18 @@ function renderPageTabs(pages: GlassPage[]): string {
   const tabs = pages
     .map((p, i) => {
       const active = i === ctx.pageEditingIdx ? ' page-tab-active' : ''
-      return `<button class="page-tab${active}" data-action="page-select" data-page-idx="${i}" title="${esc(p.name)}">${esc(p.name)}</button>`
+      return actionButton('page-select', esc(p.name), {
+        cls: `page-tab${active}`,
+        attrs: { 'data-page-idx': i },
+        title: p.name,
+      })
     })
     .join('')
-  const add = `<button class="page-tab page-add" data-action="page-add" title="Add page" aria-label="Add page">${icon('plus', { size: 14 })}</button>`
+  const add = actionButton('page-add', icon('plus', { size: 14 }), {
+    cls: 'page-tab page-add',
+    title: 'Add page',
+    ariaLabel: 'Add page',
+  })
   return `<div class="page-tabs">${tabs}${add}</div>`
 }
 
@@ -309,17 +359,17 @@ function renderPageTabs(pages: GlassPage[]): string {
 function renderPageControls(pages: GlassPage[]): string {
   const cur = pages[ctx.pageEditingIdx]
   if (!cur) return ''
-  const up = ctx.pageEditingIdx === 0 ? 'disabled' : ''
-  const down = ctx.pageEditingIdx >= pages.length - 1 ? 'disabled' : ''
-  const del = pages.length <= 1 ? 'disabled' : ''
+  const noUp = ctx.pageEditingIdx === 0
+  const noDown = ctx.pageEditingIdx >= pages.length - 1
+  const noDel = pages.length <= 1
   const isGrid = cur.mode === 'grid'
   const gridTitle = isGrid ? 'Switch to rows layout' : 'Switch to grid layout'
   return `<div class="page-ctl">
       <input class="page-name-input" type="text" maxlength="24" value="${esc(cur.name)}" data-action="page-rename" data-page-idx="${ctx.pageEditingIdx}" placeholder="Page name" aria-label="Page name" />
-      <button class="gear-btn${isGrid ? ' seg-on' : ''}" data-action="page-mode-toggle" title="${gridTitle}" aria-label="${gridTitle}">${icon('grid3', { size: 14 })}</button>
-      <button class="gear-btn" data-action="page-move-up" title="Move left" aria-label="Move left" ${up}>${icon('chevron-left', { size: 14 })}</button>
-      <button class="gear-btn" data-action="page-move-down" title="Move right" aria-label="Move right" ${down}>${icon('chevron-right', { size: 14 })}</button>
-      <button class="gear-btn danger" data-action="page-remove" title="Delete page" aria-label="Delete page" ${del}>${icon('trash', { size: 14 })}</button>
+      ${actionButton('page-mode-toggle', icon('grid3', { size: 14 }), { cls: `gear-btn${isGrid ? ' seg-on' : ''}`, title: gridTitle, ariaLabel: gridTitle })}
+      ${actionButton('page-move-up', icon('chevron-left', { size: 14 }), { cls: 'gear-btn', title: 'Move left', ariaLabel: 'Move left', disabled: noUp })}
+      ${actionButton('page-move-down', icon('chevron-right', { size: 14 }), { cls: 'gear-btn', title: 'Move right', ariaLabel: 'Move right', disabled: noDown })}
+      ${actionButton('page-remove', icon('trash', { size: 14 }), { cls: 'gear-btn danger', title: 'Delete page', ariaLabel: 'Delete page', disabled: noDel })}
     </div>`
 }
 
