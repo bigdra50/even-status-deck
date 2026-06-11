@@ -13,6 +13,9 @@ import { FS_ACTIONS } from './fs-editor'
 
 // (?<!\[) で querySelector の `[data-action="..."]` セレクタを除外し、HTML 放出だけ拾う。
 // [^"$] で `${...}` を含む動的組み立てをマッチ対象外にする (混入したら未処理扱いで検出される)。
+// html.ts の actionButton/actionSelect は data-action を helper 内部で組み立てるため、
+// 呼び出し側の第1引数の文字列リテラル (`actionButton('x', ...)` / `actionSelect('x', ...)`) も拾う
+// ([^'$] で動的組み立てを除外。静的リテラル前提は変わらない)。
 function emittedActions(): Set<string> {
   const dir = import.meta.dir
   const out = new Set<string>()
@@ -20,6 +23,7 @@ function emittedActions(): Set<string> {
     if (!f.endsWith('.ts') || f.endsWith('.test.ts')) continue
     const src = readFileSync(join(dir, f), 'utf8')
     for (const m of src.matchAll(/(?<!\[)data-action="([^"$]+)"/g)) out.add(m[1])
+    for (const m of src.matchAll(/\baction(?:Button|Select)\(\s*'([^'$]+)'/g)) out.add(m[1])
   }
   return out
 }

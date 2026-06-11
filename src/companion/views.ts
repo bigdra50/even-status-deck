@@ -15,6 +15,7 @@ import { esc } from '../escape'
 import { icon } from '../icons'
 import { renderDbgConsole } from './debug-console'
 import { renderGlassSection } from './glass-edit'
+import { actionButton, actionSelect } from './html'
 import {
   renderSourceGroups,
   SOURCE_SECTIONS,
@@ -44,7 +45,11 @@ function renderSuggestionBanner(): string {
         <div class="suggest-sub">${detail}</div>
       </div>
       <button class="suggest-accept" data-action="suggest-accept">Switch</button>
-      <button class="suggest-dismiss" data-action="suggest-dismiss" title="Dismiss" aria-label="Dismiss">${icon('x', { size: 16 })}</button>
+      ${actionButton('suggest-dismiss', icon('x', { size: 16 }), {
+        cls: 'suggest-dismiss',
+        title: 'Dismiss',
+        ariaLabel: 'Dismiss',
+      })}
     </div>`
 }
 
@@ -53,23 +58,21 @@ function renderSuggestionBanner(): string {
 // Default (id 'default') は削除不可なので、active が Default のときは削除ボタンを無効化する。
 function renderProfileBar(): string {
   const active = activeProfile(ctx.config)
-  const options = ctx.config.profiles
-    .map(
-      (p) =>
-        `<option value="${esc(p.id)}" ${p.id === active.id ? 'selected' : ''}>${esc(p.name)}</option>`,
-    )
-    .join('')
+  const select = actionSelect(
+    'profile-switch',
+    ctx.config.profiles.map((p) => ({ value: p.id, label: p.name, selected: p.id === active.id })),
+    { cls: 'profile-select', ariaLabel: 'Preset' },
+  )
   // Default は削除不可 + profile が 1 個だけのときも削除不可 (最後の 1 個は残す)。
   const canDelete = active.id !== DEFAULT_PROFILE_ID && ctx.config.profiles.length > 1
-  const delAttr = canDelete ? '' : 'disabled'
   return `
     <div class="cmp-label">Preset</div>
     <div class="profile-bar">
-      <select class="profile-select" data-action="profile-switch" aria-label="Preset">${options}</select>
-      <button class="gear-btn" data-action="profile-rename" title="Rename preset" aria-label="Rename preset">${icon('pencil', { size: 16 })}</button>
-      <button class="gear-btn" data-action="profile-duplicate" title="Duplicate preset" aria-label="Duplicate preset">${icon('copy', { size: 16 })}</button>
-      <button class="gear-btn" data-action="profile-add" title="Add preset" aria-label="Add preset">${icon('plus', { size: 16 })}</button>
-      <button class="gear-btn danger" data-action="profile-delete" title="Delete preset" aria-label="Delete preset" ${delAttr}>${icon('trash', { size: 16 })}</button>
+      ${select}
+      ${actionButton('profile-rename', icon('pencil', { size: 16 }), { cls: 'gear-btn', title: 'Rename preset', ariaLabel: 'Rename preset' })}
+      ${actionButton('profile-duplicate', icon('copy', { size: 16 }), { cls: 'gear-btn', title: 'Duplicate preset', ariaLabel: 'Duplicate preset' })}
+      ${actionButton('profile-add', icon('plus', { size: 16 }), { cls: 'gear-btn', title: 'Add preset', ariaLabel: 'Add preset' })}
+      ${actionButton('profile-delete', icon('trash', { size: 16 }), { cls: 'gear-btn danger', title: 'Delete preset', ariaLabel: 'Delete preset', disabled: !canDelete })}
     </div>`
 }
 
@@ -89,10 +92,10 @@ export function renderHome(): string {
     ${renderSuggestionBanner()}
     ${renderProfileBar()}
 
-    <div class="cmp-label cmp-label-row">Sources (this preset)<span class="cmp-actions"><button class="link-btn" data-action="manage-sources">Manage all</button></span></div>
+    <div class="cmp-label cmp-label-row">Sources (this preset)<span class="cmp-actions">${actionButton('manage-sources', 'Manage all', { cls: 'link-btn' })}</span></div>
     <div class="cmp-sub">Tap a source to toggle its items &amp; settings.</div>
     ${sourcesHtml}
-    <button class="save-btn sm" data-action="open-add-source">${icon('plus', { size: 14 })} Add source</button>
+    ${actionButton('open-add-source', `${icon('plus', { size: 14 })} Add source`, { cls: 'save-btn sm' })}
 
     ${renderGlassSection()}
 
@@ -117,12 +120,16 @@ export function renderSourceDetail(): string {
   const owner = effectiveOwner(s)
   const ownerEl = isBuiltin
     ? `<span class="owner-badge owner-fixed" title="Owner (code-owned)">${esc(owner)}</span>`
-    : `<button class="owner-badge" data-action="edit-owner" data-src="${esc(s.id)}" title="Rename owner — distinguishes same-type data">${esc(owner)} ${icon('pencil', { size: 12 })}</button>`
+    : actionButton('edit-owner', `${esc(owner)} ${icon('pencil', { size: 12 })}`, {
+        cls: 'owner-badge',
+        attrs: { 'data-src': s.id },
+        title: 'Rename owner — distinguishes same-type data',
+      })
   const { dotCls, note } = isBuiltin ? { dotCls: '', note: 'On-device' } : sourceDotNote(s)
   // 接続編集/削除(実体管理)は Sources(Manage all)、preset から外すのは Home の swipe→🗑 に集約。
   // Source Detail は「この preset での設定」に専念し、実体操作のボタンは置かない。
   return `
-    <div class="topbar"><button class="nav-btn" data-action="home">${icon('arrow-left', { size: 16 })} Sources</button>
+    <div class="topbar">${actionButton('home', `${icon('arrow-left', { size: 16 })} Sources`, { cls: 'nav-btn' })}
       <span class="h-title">${esc(s.label)}</span><span></span></div>
     <div class="src-detail-head">
       <span class="conn-dot ${dotCls}"></span>${ownerEl}
@@ -141,11 +148,11 @@ export function renderSources(): string {
     ? sources.map(sourceManageRow).join('')
     : '<div class="cmp-sub">No sources yet.</div>'
   return `
-    <div class="topbar"><button class="nav-btn" data-action="home">${icon('arrow-left', { size: 16 })} Home</button>
+    <div class="topbar">${actionButton('home', `${icon('arrow-left', { size: 16 })} Home`, { cls: 'nav-btn' })}
       <span class="h-title">Sources</span><span></span></div>
     <div class="cmp-sub">Shared across all presets. Editing or deleting here affects every preset.</div>
     ${html}
-    <button class="save-btn sm" data-action="new-source">${icon('plus', { size: 14 })} New source</button>
+    ${actionButton('new-source', `${icon('plus', { size: 14 })} New source`, { cls: 'save-btn sm' })}
   `
 }
 
@@ -158,12 +165,12 @@ export function renderAddSource(): string {
     ? available.map(sourceAddRow).join('')
     : '<div class="cmp-sub">All sources are already in this preset.</div>'
   return `
-    <div class="topbar"><button class="nav-btn" data-action="home">${icon('arrow-left', { size: 16 })} Home</button>
+    <div class="topbar">${actionButton('home', `${icon('arrow-left', { size: 16 })} Home`, { cls: 'nav-btn' })}
       <span class="h-title">Add source</span><span></span></div>
     <div class="cmp-label">Existing sources</div>
     ${list}
     <div class="cmp-label">New</div>
-    <button class="save-btn sm" data-action="create-new-source">${icon('plus', { size: 14 })} Create new source</button>
+    ${actionButton('create-new-source', `${icon('plus', { size: 14 })} Create new source`, { cls: 'save-btn sm' })}
   `
 }
 
@@ -194,11 +201,20 @@ function renderRouteList(s: SourceDef | undefined): string {
       const mark =
         i === 0
           ? '<span class="url-primary-mark">Primary</span>'
-          : `<button class="link-btn" data-action="url-primary" data-urlidx="${i}">Make primary</button>`
+          : actionButton('url-primary', 'Make primary', {
+              cls: 'link-btn',
+              attrs: { 'data-urlidx': i },
+            })
+      const delBtn = actionButton('url-remove', icon('x', { size: 14 }), {
+        cls: 'url-del',
+        attrs: { 'data-urlidx': i },
+        title: 'Remove route',
+        ariaLabel: 'Remove route',
+      })
       return `<div class="url-row">
         <span class="url-text mono">${esc(u)}</span>
         ${mark}
-        <button class="url-del" data-action="url-remove" data-urlidx="${i}" title="Remove route" aria-label="Remove route">${icon('x', { size: 14 })}</button>
+        ${delBtn}
       </div>`
     })
     .join('')
@@ -220,17 +236,17 @@ export function renderSourceEdit(): string {
         ? 'Back'
         : 'Home'
   return `
-    <div class="topbar"><button class="nav-btn" data-action="back">${icon('arrow-left', { size: 16 })} ${backLabel}</button>
+    <div class="topbar">${actionButton('back', `${icon('arrow-left', { size: 16 })} ${backLabel}`, { cls: 'nav-btn' })}
       <span class="h-title">Server</span><span></span></div>
     <div class="field"><label>URL</label>
       <div class="field-row">
         <input type="text" value="${esc(url)}" placeholder="http://127.0.0.1:8723" />
-        <button class="test-btn" data-action="test" ${testing ? 'disabled' : ''}>${testing ? '…' : 'Test'}</button>
+        ${actionButton('test', testing ? '…' : 'Test', { cls: 'test-btn', disabled: testing })}
       </div>
       <span class="help-link" data-action="help">Set up a local server ${icon('external-link', { size: 13 })}</span>
     </div>
     ${renderTestStatus()}
     ${renderRouteList(s)}
-    <button class="danger-btn" data-action="delete-source">Delete source (all presets)</button>
+    ${actionButton('delete-source', 'Delete source (all presets)', { cls: 'danger-btn' })}
   `
 }

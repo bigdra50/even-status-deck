@@ -28,6 +28,7 @@ import {
 import type { Segment } from '../status-types'
 import { getLastSuccessAt, getSourceHealth } from '../store'
 import { segKey, type VisibilityLeaf } from '../visibility'
+import { actionButton, actionSelect, optionsHtml, type SelectOption } from './html'
 import { ctx } from './state'
 import { editingLayout, parseKey, statusGroup, visibleRefs, worstReportedState } from './sync'
 
@@ -55,13 +56,12 @@ function targetSelect(a: string, choices: SegChoice[], selected: string, selfId?
   const list = choices.some((c) => c.id === selected)
     ? choices
     : [...choices, { id: selected, label: selected || '?', hasPct: false }]
-  const opts = list
-    .map(
-      (c) =>
-        `<option value="${esc(c.id)}" ${c.id === selected ? 'selected' : ''}>${esc(c.label)}${selfId && c.id === selfId ? ' (this)' : ''}</option>`,
-    )
-    .join('')
-  return `<select class="vis-select" data-action="seg-vis-leaf-seg" ${a}>${opts}</select>`
+  const options = list.map((c) => ({
+    value: c.id,
+    label: `${c.label}${selfId && c.id === selfId ? ' (this)' : ''}`,
+    selected: c.id === selected,
+  }))
+  return actionSelect('seg-vis-leaf-seg', options, { cls: 'vis-select', extra: a })
 }
 
 // present leaf の params (兄弟 segment 必須)。
@@ -72,11 +72,16 @@ function leafPresentParams(
   sibs: SegChoice[],
 ): string {
   const opts = sibs.length ? sibs : choices.filter((c) => c.id === leaf.seg)
+  const absentSelect = actionSelect(
+    'seg-vis-leaf-absent',
+    [
+      { value: 'present', label: 'has value', selected: !leaf.absent },
+      { value: 'absent', label: 'is empty', selected: !!leaf.absent },
+    ],
+    { cls: 'vis-select', extra: a },
+  )
   return `${targetSelect(a, opts, leaf.seg)}
-      <select class="vis-select" data-action="seg-vis-leaf-absent" ${a}>
-        <option value="present" ${leaf.absent ? '' : 'selected'}>has value</option>
-        <option value="absent" ${leaf.absent ? 'selected' : ''}>is empty</option>
-      </select>`
+      ${absentSelect}`
 }
 
 // threshold leaf の params。対象候補は percent を持つ segment (self/兄弟)。
@@ -92,10 +97,15 @@ function leafThresholdParams(
     pctChoices.length >= 2 || leaf.seg
       ? targetSelect(a, pctChoices, leaf.seg ?? selfId, selfId)
       : ''
-  return `${tsel}<select class="vis-select" data-action="seg-vis-leaf-op" ${a}>
-        <option value="gte" ${leaf.op === 'gte' ? 'selected' : ''}>≥</option>
-        <option value="lte" ${leaf.op === 'lte' ? 'selected' : ''}>≤</option>
-      </select>
+  const opSelect = actionSelect(
+    'seg-vis-leaf-op',
+    [
+      { value: 'gte', label: '≥', selected: leaf.op === 'gte' },
+      { value: 'lte', label: '≤', selected: leaf.op === 'lte' },
+    ],
+    { cls: 'vis-select', extra: a },
+  )
+  return `${tsel}${opSelect}
       <input class="vis-num" type="number" min="0" max="100" data-action="seg-vis-leaf-value" ${a} value="${leaf.value}" />%`
 }
 
@@ -138,13 +148,22 @@ function leafRow(
   const sibs = choices.filter((c) => c.id !== selfId)
   const allowThreshold = groupHasPct || leaf.kind === 'threshold'
   const allowPresent = sibs.length > 0 || leaf.kind === 'present'
-  const kindSel = `<select class="vis-select" data-action="seg-vis-leaf-kind" ${a}>
-    ${allowThreshold ? `<option value="threshold" ${leaf.kind === 'threshold' ? 'selected' : ''}>When…</option>` : ''}
-    <option value="onChange" ${leaf.kind === 'onChange' ? 'selected' : ''}>On update</option>
-    ${allowPresent ? `<option value="present" ${leaf.kind === 'present' ? 'selected' : ''}>Has value</option>` : ''}
-  </select>`
+  const kindOptions: SelectOption[] = []
+  if (allowThreshold) {
+    kindOptions.push({ value: 'threshold', label: 'When…', selected: leaf.kind === 'threshold' })
+  }
+  kindOptions.push({ value: 'onChange', label: 'On update', selected: leaf.kind === 'onChange' })
+  if (allowPresent) {
+    kindOptions.push({ value: 'present', label: 'Has value', selected: leaf.kind === 'present' })
+  }
+  const kindSel = actionSelect('seg-vis-leaf-kind', kindOptions, { cls: 'vis-select', extra: a })
   const params = leafParams(a, leaf, choices, sibs, selfId)
-  const del = `<button class="vis-del" data-action="seg-vis-remove" ${a} title="Remove" aria-label="Remove">${icon('x', { size: 14 })}</button>`
+  const del = actionButton('seg-vis-remove', icon('x', { size: 14 }), {
+    cls: 'vis-del',
+    extra: a,
+    title: 'Remove',
+    ariaLabel: 'Remove',
+  })
   return `<div class="vis-cond-row">${kindSel}${params}${del}</div>`
 }
 
@@ -154,12 +173,17 @@ function segVisDisplayRow(seg2: string, sm: SegMeta, conditionsLength: number): 
   if (conditionsLength === 0) return ''
   const display = sm.visibility?.display
   const secs = display?.durationMs ? Math.round(display.durationMs / 1000) : DEFAULT_DISPLAY_SECS
+  const uiSelect = actionSelect(
+    'seg-vis-display-ui',
+    [
+      { value: '', label: 'Inline (persistent)', selected: !display },
+      { value: 'toast', label: 'Toast', selected: display?.ui === 'toast' },
+      { value: 'notification', label: 'Notification', selected: display?.ui === 'notification' },
+    ],
+    { cls: 'vis-select', extra: seg2 },
+  )
   return `<div class="vis-row" ${seg2}><span class="vis-label">Present</span>
-          <select class="vis-select" data-action="seg-vis-display-ui" ${seg2}>
-            <option value="" ${!display ? 'selected' : ''}>Inline (persistent)</option>
-            <option value="toast" ${display?.ui === 'toast' ? 'selected' : ''}>Toast</option>
-            <option value="notification" ${display?.ui === 'notification' ? 'selected' : ''}>Notification</option>
-          </select>
+          ${uiSelect}
           ${
             display
               ? `<input class="vis-num" type="number" min="1" max="60" data-action="seg-vis-display-secs" ${seg2} value="${secs}" title="Auto-hide seconds" />s
@@ -181,15 +205,22 @@ function segVisEditor(key: string, sm: SegMeta): string {
   const combinator = sm.visibility?.combinator ?? 'and'
   const head =
     conditions.length >= 2
-      ? `<select class="vis-select" data-action="seg-vis-combinator" ${seg2}>
-          <option value="and" ${combinator === 'and' ? 'selected' : ''}>All of</option>
-          <option value="or" ${combinator === 'or' ? 'selected' : ''}>Any of</option>
-        </select>`
+      ? actionSelect(
+          'seg-vis-combinator',
+          [
+            { value: 'and', label: 'All of', selected: combinator === 'and' },
+            { value: 'or', label: 'Any of', selected: combinator === 'or' },
+          ],
+          { cls: 'vis-select', extra: seg2 },
+        )
       : `<span class="vis-always">${conditions.length === 0 ? 'always' : 'when'}</span>`
   const rows = conditions.map((l, i) => leafRow(seg2, l, i, choices, sm.id, groupHasPct)).join('')
   const add =
     conditions.length < MAX_CONDS
-      ? `<button class="vis-add" data-action="seg-vis-add" ${seg2}>${icon('plus', { size: 13 })} Add condition</button>`
+      ? actionButton('seg-vis-add', `${icon('plus', { size: 13 })} Add condition`, {
+          cls: 'vis-add',
+          extra: seg2,
+        })
       : ''
   const displayRow = segVisDisplayRow(seg2, sm, conditions.length)
   return `<div class="vis-row" ${seg2}><span class="vis-label">Show</span>${head}</div>
@@ -203,12 +234,7 @@ function optionSelectControl(
   values: OptionValues,
 ): string {
   const cur = String(values[f.id] ?? f.default)
-  const opts = f.choices
-    .map(
-      (c) =>
-        `<option value="${esc(c.value)}" ${c.value === cur ? 'selected' : ''}>${esc(c.label)}</option>`,
-    )
-    .join('')
+  const opts = optionsHtml(f.choices.map((c) => ({ ...c, selected: c.value === cur })))
   return `<label class="clock-fld">${esc(f.label)}<select class="format-select" ${a} data-field="${esc(f.id)}" data-kind="select">${opts}</select></label>`
 }
 
@@ -373,9 +399,18 @@ function groupRowHead(
     : ''
   // default-label トグル (glass で group 名を前置するか)。位置/上詰めは Glass layout で決める。
   const showsLabel = vg.showDefaultLabel ?? ref.groupId !== 'clock'
-  const labelBtn = `<button class="label-btn ${showsLabel ? 'on' : ''}" data-action="toggle-grouplabel" data-key="${key}" title="${showsLabel ? 'Group label shown on glass' : 'Group label hidden'}">${icon('tag', { size: 15 })}</button>`
+  const labelBtn = actionButton('toggle-grouplabel', icon('tag', { size: 15 }), {
+    cls: `label-btn ${showsLabel ? 'on' : ''}`,
+    extra: `data-key="${key}"`,
+    title: showsLabel ? 'Group label shown on glass' : 'Group label hidden',
+  })
   // group 名のリネーム (Source Detail)。同 source 内で同名の group は glass で 1 unit にマージ表示される。
-  const renameBtn = `<button class="label-btn" data-action="edit-groupname" data-key="${key}" title="Rename group" aria-label="Rename group">${icon('pencil', { size: 14 })}</button>`
+  const renameBtn = actionButton('edit-groupname', icon('pencil', { size: 14 }), {
+    cls: 'label-btn',
+    extra: `data-key="${key}"`,
+    title: 'Rename group',
+    ariaLabel: 'Rename group',
+  })
   // owner は Source Detail ヘッダで編集 / glass picker でバッジ表示する (表示モデル新 IA)。group 行には出さない。
   return `<div class="src-head"><span class="src-grip">${icon('grip', { size: 16 })}</span>
     <span class="src-caret" data-action="expand" data-key="${key}">${caret}</span>
@@ -481,26 +516,41 @@ export function sourceNavRow(s: SourceDef): string {
   // builtin(Device) は preset から外せない(常時有効) ので swipe 無し・🗑無し。
   if (isBuiltin) return `<div class="src swipe-row">${fg}</div>`
   // 背面: 右端の削除(remove-from-preset)。前面が左へずれると露出する。
-  const bg = `<div class="swipe-bg"><button class="swipe-del" data-action="remove-from-preset" data-src="${esc(s.id)}" aria-label="Remove from preset" title="Remove from preset">${icon('trash', { size: 18 })}</button></div>`
+  const delBtn = actionButton('remove-from-preset', icon('trash', { size: 18 }), {
+    cls: 'swipe-del',
+    attrs: { 'data-src': s.id, 'aria-label': 'Remove from preset', title: 'Remove from preset' },
+  })
+  const bg = `<div class="swipe-bg">${delBtn}</div>`
   return `<div class="src swipe-row" data-src="${esc(s.id)}" data-swipeable="1">${bg}${fg}</div>`
 }
 
 // Sources 一覧: 全 source 実体の管理。編集 (URL/machineId/削除) へ。
 export function sourceManageRow(s: SourceDef): string {
   const { dotCls, note } = sourceDotNote(s)
+  const editBtn = actionButton('edit-source', icon('settings', { size: 18 }), {
+    cls: 'gear-btn',
+    attrs: { 'data-src': s.id },
+    title: 'Edit',
+    ariaLabel: 'Edit',
+  })
   return `<div class="src"><div class="src-head"><span class="conn-dot ${dotCls}"></span>
     <span class="src-name">${esc(s.label)}</span>
     <span class="src-note">${esc(note)}</span>
-    <button class="gear-btn" data-action="edit-source" data-src="${esc(s.id)}" title="Edit" aria-label="Edit">${icon('settings', { size: 18 })}</button></div></div>`
+    ${editBtn}</div></div>`
 }
 
 // preset への追加候補: まだこの preset に無い source。タップで preset へ追加。
 export function sourceAddRow(s: SourceDef): string {
   const { dotCls, note } = sourceDotNote(s)
+  const addBtn = actionButton('add-to-preset', 'Add', {
+    cls: 'link-btn',
+    attrs: { 'data-src': s.id },
+    title: 'Add to this preset',
+  })
   return `<div class="src"><div class="src-head"><span class="conn-dot ${dotCls}"></span>
     <span class="src-name">${esc(s.label)}</span>
     <span class="src-note">${esc(note)}</span>
-    <button class="link-btn" data-action="add-to-preset" data-src="${esc(s.id)}" title="Add to this preset">Add</button></div></div>`
+    ${addBtn}</div></div>`
 }
 
 // offline source の最終接続時刻を相対表記する ("Last seen 3m ago")。未接続は "Not connected"。
