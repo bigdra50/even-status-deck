@@ -276,6 +276,16 @@ companion が叩く `/api/status`・`/api/machine` を返すローカルサー�
 4. server source に `urls`（旧 `url?` を `urls[0]` へ）と `machineId`（次回接続テストで付与）を補完する。
 5. 既存の additive migration（ensureBuiltin / consolidateClock / normalizeVisibility / normalizeGlassLayout / pruneOrphans）は維持する。`pruneOrphans` は profile の `view` も対象に拡張する。
 
+### migration コードの生存期間ポリシー
+
+migration（`src/config/migration.ts`）の旧 version 分岐・撤去機能の掃除分岐は、**「もう参照が無い＝消せる」とは判断しない**。
+config は実機（Even アカウント単位の `setLocalStorage`）に永続し、何ヶ月も起動していないユーザーの旧 config が任意の時点で migrate に入ってくるため、削除は静かなデータ全損（CLAUDE.md「CONFIG_VERSION を安易に bump しない」と同型の事故）になる。
+
+- `migrateLegacyToV5`（v1/v2 machines 形式）・`migrateV3ToV5`・撤去機能の掃除分岐（places/geofence #76 等）は**意図的に残す**。「古いから消そう」という提案は本節を根拠に却下する。
+- 撤去した機能の定数でも legacy 移行が参照するものは消さない（CLAUDE.md「機能撤去時は knip + rg で残骸スイープ」の例外事項）。
+- 消してよくなる条件は「旧 version の config を持つ実機ユーザーが居ないと確認できたとき」だが、配布物の性質上それを観測する手段が無い。実質、migration 分岐は append-only と考える。
+- 複雑度の都合で整理したくなったら、削除ではなく抽出（PR #96 の手法: 挙動不変の helper 分割 + 既存移行テストを安全網にする）で対応する。
+
 ## 11. Phase ロードマップ
 
 ```
