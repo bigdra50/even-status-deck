@@ -6,7 +6,15 @@
 // 追加が要る(本 PR で追加)。AQI 規格(us/eu)は表示の選択(同一レスポンスに両方含まれる)なので、cache には生の
 // reading を保存し毎回 opts で doc を rebuild する(規格切替は再 fetch 不要で即反映 = geoinfo と同方式)。
 import type { OptionValues } from './config'
+import { getRoundedPosition } from './geo-position'
 import type { Group, Segment, SourceState, StatusDoc } from './status-types'
+import {
+  type GeoCacheEntry,
+  isCacheFresh,
+  isCacheStaleOk,
+  readGeoCache,
+  writeGeoCache,
+} from './ttl-cache'
 
 export const AIRQUALITY_GROUP_ID = 'airquality'
 
@@ -14,8 +22,6 @@ const HOST = 'https://air-quality-api.open-meteo.com'
 const CACHE_KEY = 'toolbar.airquality.cache'
 const FRESH_MS = 30 * 60_000 // AQI は時間粒度。30分は再取得しない。
 const STALE_MAX_MS = 6 * 60 * 60_000
-const GEO_TIMEOUT_MS = 10_000
-const GEO_MAX_AGE_MS = 30 * 60_000
 const FETCH_TIMEOUT_MS = 8_000
 
 // source 単位の表示オプション。AQI 規格(US/EU)のみ。両値は同一レスポンスに含まれるので表示の選択。
@@ -110,55 +116,18 @@ function errorDoc(message: string, ts: number): StatusDoc {
   return { version: 1, ts, groups: [group] }
 }
 
-function round2(n: number): number {
-  return Math.round(n * 100) / 100
-}
-
-type Cache = { lat: number; lon: number; fetchedAt: number; reading: AirqualityReading }
-
-function readCache(): Cache | null {
-  try {
-    if (typeof window === 'undefined') return null
-    const raw = window.localStorage.getItem(CACHE_KEY)
-    if (!raw) return null
-    const c = JSON.parse(raw) as Partial<Cache>
-    if (typeof c.lat !== 'number' || typeof c.lon !== 'number' || typeof c.fetchedAt !== 'number') {
-      return null
-    }
-    const rd = c.reading
-    if (!rd || typeof rd !== 'object') return null
-    const reading: AirqualityReading = {}
-    for (const k of ['usAqi', 'euAqi', 'pm25', 'pm10', 'pollenMax'] as const) {
-      if (typeof rd[k] === 'number') reading[k] = rd[k]
-    }
-    return { lat: c.lat, lon: c.lon, fetchedAt: c.fetchedAt, reading }
-  } catch {
-    return null
+// cache の payload(reading)型ガード。壊れた JSON / 型不一致のフィールドは落とす。
+function parseAirqualityReading(raw: unknown): AirqualityReading | null {
+  if (!raw || typeof raw !== 'object') return null
+  const rd = raw as Record<string, unknown>
+  const reading: AirqualityReading = {}
+  for (const k of ['usAqi', 'euAqi', 'pm25', 'pm10', 'pollenMax'] as const) {
+    if (typeof rd[k] === 'number') reading[k] = rd[k]
   }
+  return reading
 }
 
-function writeCache(c: Cache): void {
-  try {
-    if (typeof window === 'undefined') return
-    window.localStorage.setItem(CACHE_KEY, JSON.stringify(c))
-  } catch {
-    // quota 等は無視(best-effort)
-  }
-}
-
-function getPosition(): Promise<{ lat: number; lon: number }> {
-  return new Promise((resolve, reject) => {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      reject(new Error('geolocation unavailable'))
-      return
-    }
-    navigator.geolocation.getCurrentPosition(
-      (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude }),
-      (e) => reject(new Error(`geolocation error ${e.code}: ${e.message}`)),
-      { enableHighAccuracy: false, timeout: GEO_TIMEOUT_MS, maximumAge: GEO_MAX_AGE_MS },
-    )
-  })
-}
+type Cache = GeoCacheEntry<AirqualityReading>
 
 export function airqualityUrl(lat: number, lon: number): string {
   return (
@@ -238,8 +207,8 @@ function degraded(
   now: number,
   msg: string,
 ): StatusDoc {
-  if (cache && now - cache.fetchedAt < STALE_MAX_MS) {
-    return buildAirqualityDoc(cache.reading, opts, now, 'stale', 'using cached air quality')
+  if (isCacheStaleOk(cache, now, STALE_MAX_MS)) {
+    return buildAirqualityDoc(cache.payload, opts, now, 'stale', 'using cached air quality')
   }
   return errorDoc(msg, now)
 }
@@ -252,23 +221,21 @@ export async function airqualityStatus(
 ): Promise<StatusDoc | null> {
   const opts = readAirqualityOptions(options)
   const now = Date.now()
-  const cache = readCache()
-  if (cache && now - cache.fetchedAt < FRESH_MS) {
-    return buildAirqualityDoc(cache.reading, opts, cache.fetchedAt)
+  const cache = readGeoCache(CACHE_KEY, parseAirqualityReading)
+  if (isCacheFresh(cache, now, FRESH_MS)) {
+    return buildAirqualityDoc(cache.payload, opts, cache.fetchedAt)
   }
   if (now - lastFailAt < FAIL_BACKOFF_MS) return degraded(cache, opts, now, lastFailMsg)
   console.log('[airquality] requesting location…')
   try {
-    const pos = await getPosition()
+    const { lat, lon } = await getRoundedPosition()
     if (signal.aborted) return null
-    const lat = round2(pos.lat)
-    const lon = round2(pos.lon)
     const reading = await fetchAirquality(lat, lon, signal)
     if (signal.aborted) return null
     lastFailAt = 0
     console.log(`[airquality] ok us=${reading.usAqi ?? 'n/a'} eu=${reading.euAqi ?? 'n/a'}`)
     const at = Date.now()
-    writeCache({ lat, lon, fetchedAt: at, reading })
+    writeGeoCache(CACHE_KEY, { lat, lon, fetchedAt: at, payload: reading })
     return buildAirqualityDoc(reading, opts, at)
   } catch (err) {
     if (signal.aborted) return null
