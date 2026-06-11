@@ -290,6 +290,18 @@ export function resolveSourceOptions(cfg: Config, sourceId: string): OptionValue
   return applyDefaults(sourceOptionSchema(sourceId), sourceById(cfg, sourceId)?.options)
 }
 
+// clock segment 用 (#36 後方互換): time/date/order を SegMeta.format へ再合成して書き込む。
+// 戻り値: 書き込めたら true (未知 fieldId は false)。
+function setClockSegmentOption(sm: SegMeta, fieldId: string, raw: unknown): boolean {
+  const cur = parseClockFormat(sm.format ?? defaultClockFormat())
+  if (fieldId === 'time') cur.time = String(raw)
+  else if (fieldId === 'date') cur.date = String(raw)
+  else if (fieldId === 'order') cur.order = raw === 'date' ? 'date' : 'time'
+  else return false
+  sm.format = composeClockFormat(cur.time, cur.date, cur.order) || undefined
+  return true
+}
+
 // segment オプション 1 値を cfg に書き込む (mutate)。clock は format を再合成する (後方互換)。
 // 戻り値: 書き込めたら true (未知 field / segment 不在は false)。
 export function setSegmentOption(
@@ -303,13 +315,7 @@ export function setSegmentOption(
   const sm = findSegMeta(cfg, sourceId, groupId, segId)
   if (!sm) return false
   if (isClockDatetime(sourceId, groupId, segId)) {
-    const cur = parseClockFormat(sm.format ?? defaultClockFormat())
-    if (fieldId === 'time') cur.time = String(raw)
-    else if (fieldId === 'date') cur.date = String(raw)
-    else if (fieldId === 'order') cur.order = raw === 'date' ? 'date' : 'time'
-    else return false
-    sm.format = composeClockFormat(cur.time, cur.date, cur.order) || undefined
-    return true
+    return setClockSegmentOption(sm, fieldId, raw)
   }
   const field = segmentOptionSchema(sourceId, groupId, segId).find((f) => f.id === fieldId)
   if (!field) return false

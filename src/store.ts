@@ -125,18 +125,10 @@ export function setSourcesFromConfig(cfg: Config): void {
   setSources(enabledSources(cfg))
 }
 
-// ソース一覧を設定する (enabledSources で絞った list を受け取る)。
-// 変更/新規ソースだけ取得し、未変更は再 fetch しない (無駄な abort/取得を防ぐ)。消えたソースは掃除。
-export function setSources(next: SourceDef[]): void {
-  const prev = new Map(defs.map((d) => [d.id, d]))
-  // config.sources と同一参照にすると後続の push/mutation で diff が壊れるためクローンする。
-  defs = next.map((d) => ({ ...d }))
-  // 診断: 有効ソースの id:kind を出す (weather が client として登録されているか確認用)。
-  console.log('[store] sources:', defs.map((d) => `${d.id}:${d.kind}`).join(', ') || '(none)')
-  const ids = new Set(defs.map((d) => d.id))
-  // 消えたソースは status を捨て、in-flight fetch を abort + revision を進めて遅延応答を無効化する。
-  // (mountCompanion の暫定既定ソースのように、bridge 準備前に開始した fetch が後から
-  //  statuses[id] を zombie 書き込みし、幽霊ソースとして重複描画されるのを防ぐ。)
+// 消えたソースの status / in-flight fetch / revision / sig を掃除する。
+// (mountCompanion の暫定既定ソースのように、bridge 準備前に開始した fetch が後から
+//  statuses[id] を zombie 書き込みし、幽霊ソースとして重複描画されるのを防ぐ。)
+function cleanupRemovedStatuses(ids: Set<string>): void {
   for (const id of [...statuses.keys()]) if (!ids.has(id)) statuses.delete(id)
   const tracked = new Set([...revisions.keys(), ...inflight.keys()])
   for (const id of tracked) {
@@ -146,27 +138,45 @@ export function setSources(next: SourceDef[]): void {
     revisions.set(id, (revisions.get(id) ?? 0) + 1) // 進行中 fetch の遅延応答を破棄させる
     sigs.delete(id)
   }
-  // 消えた source の鮮度状態 + retry を掃除する。
+}
+
+// 消えたソースの鮮度状態 (failCount/retryTimer/lastSuccessAt) を掃除する。
+function cleanupRemovedHealth(ids: Set<string>): void {
   for (const id of [...failCount.keys(), ...retryTimers.keys(), ...lastSuccessAt.keys()]) {
     if (ids.has(id)) continue
     clearRetry(id)
     failCount.delete(id)
     lastSuccessAt.delete(id)
   }
-  for (const def of defs) {
-    const p = prev.get(def.id)
-    if (!p || !sameUrlSet(p, def) || p.kind !== def.kind) {
-      // 経路集合/種別が変わった source は旧エンドポイントの鮮度を引き継がない (urls 追加でも再試行)。
-      // 比較は順序非依存: preferUrl の failover reorder (集合は不変・順序だけ変化) を「経路変更」と
-      // 誤検知して鮮度/failover 学習を破棄する回帰を防ぐ (config [A,B] → in-memory [B,A] は同一集合)。
-      if (p) {
-        clearRetry(def.id)
-        failCount.delete(def.id)
-        lastSuccessAt.delete(def.id)
-      }
-      void refreshSource(def)
-    }
+}
+
+// prev と比較し、経路集合/種別が変わった (= 新規含む) source だけ鮮度を捨てて再取得する。
+// 比較は順序非依存: preferUrl の failover reorder (集合は不変・順序だけ変化) を「経路変更」と
+// 誤検知して鮮度/failover 学習を破棄する回帰を防ぐ (config [A,B] → in-memory [B,A] は同一集合)。
+function refreshIfChanged(def: SourceDef, prev: Map<string, SourceDef>): void {
+  const p = prev.get(def.id)
+  if (p && sameUrlSet(p, def) && p.kind === def.kind) return
+  // 経路集合/種別が変わった source は旧エンドポイントの鮮度を引き継がない (urls 追加でも再試行)。
+  if (p) {
+    clearRetry(def.id)
+    failCount.delete(def.id)
+    lastSuccessAt.delete(def.id)
   }
+  void refreshSource(def)
+}
+
+// ソース一覧を設定する (enabledSources で絞った list を受け取る)。
+// 変更/新規ソースだけ取得し、未変更は再 fetch しない (無駄な abort/取得を防ぐ)。消えたソースは掃除。
+export function setSources(next: SourceDef[]): void {
+  const prev = new Map(defs.map((d) => [d.id, d]))
+  // config.sources と同一参照にすると後続の push/mutation で diff が壊れるためクローンする。
+  defs = next.map((d) => ({ ...d }))
+  // 診断: 有効ソースの id:kind を出す (weather が client として登録されているか確認用)。
+  console.log('[store] sources:', defs.map((d) => `${d.id}:${d.kind}`).join(', ') || '(none)')
+  const ids = new Set(defs.map((d) => d.id))
+  cleanupRemovedStatuses(ids)
+  cleanupRemovedHealth(ids)
+  for (const def of defs) refreshIfChanged(def, prev)
 }
 
 // 2 source の経路集合が同一か (順序・重複を無視)。setSources の diff 判定に使う。
@@ -226,6 +236,48 @@ function clientProducer(
   return undefined
 }
 
+// 新 revision を払い出し、in-flight fetch を abort して新 controller を登録する。
+// server/client 両経路で revision/abort の作法を揃える共通前処理。
+function beginFetch(id: string): { rev: number; ctl: AbortController } {
+  const rev = (revisions.get(id) ?? 0) + 1
+  revisions.set(id, rev)
+  inflight.get(id)?.abort()
+  const ctl = new AbortController()
+  inflight.set(id, ctl)
+  return { rev, ctl }
+}
+
+// client: producer (geolocation→open-meteo 等) を呼ぶ。server と同じ revision/abort で
+// 遅延応答を破棄し、applyResult で鮮度/notify を共通処理する。producer 内で TTL キャッシュする。
+async function refreshClientSource(def: SourceDef): Promise<void> {
+  const produce = clientProducer(def.id)
+  console.log(`[store] client refresh ${def.id} producer=${produce ? 'yes' : 'NO'}`) // 診断
+  if (!produce) return
+  const { rev, ctl } = beginFetch(def.id)
+  let next: StatusDoc | null = null
+  try {
+    // client source の表示オプション(weather の単位/フォーマット等)を producer へ渡す。
+    // 単位変更時は producer 側の optSig が変わり TTL cache を跨いで即再取得する。
+    next = await produce(ctl.signal, def.options)
+  } catch {
+    next = null
+  }
+  if (rev !== revisions.get(def.id)) return // 遅延応答は破棄
+  applyResult(def, next)
+}
+
+// server: 複数経路を到達順に試す (先頭優先・失敗で次)。成功した経路を defs の先頭へ寄せ、次 poll で
+// 同経路を優先する (永続化はしない: config の urls 順はユーザー指定を尊重する)。
+async function refreshServerSource(def: SourceDef): Promise<void> {
+  const urls = sourceUrls(def)
+  if (!urls.length) return
+  const { rev, ctl } = beginFetch(def.id)
+  const hit = await fetchStatusFromUrls(urls, ctl.signal)
+  if (rev !== revisions.get(def.id)) return // 遅延応答は破棄
+  if (hit) preferUrl(def.id, hit.url)
+  applyResult(def, hit?.status ?? null)
+}
+
 async function refreshSource(def: SourceDef): Promise<void> {
   if (def.kind === 'builtin') {
     const doc = localStatus()
@@ -234,42 +286,8 @@ async function refreshSource(def: SourceDef): Promise<void> {
     notify()
     return
   }
-  // client: producer (geolocation→open-meteo 等) を呼ぶ。server と同じ revision/abort で
-  // 遅延応答を破棄し、applyResult で鮮度/notify を共通処理する。producer 内で TTL キャッシュする。
-  if (def.kind === 'client') {
-    const produce = clientProducer(def.id)
-    console.log(`[store] client refresh ${def.id} producer=${produce ? 'yes' : 'NO'}`) // 診断
-    if (!produce) return
-    const rev = (revisions.get(def.id) ?? 0) + 1
-    revisions.set(def.id, rev)
-    inflight.get(def.id)?.abort()
-    const ctl = new AbortController()
-    inflight.set(def.id, ctl)
-    let next: StatusDoc | null = null
-    try {
-      // client source の表示オプション(weather の単位/フォーマット等)を producer へ渡す。
-      // 単位変更時は producer 側の optSig が変わり TTL cache を跨いで即再取得する。
-      next = await produce(ctl.signal, def.options)
-    } catch {
-      next = null
-    }
-    if (rev !== revisions.get(def.id)) return // 遅延応答は破棄
-    applyResult(def, next)
-    return
-  }
-  const urls = sourceUrls(def)
-  if (!urls.length) return
-  const rev = (revisions.get(def.id) ?? 0) + 1
-  revisions.set(def.id, rev)
-  inflight.get(def.id)?.abort()
-  const ctl = new AbortController()
-  inflight.set(def.id, ctl)
-  // 複数経路を到達順に試す (先頭優先・失敗で次)。成功した経路を defs の先頭へ寄せ、次 poll で
-  // 同経路を優先する (永続化はしない: config の urls 順はユーザー指定を尊重する)。
-  const hit = await fetchStatusFromUrls(urls, ctl.signal)
-  if (rev !== revisions.get(def.id)) return // 遅延応答は破棄
-  if (hit) preferUrl(def.id, hit.url)
-  applyResult(def, hit?.status ?? null)
+  if (def.kind === 'client') return refreshClientSource(def)
+  return refreshServerSource(def)
 }
 
 export async function refreshAll(): Promise<void> {

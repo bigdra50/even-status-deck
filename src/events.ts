@@ -6,7 +6,7 @@
 // jettison/電池対策: events を広告しない source は long-poll しない。waitMs=25s で
 // idle churn を抑え、エラー時は backoff。urls が変わらない source はループを張り替えない。
 import { fetchEventsFrom, fetchMachineFrom } from './data'
-import type { OverlayEvent } from './event-types'
+import type { EventsDoc, OverlayEvent } from './event-types'
 
 export type EventSource = { id: string; urls: string[] }
 
@@ -141,6 +141,31 @@ async function firstReachable<T>(
   return null
 }
 
+// urls を到達順に試して events doc を 1 つ取る。到達した url を replyUrl として返す
+// (dialog 応答の POST 先に使う)。全経路失敗 / abort は null。
+async function fetchEventsDoc(loop: Loop): Promise<{ doc: EventsDoc; replyUrl: string } | null> {
+  for (const u of loop.urls) {
+    if (loop.ctl.signal.aborted) return null
+    const d = await fetchEventsFrom(u, loop.since, WAIT_MS, loop.ctl.signal)
+    if (d) return { doc: d, replyUrl: u }
+  }
+  return null
+}
+
+// doc.events を dedupe しつつ dispatch し、cursor を進める (reload 跨ぎ用に永続化)。
+function processEventsDoc(loop: Loop, doc: EventsDoc, replyUrl: string): void {
+  if (doc.reset) loop.seen.clear() // 連続性を捨てて cursor を採用
+  for (const e of doc.events) {
+    const k = `${e.providerId.length}:${e.providerId}:${e.id}`
+    if (loop.seen.has(k)) continue
+    remember(loop.seen, k, e.ts)
+    dispatchOverlay(e, replyUrl)
+  }
+  // cursor が進んだら reload 跨ぎ用に保存する (再開時の重複表示を防ぐ)。
+  if (doc.cursor > loop.since) saveSince(loop.storage, loop.id, doc.cursor)
+  loop.since = doc.cursor
+}
+
 async function runLoop(loop: Loop): Promise<void> {
   const { ctl } = loop
   // capability gate: events を広告しない source は long-poll しない (無駄な負荷を避ける)。
@@ -151,33 +176,13 @@ async function runLoop(loop: Loop): Promise<void> {
   if (!machine?.capabilities?.events) return
 
   while (!ctl.signal.aborted) {
-    // 到達した url を replyUrl として捕捉する (dialog 応答の POST 先に使う)。
-    let doc = null
-    let replyUrl = loop.urls[0] ?? ''
-    for (const u of loop.urls) {
-      if (ctl.signal.aborted) return
-      const d = await fetchEventsFrom(u, loop.since, WAIT_MS, ctl.signal)
-      if (d) {
-        doc = d
-        replyUrl = u
-        break
-      }
-    }
+    const fetched = await fetchEventsDoc(loop)
     if (ctl.signal.aborted) return
-    if (!doc) {
+    if (!fetched) {
       await sleep(ERROR_BACKOFF_MS, ctl.signal) // 全経路失敗 → backoff して再試行
       continue
     }
-    if (doc.reset) loop.seen.clear() // 連続性を捨てて cursor を採用
-    for (const e of doc.events) {
-      const k = `${e.providerId.length}:${e.providerId}:${e.id}`
-      if (loop.seen.has(k)) continue
-      remember(loop.seen, k, e.ts)
-      dispatchOverlay(e, replyUrl)
-    }
-    // cursor が進んだら reload 跨ぎ用に保存する (再開時の重複表示を防ぐ)。
-    if (doc.cursor > loop.since) saveSince(loop.storage, loop.id, doc.cursor)
-    loop.since = doc.cursor
+    processEventsDoc(loop, fetched.doc, fetched.replyUrl)
   }
 }
 

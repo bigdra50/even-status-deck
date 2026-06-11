@@ -66,6 +66,73 @@ function asState(v: unknown): SourceState | undefined {
   return v === 'ok' || v === 'stale' || v === 'error' ? v : undefined
 }
 
+// segment 1件を検証・サニタイズする。id/label/value のいずれかが欠落・型違いなら null (= 破棄)。
+function parseSegment(s: unknown): Segment | null {
+  if (!s || typeof s !== 'object') return null
+  const ss = s as Record<string, unknown>
+  if (typeof ss.id !== 'string' || typeof ss.label !== 'string' || typeof ss.value !== 'string') {
+    return null
+  }
+  if (ss.id.length > MAX_ID_LEN) return null
+  const seg: Segment = {
+    id: ss.id,
+    label: clip(ss.label, MAX_LABEL_LEN),
+    value: clip(ss.value, MAX_VALUE_LEN),
+  }
+  if (typeof ss.percent === 'number') seg.percent = ss.percent
+  if (typeof ss.reset === 'string') seg.reset = clip(ss.reset, MAX_RESET_LEN)
+  if (typeof ss.defaultEnabled === 'boolean') seg.defaultEnabled = ss.defaultEnabled
+  const segState = asState(ss.state)
+  if (segState) seg.state = segState
+  if (typeof ss.message === 'string') seg.message = clip(ss.message, MAX_MESSAGE_LEN)
+  return seg
+}
+
+// group.segments を検証・サニタイズし、MAX_SEGMENTS 件で打ち切る。
+function parseSegments(raw: unknown[]): Segment[] {
+  const segments: Segment[] = []
+  for (const s of raw) {
+    if (segments.length >= MAX_SEGMENTS) break
+    const seg = parseSegment(s)
+    if (seg) segments.push(seg)
+  }
+  return segments
+}
+
+// group.anchors (#38): 数値のみの小さなマップ。weather cache の readback で sun epoch を保持する
+// (落とすと reload 後に suncountdown が次の weather 再取得まで固まる)。
+// MAX_ANCHORS 件で打ち切り、空なら undefined (group.anchors を未設定にする)。
+function parseAnchors(raw: unknown): Record<string, number> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const a: Record<string, number> = {}
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (Object.keys(a).length >= MAX_ANCHORS) break
+    if (typeof v === 'number' && Number.isFinite(v) && k.length <= MAX_ID_LEN) a[k] = v
+  }
+  return Object.keys(a).length ? a : undefined
+}
+
+// group 1件を検証・サニタイズする。id/label/segments のいずれかが欠落・型違いなら null (= 破棄)。
+function parseGroup(g: unknown): Group | null {
+  if (!g || typeof g !== 'object') return null
+  const gg = g as Record<string, unknown>
+  if (typeof gg.id !== 'string' || typeof gg.label !== 'string' || !Array.isArray(gg.segments)) {
+    return null
+  }
+  if (gg.id.length > MAX_ID_LEN) return null
+  const group: Group = {
+    id: gg.id,
+    label: clip(gg.label, MAX_LABEL_LEN),
+    segments: parseSegments(gg.segments),
+  }
+  const grpState = asState(gg.state)
+  if (grpState) group.state = grpState
+  if (typeof gg.message === 'string') group.message = clip(gg.message, MAX_MESSAGE_LEN)
+  const anchors = parseAnchors(gg.anchors)
+  if (anchors) group.anchors = anchors
+  return group
+}
+
 // 受信 JSON を検証・サニタイズして StatusDoc を返す。3rd party サーバーの不正データで
 // 描画を壊さないため、不正 group/segment は破棄し、想定外フィールドも落とす。
 // group/segment 数と文字列長に上限を設け、巨大入力でフットプリントが膨れないようにする。
@@ -77,53 +144,8 @@ export function parseStatusDoc(x: unknown): StatusDoc | null {
   const groups: Group[] = []
   for (const g of d.groups) {
     if (groups.length >= MAX_GROUPS) break
-    if (!g || typeof g !== 'object') continue
-    const gg = g as Record<string, unknown>
-    if (typeof gg.id !== 'string' || typeof gg.label !== 'string' || !Array.isArray(gg.segments)) {
-      continue
-    }
-    if (gg.id.length > MAX_ID_LEN) continue
-    const segments: Segment[] = []
-    for (const s of gg.segments) {
-      if (segments.length >= MAX_SEGMENTS) break
-      if (!s || typeof s !== 'object') continue
-      const ss = s as Record<string, unknown>
-      if (
-        typeof ss.id !== 'string' ||
-        typeof ss.label !== 'string' ||
-        typeof ss.value !== 'string'
-      ) {
-        continue
-      }
-      if (ss.id.length > MAX_ID_LEN) continue
-      const seg: Segment = {
-        id: ss.id,
-        label: clip(ss.label, MAX_LABEL_LEN),
-        value: clip(ss.value, MAX_VALUE_LEN),
-      }
-      if (typeof ss.percent === 'number') seg.percent = ss.percent
-      if (typeof ss.reset === 'string') seg.reset = clip(ss.reset, MAX_RESET_LEN)
-      if (typeof ss.defaultEnabled === 'boolean') seg.defaultEnabled = ss.defaultEnabled
-      const segState = asState(ss.state)
-      if (segState) seg.state = segState
-      if (typeof ss.message === 'string') seg.message = clip(ss.message, MAX_MESSAGE_LEN)
-      segments.push(seg)
-    }
-    const group: Group = { id: gg.id, label: clip(gg.label, MAX_LABEL_LEN), segments }
-    const grpState = asState(gg.state)
-    if (grpState) group.state = grpState
-    if (typeof gg.message === 'string') group.message = clip(gg.message, MAX_MESSAGE_LEN)
-    // anchors (#38): 数値のみの小さなマップ。weather cache の readback で sun epoch を保持する
-    // (落とすと reload 後に suncountdown が次の weather 再取得まで固まる)。
-    if (gg.anchors && typeof gg.anchors === 'object') {
-      const a: Record<string, number> = {}
-      for (const [k, v] of Object.entries(gg.anchors as Record<string, unknown>)) {
-        if (Object.keys(a).length >= MAX_ANCHORS) break
-        if (typeof v === 'number' && Number.isFinite(v) && k.length <= MAX_ID_LEN) a[k] = v
-      }
-      if (Object.keys(a).length) group.anchors = a
-    }
-    groups.push(group)
+    const group = parseGroup(g)
+    if (group) groups.push(group)
   }
   return { version: d.version, ts: typeof d.ts === 'number' ? d.ts : Date.now(), groups }
 }

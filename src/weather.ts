@@ -87,16 +87,25 @@ export function readWeatherOptions(bag: OptionValues | undefined): WeatherOption
 }
 
 // WMO weather_code → 短い ASCII ラベル(glass 9 桁枠に収まる範囲)。
+// [min, max, label] の表引き(範囲は両端含む)。先頭から最初に一致したものを採用する。
+const WEATHER_CODE_RANGES: readonly [number, number, string][] = [
+  [0, 1, 'Clear'],
+  [2, 2, 'Cloudy'],
+  [3, 3, 'Overcast'],
+  [45, 45, 'Fog'],
+  [48, 48, 'Fog'],
+  [51, 57, 'Drizzle'],
+  [61, 67, 'Rain'],
+  [71, 77, 'Snow'],
+  [80, 82, 'Showers'],
+  [85, 86, 'Snow'],
+  [95, 99, 'Storm'],
+]
+
 export function weatherCodeText(code: number): string {
-  if (code === 0 || code === 1) return 'Clear'
-  if (code === 2) return 'Cloudy'
-  if (code === 3) return 'Overcast'
-  if (code === 45 || code === 48) return 'Fog'
-  if (code >= 51 && code <= 57) return 'Drizzle'
-  if (code >= 61 && code <= 67) return 'Rain'
-  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return 'Snow'
-  if (code >= 80 && code <= 82) return 'Showers'
-  if (code >= 95 && code <= 99) return 'Storm'
+  for (const [min, max, label] of WEATHER_CODE_RANGES) {
+    if (code >= min && code <= max) return label
+  }
   return 'Wx' // 未知/欠落コード
 }
 

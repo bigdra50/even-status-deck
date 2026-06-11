@@ -12,6 +12,7 @@
 //   - 対象は enabled な source/group/segment のみ。
 //   - 文言は glass shell が live status から解決する (collector は segRef を返すだけ)。
 import { activeView, BUILTIN_SOURCE_ID, type Config, enabledSources } from '../config'
+import type { GroupMeta, GroupRef, ViewGroup } from '../config/types'
 import { type ConditionTruth, type ConditionTruthMap, type DisplayUi, segKey } from './keys'
 
 const EDGE_COOLDOWN_MS = 30_000 // 同一 key の最小再発火間隔
@@ -46,6 +47,32 @@ type Candidate = {
   truth: ConditionTruth
 }
 
+// 1 group 内の display 指定 segment を候補へ積む (enabled のみ)。
+function collectGroupCandidates(
+  ref: GroupRef,
+  vg: ViewGroup,
+  meta: GroupMeta,
+  truthMap: ConditionTruthMap,
+  out: Candidate[],
+): void {
+  for (const sm of meta.segments) {
+    const disp = sm.visibility?.display
+    if (!disp) continue
+    if (vg.segments[sm.id] === false) continue // segment 無効
+    const key = segKey(ref.sourceId, ref.groupId, sm.id)
+    out.push({
+      key,
+      sourceId: ref.sourceId,
+      groupId: ref.groupId,
+      segId: sm.id,
+      ui: disp.ui,
+      text: disp.text,
+      durationMs: disp.durationMs,
+      truth: truthMap.get(key) ?? 'unknown',
+    })
+  }
+}
+
 // active view 順に display 指定の候補を集める (enabled のみ)。
 function collectDisplayCandidates(config: Config, truthMap: ConditionTruthMap): Candidate[] {
   const view = activeView(config)
@@ -57,22 +84,7 @@ function collectDisplayCandidates(config: Config, truthMap: ConditionTruthMap): 
     if (!vg?.enabled) continue
     const meta = config.groups[ref.sourceId]?.[ref.groupId]
     if (!meta) continue
-    for (const sm of meta.segments) {
-      const disp = sm.visibility?.display
-      if (!disp) continue
-      if (vg.segments[sm.id] === false) continue // segment 無効
-      const key = segKey(ref.sourceId, ref.groupId, sm.id)
-      out.push({
-        key,
-        sourceId: ref.sourceId,
-        groupId: ref.groupId,
-        segId: sm.id,
-        ui: disp.ui,
-        text: disp.text,
-        durationMs: disp.durationMs,
-        truth: truthMap.get(key) ?? 'unknown',
-      })
-    }
+    collectGroupCandidates(ref, vg, meta, truthMap, out)
   }
   return out
 }

@@ -107,6 +107,34 @@ test('weatherCodeText: WMO code を短い ASCII ラベルへ', () => {
   expect(weatherCodeText(123)).toBe('Wx') // 未知コード
 })
 
+// 旧 if-chain の出力を code ごとに列挙した表 (リファクタ前の仕様を pin する)。
+// [min, max, label] の範囲表 (両端含む)。weatherCodeText の出力が code 0-99 全件で
+// この表と一致することを確認する (リファクタで範囲の境界がずれていないかの網羅チェック)。
+const LEGACY_WEATHER_CODE_RANGES: readonly [number, number, string][] = [
+  [0, 1, 'Clear'],
+  [2, 2, 'Cloudy'],
+  [3, 3, 'Overcast'],
+  [45, 45, 'Fog'],
+  [48, 48, 'Fog'],
+  [51, 57, 'Drizzle'],
+  [61, 67, 'Rain'],
+  [71, 77, 'Snow'],
+  [80, 82, 'Showers'],
+  [85, 86, 'Snow'],
+  [95, 99, 'Storm'],
+]
+
+function legacyWeatherCodeText(code: number): string {
+  const hit = LEGACY_WEATHER_CODE_RANGES.find(([min, max]) => code >= min && code <= max)
+  return hit ? hit[2] : 'Wx'
+}
+
+test('weatherCodeText: code 0-99 全件で旧仕様表と同一の出力', () => {
+  for (let code = 0; code <= 99; code++) {
+    expect(weatherCodeText(code)).toBe(legacyWeatherCodeText(code))
+  }
+})
+
 test('buildWeatherDoc: 既定 reading は temp/cond/wind のみ (拡張/sun は欠落で push しない)', () => {
   const doc = buildWeatherDoc(baseReading, DEFAULT_WEATHER_OPTIONS, 1000)
   expect(doc.groups).toHaveLength(1)
