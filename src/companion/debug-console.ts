@@ -1,6 +1,7 @@
 // ── デバッグコンソール (実験/検証用) ──
 // 実機 (WKWebView) には devtools が無いため、console.* を捕捉して glass preview の下の
 // 折りたたみパネルに出す。User/Geo/IP の各プローブで取得可否を実機検証するのに使う。
+import { diagCounts } from '../diag-counters'
 import { esc } from '../escape'
 import { icon } from '../icons'
 
@@ -56,6 +57,13 @@ function dbgLineHtml(e: DbgEntry): string {
 function dbgListInnerHtml(): string {
   const rows = dbgLogs.filter((e) => matchesFilter(e.text))
   return rows.length ? rows.map(dbgLineHtml).join('') : '<div class="cmp-sub">No logs</div>'
+}
+
+// #4 定常状態計測用の 1 行表示。save/notify/render の累積回数を出し、定常状態 (poll 安定後)
+// で save が増えない事を実機で確認する (CLAUDE.md タスク参照)。
+function diagLine(): string {
+  const c = diagCounts()
+  return `diag save:${c.save} notify:${c.notify} render:${c.render}`
 }
 
 function updateDbgCount(): void {
@@ -195,6 +203,7 @@ export function renderDbgConsole(): string {
   if (!dbgOpen) return head
   return `${head}
     <div class="dbgc">
+      <div class="dbgc-diag">${diagLine()}</div>
       <input class="dbgc-filter" type="text" placeholder="Filter…" value="${esc(dbgFilter)}" aria-label="Filter logs" />
       <div id="dbg-list" class="dbgc-list">${dbgListInnerHtml()}</div>
     </div>`

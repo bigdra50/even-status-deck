@@ -1442,6 +1442,11 @@ button.owner-badge:hover {
   gap: 6px;
   margin-top: 4px;
 }
+.dbgc-diag {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+}
 .dbgc-filter {
   width: 100%;
   box-sizing: border-box;

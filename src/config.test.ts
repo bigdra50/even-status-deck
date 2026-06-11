@@ -685,3 +685,44 @@ test('syncSourceWithStatus: live group label を lastLabel に捕捉する (再 
   // 空のまま再 sync しても no-op
   expect(syncSourceWithStatus(cfg, src.id, labeledDoc('claude-limits', ''))).toBe(false)
 })
+
+// ── 定常状態 idempotence (#88 Phase 4 / #4): 構造不変の poll で saveConfig churn を起こさない ──
+
+// 複数 segment (値が poll ごとに変わり得る) を持つ claude-limits group の StatusDoc。
+function claudeLimitsDoc(values: { cost: string; msgs: string }): StatusDoc {
+  return {
+    version: 1,
+    ts: Date.now(),
+    groups: [
+      {
+        id: 'claude-limits',
+        label: 'Claude',
+        segments: [
+          { id: 'cost', label: 'Cost', value: values.cost, percent: Number(values.cost) },
+          { id: 'msgs', label: 'Msgs', value: values.msgs },
+        ],
+      },
+    ],
+  }
+}
+
+test('syncSourceWithStatus: 同一 doc を二回 sync しても 2 回目は false (構造不変 = no-op)', () => {
+  const cfg = emptyConfig()
+  const src = addServer(cfg, 'Mac')
+  const doc = claudeLimitsDoc({ cost: '10', msgs: '5' })
+  expect(syncSourceWithStatus(cfg, src.id, doc)).toBe(true) // 初回: group/segment 新規登録
+  expect(syncSourceWithStatus(cfg, src.id, doc)).toBe(false) // 2 回目: 構造・lastLabel 不変
+})
+
+test('syncSourceWithStatus: segment の値だけが変化する poll は changed=false (構造/lastLabel 不変)', () => {
+  const cfg = emptyConfig()
+  const src = addServer(cfg, 'Mac')
+  // 初回 sync で素材登録 (changed=true)
+  expect(syncSourceWithStatus(cfg, src.id, claudeLimitsDoc({ cost: '10', msgs: '5' }))).toBe(true)
+  // 値だけ変わる定常 poll を繰り返しても、構造/lastLabel が不変なら false (saveConfig churn 無し)
+  expect(syncSourceWithStatus(cfg, src.id, claudeLimitsDoc({ cost: '11', msgs: '5' }))).toBe(false)
+  expect(syncSourceWithStatus(cfg, src.id, claudeLimitsDoc({ cost: '99', msgs: '123' }))).toBe(
+    false,
+  )
+  expect(syncSourceWithStatus(cfg, src.id, claudeLimitsDoc({ cost: '0', msgs: '0' }))).toBe(false)
+})

@@ -1,4 +1,5 @@
 import { ensureDefaultServer, loadConfig, saveConfig } from '../config'
+import { bumpDiag } from '../diag-counters'
 import { setSourcesFromConfig, startPolling, subscribe } from '../store'
 import { onClick } from './actions'
 import { onChange } from './conditions-ui'
@@ -60,6 +61,7 @@ function afterRenderWiring(): void {
 
 function render(): void {
   if (!ctx.root) return
+  bumpDiag('render') // #4 定常状態計測: 定常状態で render が増えない事を実機で確認するため
   // Home を出す直前に提案を最新化する。store の health 変化は Home 以外 (source-edit) でも
   // 起こり得る (接続テストで追加した source が即 offline になる等) が、その間の notify は
   // onStoreUpdate が握り潰すため、Home へ戻った描画時に必ず計算し直してバナーを正す。
