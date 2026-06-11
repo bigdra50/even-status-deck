@@ -1,4 +1,5 @@
 import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
+import { bumpDiag } from '../diag-counters'
 import { emptyConfig } from './defaults'
 import { migrate } from './migration'
 import type { Config } from './types'
@@ -35,6 +36,7 @@ export async function loadConfig(): Promise<Config> {
 }
 
 export async function saveConfig(c: Config): Promise<void> {
+  bumpDiag('save') // #4 定常状態計測: 定常状態で save が増えない事を実機で確認するため
   memory = c
   if (!bridge) {
     // bridge 不在 (ブラウザ dev / 未接続): メモリのみ。glass/companion へ即時通知。

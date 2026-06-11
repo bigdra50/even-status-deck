@@ -12,9 +12,18 @@ import {
   sourceUrls,
 } from './config'
 import { fetchStatusFromUrls } from './data'
+import { bumpDiag } from './diag-counters'
 import { recordStatusHistory } from './history'
 import { locationStatus } from './location'
 import type { StatusDoc } from './status-types'
+import {
+  healthFromFailCount,
+  RETRY_MAX,
+  retryDelayMs,
+  shouldNotifyOnFailure,
+  shouldNotifyOnSuccess,
+  statusSig,
+} from './store-health'
 
 type Listener = () => void
 
@@ -28,11 +37,9 @@ const sigs = new Map<string, string>() // sourceId -> 直近 status の内容シ
 const lastSuccessAt = new Map<string, number>() // sourceId -> 直近成功時刻 (Last seen 表示 + 鮮度)
 const failCount = new Map<string, number>() // sourceId -> 連続失敗回数 (0=健全 / 1..RETRY_MAX=stale / >RETRY_MAX=offline)
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>() // 失敗時の短期 retry
-// 失敗時の短期 retry backoff。瞬断は retry で吸収し、全滅 (~70s) で offline 確定。
-const RETRY_BACKOFF_MS = [10_000, 20_000, 40_000]
-const RETRY_MAX = RETRY_BACKOFF_MS.length
 
 function notify(): void {
+  bumpDiag('notify') // #4 定常状態計測: notify 頻度を実機で確認するための診断カウンタ
   for (const l of listeners) l()
 }
 
@@ -63,9 +70,7 @@ export function getAllStatuses(): Record<string, StatusDoc | null> {
 export function getSourceHealth(id: string): 'online' | 'stale' | 'offline' {
   if (defs.find((d) => d.id === id)?.kind === 'builtin') return 'online'
   const n = failCount.get(id) ?? 0
-  if (n > RETRY_MAX) return 'offline'
-  if (n > 0) return 'stale'
-  return statuses.get(id) ? 'online' : 'offline'
+  return healthFromFailCount(n, statuses.get(id) != null)
 }
 
 // 直近成功時刻 (companion の "Last seen Xm ago" 表示用)。未成功は null。
@@ -102,17 +107,15 @@ function clearRetry(id: string): void {
 // 失敗回数に応じた backoff で retry を 1 回仕込む (stale 窓 1..RETRY_MAX の間のみ)。
 function scheduleRetry(def: SourceDef): void {
   const n = failCount.get(def.id) ?? 0
-  if (n < 1 || n > RETRY_MAX) return
+  const delay = retryDelayMs(n)
+  if (delay === undefined) return
   clearRetry(def.id)
   retryTimers.set(
     def.id,
-    setTimeout(
-      () => {
-        retryTimers.delete(def.id)
-        void refreshSource(def)
-      },
-      RETRY_BACKOFF_MS[n - 1],
-    ),
+    setTimeout(() => {
+      retryTimers.delete(def.id)
+      void refreshSource(def)
+    }, delay),
   )
 }
 
@@ -185,17 +188,6 @@ function preferUrl(id: string, url: string): void {
   def.urls = [url, ...def.urls.slice(0, idx), ...def.urls.slice(idx + 1)]
 }
 
-// status の内容シグネチャ (ts 除く)。同一なら notify せず無駄な集約/再描画を起こさない。
-function statusSig(d: StatusDoc): string {
-  // state も含める: 値据え置きで state だけ変化 (例 ok→stale) しても再描画が要る (PROTOCOL §3)。
-  return d.groups
-    .map(
-      (g) =>
-        `${g.id}${g.state ?? ''}:${g.segments.map((s) => `${s.id}=${s.value}|${s.percent ?? ''}|${s.reset ?? ''}|${s.state ?? ''}`).join(',')}`,
-    )
-    .join(';')
-}
-
 // fetch/produce 結果 (StatusDoc|null) の共通後処理。成功は status 更新 + 鮮度リセット + 変化時 notify、
 // 失敗は failCount++ + retry。server (URL fetch) と client (producer) の両方から呼ぶ。
 function applyResult(def: SourceDef, next: StatusDoc | null): void {
@@ -210,7 +202,7 @@ function applyResult(def: SourceDef, next: StatusDoc | null): void {
     const sigChanged = sigs.get(def.id) !== sig
     sigs.set(def.id, sig)
     // 値変化 or offline/stale からの復帰で再描画 (それ以外の同値 poll は churn 抑制で無通知)。
-    if (sigChanged || wasUnhealthy) notify()
+    if (shouldNotifyOnSuccess(sigChanged, wasUnhealthy)) notify()
     return
   }
   // 失敗: 直近成功を stale 保持。retry を重ね、尽きたら offline 確定。
@@ -219,7 +211,7 @@ function applyResult(def: SourceDef, next: StatusDoc | null): void {
   if (n <= RETRY_MAX) scheduleRetry(def)
   // health 遷移時のみ notify: online->stale (n=1) / stale->offline (n=RETRY_MAX+1)。
   // 中間 retry 失敗 (n=2..RETRY_MAX) は health 不変なので無通知で churn 抑制。
-  if (n === 1 || n === RETRY_MAX + 1) notify()
+  if (shouldNotifyOnFailure(n)) notify()
 }
 
 // client source の producer。位置は WebView の geolocation でしか取れないため server ではなく client
