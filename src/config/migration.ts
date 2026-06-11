@@ -31,6 +31,7 @@ import type {
   GAlign,
   GroupMeta,
   GroupRef,
+  Profile,
   ProfileView,
   SegMeta,
   SourceDef,
@@ -159,18 +160,8 @@ const LOCATION_MERGE_MAP: { src: string; grp: string; newGrp: string }[] = [
   { src: PLACES_SOURCE_ID, grp: PLACES_GROUP_ID, newGrp: LOCATION_PLACE_GROUP_ID },
 ]
 
-// 旧 5 location source を 1 つの client.location(2 group: weather/place)へ畳む(group 統合)。
-// source id remap に加え group id remap + segment 再グルーピングを伴う。素材・view・groupOrder・
-// glassLayout・options・enabledSourceIds の全層を移送する。
-// 冪等: 旧 source が 1 つも無ければ no-op(新規/移行後の再実行で安定)。
-// codex 条件: disabled だった旧 source 由来の segment は view 非表示(false)で残す(Location 有効化で復活させない)。
-function migrateLocationSourcesMerge(c: Config): void {
-  const oldIds = new Set(LOCATION_MERGE_MAP.map((m) => m.src))
-  if (!c.sources.some((s) => oldIds.has(s.id))) return
-  ensureClientLocation(c) // 統合先を確保(origin app_bundled / groups 枠)
-  const destGroups = c.groups[LOCATION_SOURCE_ID]
-
-  // 1. 素材(GroupMeta.segments)を統合先 group へマージ(seg id 衝突は先勝ち)。
+// 1. 素材(GroupMeta.segments)を統合先 group へマージ(seg id 衝突は先勝ち)。
+function mergeLocationGroupMeta(c: Config, destGroups: Record<string, GroupMeta>): void {
   for (const { src, grp, newGrp } of LOCATION_MERGE_MAP) {
     const fromMeta = c.groups[src]?.[grp]
     if (!fromMeta) continue
@@ -183,89 +174,118 @@ function migrateLocationSourcesMerge(c: Config): void {
       seen.add(sm.id)
     }
   }
+}
 
-  // 2. options: 旧 source の options バッグを統合先へマージ(field id は非衝突。既存 dest 値を優先)。
+// 2. options: 旧 source の options バッグを統合先へマージ(field id は非衝突。既存 dest 値を優先)。
+function mergeLocationOptions(c: Config): void {
   const destSrc = c.sources.find((s) => s.id === LOCATION_SOURCE_ID)
-  if (destSrc) {
-    for (const { src } of LOCATION_MERGE_MAP) {
-      const from = c.sources.find((s) => s.id === src)
-      if (from?.options) destSrc.options = { ...from.options, ...(destSrc.options ?? {}) }
+  if (!destSrc) return
+  for (const { src } of LOCATION_MERGE_MAP) {
+    const from = c.sources.find((s) => s.id === src)
+    if (from?.options) destSrc.options = { ...from.options, ...(destSrc.options ?? {}) }
+  }
+}
+
+// 3a. enabledSourceIds: 旧のどれかが有効なら client.location を旧の先頭位置へ挿入。旧は全除去。
+function remapLocationEnabledSourceIds(p: Profile, oldIds: Set<string>, anyEnabled: boolean): void {
+  const firstIdx = p.enabledSourceIds.findIndex((sid) => oldIds.has(sid))
+  p.enabledSourceIds = p.enabledSourceIds.filter((sid) => !oldIds.has(sid))
+  if (anyEnabled && !p.enabledSourceIds.includes(LOCATION_SOURCE_ID)) {
+    if (firstIdx >= 0) p.enabledSourceIds.splice(firstIdx, 0, LOCATION_SOURCE_ID)
+    else p.enabledSourceIds.push(LOCATION_SOURCE_ID)
+  }
+}
+
+// 3b. view.groups: 旧 ViewGroup を統合先 group へマージ。disabled だった旧 source の segment は
+//     view 非表示(false)に落とす(復活防止)。group enabled は寄与 source のどれかが有効なら true。
+function mergeLocationViewGroups(p: Profile, enabledOld: Set<string>): void {
+  p.view.groups[LOCATION_SOURCE_ID] ??= {}
+  const destView = p.view.groups[LOCATION_SOURCE_ID]
+  for (const { src, grp, newGrp } of LOCATION_MERGE_MAP) {
+    const fromVg = p.view.groups[src]?.[grp]
+    if (!fromVg) continue
+    const wasEnabled = enabledOld.has(src)
+    destView[newGrp] ??= {
+      enabled: false,
+      segments: {},
+      showDefaultLabel: defaultShowGroupLabel(newGrp),
+    }
+    const dvg = destView[newGrp]
+    dvg.enabled = dvg.enabled || (fromVg.enabled ?? true)
+    for (const [segId, vis] of Object.entries(fromVg.segments ?? {})) {
+      dvg.segments[segId] = wasEnabled ? (vis ?? true) : false
     }
   }
+  for (const { src } of LOCATION_MERGE_MAP) delete p.view.groups[src]
+}
 
-  // 3. profile ごとに enabled 状態と view を統合先 group/segment へ落とす。
-  for (const p of c.profiles) {
-    const enabledOld = new Set(
-      LOCATION_MERGE_MAP.filter((m) => p.enabledSourceIds.includes(m.src)).map((m) => m.src),
+// 3c. groupOrder: {oldSrc, oldGrp} → {client.location, newGrp}。重複は先勝ちで dedupe。
+function remapLocationGroupOrder(p: Profile): void {
+  const seenOrder = new Set<string>()
+  p.view.groupOrder = p.view.groupOrder.flatMap((r) => {
+    const m = LOCATION_MERGE_MAP.find((x) => x.src === r.sourceId && x.grp === r.groupId)
+    const ref: GroupRef = m
+      ? { sourceId: LOCATION_SOURCE_ID, groupId: m.newGrp }
+      : { sourceId: r.sourceId, groupId: r.groupId }
+    const k = `${ref.sourceId}|${ref.groupId}`
+    if (seenOrder.has(k)) return []
+    seenOrder.add(k)
+    return [ref]
+  })
+}
+
+// 3d. 全行集合: segKey の sourceId+groupId を remap。remap した location key だけ集合内で dedupe
+//     (@right / customLabel / 他 source key は素通し・dedupe しない = 複数行の @right を保つ)。
+function remapLocationRowSets(p: ProfileView): void {
+  for (const rs of viewRowSets(p)) {
+    const seenKey = new Set<string>()
+    rs.write(
+      rs.read().map((row) =>
+        row.flatMap((k) => {
+          const parts = k.split('|')
+          const m =
+            parts.length >= 3
+              ? LOCATION_MERGE_MAP.find((x) => x.src === parts[0] && x.grp === parts[1])
+              : undefined
+          if (!m) return [k]
+          parts[0] = LOCATION_SOURCE_ID
+          parts[1] = m.newGrp
+          const remapped = parts.join('|')
+          if (seenKey.has(remapped)) return []
+          seenKey.add(remapped)
+          return [remapped]
+        }),
+      ),
     )
-    const anyEnabled = enabledOld.size > 0
-
-    // 3a. enabledSourceIds: 旧のどれかが有効なら client.location を旧の先頭位置へ挿入。旧は全除去。
-    const firstIdx = p.enabledSourceIds.findIndex((sid) => oldIds.has(sid))
-    p.enabledSourceIds = p.enabledSourceIds.filter((sid) => !oldIds.has(sid))
-    if (anyEnabled && !p.enabledSourceIds.includes(LOCATION_SOURCE_ID)) {
-      if (firstIdx >= 0) p.enabledSourceIds.splice(firstIdx, 0, LOCATION_SOURCE_ID)
-      else p.enabledSourceIds.push(LOCATION_SOURCE_ID)
-    }
-
-    // 3b. view.groups: 旧 ViewGroup を統合先 group へマージ。disabled だった旧 source の segment は
-    //     view 非表示(false)に落とす(復活防止)。group enabled は寄与 source のどれかが有効なら true。
-    p.view.groups[LOCATION_SOURCE_ID] ??= {}
-    const destView = p.view.groups[LOCATION_SOURCE_ID]
-    for (const { src, grp, newGrp } of LOCATION_MERGE_MAP) {
-      const fromVg = p.view.groups[src]?.[grp]
-      if (!fromVg) continue
-      const wasEnabled = enabledOld.has(src)
-      destView[newGrp] ??= {
-        enabled: false,
-        segments: {},
-        showDefaultLabel: defaultShowGroupLabel(newGrp),
-      }
-      const dvg = destView[newGrp]
-      dvg.enabled = dvg.enabled || (fromVg.enabled ?? true)
-      for (const [segId, vis] of Object.entries(fromVg.segments ?? {})) {
-        dvg.segments[segId] = wasEnabled ? (vis ?? true) : false
-      }
-    }
-    for (const { src } of LOCATION_MERGE_MAP) delete p.view.groups[src]
-
-    // 3c. groupOrder: {oldSrc, oldGrp} → {client.location, newGrp}。重複は先勝ちで dedupe。
-    const seenOrder = new Set<string>()
-    p.view.groupOrder = p.view.groupOrder.flatMap((r) => {
-      const m = LOCATION_MERGE_MAP.find((x) => x.src === r.sourceId && x.grp === r.groupId)
-      const ref: GroupRef = m
-        ? { sourceId: LOCATION_SOURCE_ID, groupId: m.newGrp }
-        : { sourceId: r.sourceId, groupId: r.groupId }
-      const k = `${ref.sourceId}|${ref.groupId}`
-      if (seenOrder.has(k)) return []
-      seenOrder.add(k)
-      return [ref]
-    })
-
-    // 3d. 全行集合: segKey の sourceId+groupId を remap。remap した location key だけ集合内で dedupe
-    //     (@right / customLabel / 他 source key は素通し・dedupe しない = 複数行の @right を保つ)。
-    for (const rs of viewRowSets(p.view)) {
-      const seenKey = new Set<string>()
-      rs.write(
-        rs.read().map((row) =>
-          row.flatMap((k) => {
-            const parts = k.split('|')
-            const m =
-              parts.length >= 3
-                ? LOCATION_MERGE_MAP.find((x) => x.src === parts[0] && x.grp === parts[1])
-                : undefined
-            if (!m) return [k]
-            parts[0] = LOCATION_SOURCE_ID
-            parts[1] = m.newGrp
-            const remapped = parts.join('|')
-            if (seenKey.has(remapped)) return []
-            seenKey.add(remapped)
-            return [remapped]
-          }),
-        ),
-      )
-    }
   }
+}
+
+// 3. profile ごとに enabled 状態と view を統合先 group/segment へ落とす。
+function mergeLocationProfileView(p: Profile, oldIds: Set<string>): void {
+  const enabledOld = new Set(
+    LOCATION_MERGE_MAP.filter((m) => p.enabledSourceIds.includes(m.src)).map((m) => m.src),
+  )
+  const anyEnabled = enabledOld.size > 0
+  remapLocationEnabledSourceIds(p, oldIds, anyEnabled)
+  mergeLocationViewGroups(p, enabledOld)
+  remapLocationGroupOrder(p)
+  remapLocationRowSets(p.view)
+}
+
+// 旧 5 location source を 1 つの client.location(2 group: weather/place)へ畳む(group 統合)。
+// source id remap に加え group id remap + segment 再グルーピングを伴う。素材・view・groupOrder・
+// glassLayout・options・enabledSourceIds の全層を移送する。
+// 冪等: 旧 source が 1 つも無ければ no-op(新規/移行後の再実行で安定)。
+// codex 条件: disabled だった旧 source 由来の segment は view 非表示(false)で残す(Location 有効化で復活させない)。
+function migrateLocationSourcesMerge(c: Config): void {
+  const oldIds = new Set(LOCATION_MERGE_MAP.map((m) => m.src))
+  if (!c.sources.some((s) => oldIds.has(s.id))) return
+  ensureClientLocation(c) // 統合先を確保(origin app_bundled / groups 枠)
+  const destGroups = c.groups[LOCATION_SOURCE_ID]
+
+  mergeLocationGroupMeta(c, destGroups)
+  mergeLocationOptions(c)
+  for (const p of c.profiles) mergeLocationProfileView(p, oldIds)
 
   // 4. 旧素材 groups + 旧 SourceDef + tombstone を削除。
   for (const { src } of LOCATION_MERGE_MAP) {
@@ -336,6 +356,25 @@ type V3Config = {
   glassLayout?: unknown
   imu?: ImuConfig
 }
+// v3/legacy 共通の移行末尾処理: location merge / nav・geofence 撤去 / 各種 normalize / pages 投影 /
+// orphan 掃除をまとめて流す。withConsolidateClock=true のとき normalizeProfileView の後に
+// consolidateClock(cfg) を挟む (v3 のみ。legacy は呼ばない = 既存挙動を変えない)。
+function finalizeLegacyMigration(cfg: Config, withConsolidateClock: boolean): Config {
+  // builtin が先頭に来るよう ensureBuiltin を再適用 (順序 + enabledSourceIds)。
+  ensureBuiltin(cfg)
+  migrateLocationSourcesMerge(cfg) // 旧 location source があれば畳む(冪等・防御的)
+  ensureClientLocation(cfg)
+  migrateDropPlaceNav(cfg) // 距離/方位ナビ(#42)撤廃: place group の pl_xxxx/here orphan を掃除
+  cleanupPlacesGeofence(cfg) // 保存地点/geofence(#43)撤去
+  normalizeMetaVisibilityAll(cfg)
+  for (const p of cfg.profiles) normalizeProfileView(p)
+  if (withConsolidateClock) consolidateClock(cfg)
+  normalizeDisplayMeta(cfg) // 表示モデル Phase1: category 等を seed (v5Same と同経路)
+  for (const p of cfg.profiles) backfillPages(p.view) // glassLayout→pages[0] 投影
+  pruneOrphans(cfg)
+  return cfg
+}
+
 function migrateV3ToV5(old: V3Config): Config {
   const cfg = emptyConfig()
   cfg.imu = old.imu ?? cfg.imu
@@ -366,19 +405,25 @@ function migrateV3ToV5(old: V3Config): Config {
   // 旧 source を Default の enabledSourceIds に集約する(v3 の見た目を維持)。ただし client source
   // (weather/geoinfo 等)は opt-in なので既定 ON にしない(さもないと旧 config の升級で位置許可/外部 fetch が走る)。
   def.enabledSourceIds = cfg.sources.filter((s) => s.kind !== 'client').map((s) => s.id)
-  // builtin が先頭に来るよう ensureBuiltin を再適用 (順序 + enabledSourceIds)。
-  ensureBuiltin(cfg)
-  migrateLocationSourcesMerge(cfg) // 旧 location source があれば畳む(v3 は通常無いが冪等・防御的)
-  ensureClientLocation(cfg)
-  migrateDropPlaceNav(cfg) // 距離/方位ナビ(#42)撤廃: place group の pl_xxxx/here orphan を掃除
-  cleanupPlacesGeofence(cfg) // 保存地点/geofence(#43)撤去
-  normalizeMetaVisibilityAll(cfg)
-  for (const p of cfg.profiles) normalizeProfileView(p)
-  consolidateClock(cfg)
-  normalizeDisplayMeta(cfg) // 表示モデル Phase1: clock 統合の後に category 等を seed (v5Same と同経路)
-  for (const p of cfg.profiles) backfillPages(p.view) // glassLayout→pages[0] 投影
-  pruneOrphans(cfg)
-  return cfg
+  return finalizeLegacyMigration(cfg, true)
+}
+
+// 旧 OldGroupCfg 1 件を素材 (GroupMeta) と view (ViewGroup) へ分配する。
+function splitOneGroup(gid: string, gc: OldGroupCfg): { meta: GroupMeta; vg: ViewGroup } {
+  const meta: GroupMeta = { segments: [] }
+  const segVis: Record<string, boolean> = {}
+  for (const sc of gc.segments ?? []) {
+    const sm: SegMeta = { id: sc.id }
+    if (sc.format) sm.format = sc.format
+    if (sc.visibility) sm.visibility = sc.visibility
+    meta.segments.push(sm)
+    segVis[sc.id] = sc.enabled ?? true
+  }
+  const vg: ViewGroup = { enabled: gc.enabled ?? true, segments: segVis }
+  if (gc.expanded) vg.expanded = true
+  if (gc.align) vg.align = gc.align
+  vg.showDefaultLabel = gc.showDefaultLabel ?? defaultShowGroupLabel(gid)
+  return { meta, vg }
 }
 
 // 旧 GroupCfg 群を素材 (cfg.groups[sid]) と view (view.groups[sid]) へ分配する。
@@ -391,65 +436,46 @@ function splitGroupsInto(
   cfg.groups[sid] ??= {}
   view.groups[sid] ??= {}
   for (const [gid, gc] of Object.entries(groups)) {
-    const meta: GroupMeta = { segments: [] }
-    const segVis: Record<string, boolean> = {}
-    for (const sc of gc.segments ?? []) {
-      const sm: SegMeta = { id: sc.id }
-      if (sc.format) sm.format = sc.format
-      if (sc.visibility) sm.visibility = sc.visibility
-      meta.segments.push(sm)
-      segVis[sc.id] = sc.enabled ?? true
-    }
+    const { meta, vg } = splitOneGroup(gid, gc)
     cfg.groups[sid][gid] = meta
-    const vg: ViewGroup = { enabled: gc.enabled ?? true, segments: segVis }
-    if (gc.expanded) vg.expanded = true
-    if (gc.align) vg.align = gc.align
-    vg.showDefaultLabel = gc.showDefaultLabel ?? defaultShowGroupLabel(gid)
     view.groups[sid][gid] = vg
   }
 }
 
 // v1/v2 (machines マップ) -> v5。素材 + Default profile view を直接構築する。
+// 1 machine (v1/v2 の machines マップ 1 エントリ) を source + 素材 + view へ取り込む。
+function migrateOneMachine(cfg: Config, view: ProfileView, mid: string, mc: OldMachine): void {
+  const id = mc.id ?? genSourceId() // v2 の不変 ID は保持、v1 は新規採番
+  const sdef: SourceDef = {
+    id,
+    kind: 'server',
+    label: mc.label ?? mid,
+    urls: mc.url ? [mc.url] : [],
+  }
+  if (mc.url) sdef.url = mc.url
+  cfg.sources.push(sdef)
+  const groups: Record<string, OldGroupCfg> = {}
+  for (const [gid, scfg] of Object.entries(mc.sources ?? {})) {
+    groups[gid] = {
+      enabled: scfg.enabled ?? true,
+      expanded: scfg.expanded ?? false,
+      segments: (scfg.metrics ?? []).map((m) => ({ id: m.id, enabled: m.enabled ?? true })),
+    }
+  }
+  splitGroupsInto(cfg, view, id, groups)
+  for (const gid of mc.sourceOrder ?? []) view.groupOrder.push({ sourceId: id, groupId: gid })
+}
+
 function migrateLegacyToV5(parsed: Record<string, unknown>): Config {
   const old = parsed as { machines?: Record<string, OldMachine> }
   const cfg = emptyConfig()
   const def = activeProfile(cfg)
   const view = def.view
-  for (const [mid, mc] of Object.entries(old.machines ?? {})) {
-    const id = mc.id ?? genSourceId() // v2 の不変 ID は保持、v1 は新規採番
-    const sdef: SourceDef = {
-      id,
-      kind: 'server',
-      label: mc.label ?? mid,
-      urls: mc.url ? [mc.url] : [],
-    }
-    if (mc.url) sdef.url = mc.url
-    cfg.sources.push(sdef)
-    const groups: Record<string, OldGroupCfg> = {}
-    for (const [gid, scfg] of Object.entries(mc.sources ?? {})) {
-      groups[gid] = {
-        enabled: scfg.enabled ?? true,
-        expanded: scfg.expanded ?? false,
-        segments: (scfg.metrics ?? []).map((m) => ({ id: m.id, enabled: m.enabled ?? true })),
-      }
-    }
-    splitGroupsInto(cfg, view, id, groups)
-    for (const gid of mc.sourceOrder ?? []) view.groupOrder.push({ sourceId: id, groupId: gid })
-  }
+  for (const [mid, mc] of Object.entries(old.machines ?? {})) migrateOneMachine(cfg, view, mid, mc)
   // client source(weather/geoinfo 等)は opt-in なので既定 ON にしない。移行で見た目を変えない対象は
   // builtin + 旧ユーザー source(server)のみ。さもないと旧 config の升級で位置許可/外部 fetch が走る。
   def.enabledSourceIds = cfg.sources.filter((s) => s.kind !== 'client').map((s) => s.id)
-  ensureBuiltin(cfg)
-  migrateLocationSourcesMerge(cfg) // 旧 location source があれば畳む(legacy は通常無いが冪等・防御的)
-  ensureClientLocation(cfg)
-  migrateDropPlaceNav(cfg) // 距離/方位ナビ(#42)撤廃: place group の pl_xxxx/here orphan を掃除
-  cleanupPlacesGeofence(cfg) // 保存地点/geofence(#43)撤去
-  normalizeMetaVisibilityAll(cfg)
-  for (const p of cfg.profiles) normalizeProfileView(p)
-  normalizeDisplayMeta(cfg) // 表示モデル Phase1: legacy 経路でも category 等を seed (v5Same と同一)
-  for (const p of cfg.profiles) backfillPages(p.view) // glassLayout→pages[0] 投影
-  pruneOrphans(cfg)
-  return cfg
+  return finalizeLegacyMigration(cfg, false)
 }
 
 // sources に存在しない sourceId の素材 groups と全 profile view を掃除する (孤立エントリ除去)。

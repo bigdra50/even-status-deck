@@ -4,6 +4,7 @@
 import { expect, test } from 'bun:test'
 import {
   activeProfile,
+  activeView,
   addProfile,
   addServer,
   BUILTIN_SOURCE_ID,
@@ -14,6 +15,7 @@ import {
   LOCATION_SOURCE_ID,
   migrate,
   promoteSourceUrl,
+  reconcileSourceMachine,
   removeSourceUrl,
   resolvePages,
   type SourceDef,
@@ -23,6 +25,7 @@ import {
   syncSourceWithStatus,
 } from './config'
 import type { StatusDoc } from './status-types'
+import { segKey } from './visibility/keys'
 
 // URL 管理 helper 用の最小 server SourceDef。
 function serverSrc(urls: string[], url?: string): SourceDef {
@@ -725,4 +728,88 @@ test('syncSourceWithStatus: segment の値だけが変化する poll は changed
     false,
   )
   expect(syncSourceWithStatus(cfg, src.id, claudeLimitsDoc({ cost: '0', msgs: '0' }))).toBe(false)
+})
+
+// ── reconcileSourceMachine: 同一マシン合流 (mergeSourceViewInto / mergeRowSet) ──
+
+// MAX_ROWS (10) 行の空 glassLayout。
+function emptyGlassLayoutRows(): string[][] {
+  return Array.from({ length: 10 }, () => [])
+}
+
+test('reconcileSourceMachine: 同 machineId への合流で view 断片 (groups/groupOrder/glassLayout) を additive 統合する', () => {
+  const cfg = emptyConfig()
+  const target = addServer(cfg, 'Target', 'http://target.local')
+  target.machineId = 'm1'
+  const editing = addServer(cfg, 'Editing', 'http://editing.local')
+  const view = activeView(cfg)
+
+  // target 側に既存の表示レシピ (group gA + glassLayout chip)。
+  view.groups[target.id] = { gA: { enabled: true, segments: { x: true } } }
+  view.groupOrder.push({ sourceId: target.id, groupId: 'gA' })
+  view.glassLayout = { rows: emptyGlassLayoutRows(), customLabels: {} }
+  view.glassLayout.rows[0] = [segKey(target.id, 'gA', 'x')]
+
+  // editing 側にも別 group gB + glassLayout chip。
+  view.groups[editing.id] = { gB: { enabled: true, segments: { y: true } } }
+  view.groupOrder.push({ sourceId: editing.id, groupId: 'gB' })
+  view.glassLayout.rows[1] = [segKey(editing.id, 'gB', 'y')]
+
+  const merged = reconcileSourceMachine(cfg, editing.id, 'm1', 'http://editing.local')
+
+  // (1) 合流先 (target) が返り、editing は url を引き継いで物理削除される。
+  expect(merged?.id).toBe(target.id)
+  expect(merged?.urls).toContain('http://editing.local')
+  expect(cfg.sources.some((s) => s.id === editing.id)).toBe(false)
+
+  // (2) view.groups: target に無かった gB が additive にマージされる (clone)。
+  expect(view.groups[target.id]?.gA?.segments.x).toBe(true)
+  expect(view.groups[target.id]?.gB?.segments.y).toBe(true)
+  expect(view.groups[editing.id]).toBeUndefined()
+
+  // (3) groupOrder: editing 由来の ref は target へ remap され、順序は維持される。
+  const targetRefs = view.groupOrder.filter((r) => r.sourceId === target.id)
+  expect(targetRefs).toEqual([
+    { sourceId: target.id, groupId: 'gA' },
+    { sourceId: target.id, groupId: 'gB' },
+  ])
+  expect(view.groupOrder.some((r) => r.sourceId === editing.id)).toBe(false)
+
+  // (4) glassLayout: editing の chip は target|gB|y へ remap され、target の既存 chip は保持される。
+  expect(view.glassLayout?.rows[0]).toEqual([segKey(target.id, 'gA', 'x')])
+  expect(view.glassLayout?.rows[1]).toEqual([segKey(target.id, 'gB', 'y')])
+})
+
+test('reconcileSourceMachine: 合流時 enabledSourceIds は target を有効化し editing 側は除去する', () => {
+  const cfg = emptyConfig()
+  const target = addServer(cfg, 'Target', 'http://target.local')
+  target.machineId = 'm1'
+  const editing = addServer(cfg, 'Editing', 'http://editing.local')
+  const prof = activeProfile(cfg)
+  // target は無効、editing は有効な状態から開始。
+  prof.enabledSourceIds = prof.enabledSourceIds.filter((id) => id !== target.id)
+
+  reconcileSourceMachine(cfg, editing.id, 'm1', 'http://editing.local')
+
+  expect(prof.enabledSourceIds).toContain(target.id)
+  expect(prof.enabledSourceIds).not.toContain(editing.id)
+})
+
+test('reconcileSourceMachine: 同一 segKey の重複 chip は合流時に dedupe される (target 優先)', () => {
+  const cfg = emptyConfig()
+  const target = addServer(cfg, 'Target', 'http://target.local')
+  target.machineId = 'm1'
+  const editing = addServer(cfg, 'Editing', 'http://editing.local')
+  const view = activeView(cfg)
+
+  view.groups[target.id] = { gA: { enabled: true, segments: { x: true } } }
+  view.groups[editing.id] = { gA: { enabled: true, segments: { x: true } } }
+  view.glassLayout = { rows: emptyGlassLayoutRows(), customLabels: {} }
+  // 同じ行に target|gA|x と editing|gA|x (合流後は同一 segKey になる) を両方配置。
+  view.glassLayout.rows[0] = [segKey(target.id, 'gA', 'x'), segKey(editing.id, 'gA', 'x')]
+
+  reconcileSourceMachine(cfg, editing.id, 'm1', 'http://editing.local')
+
+  // remap 後に重複する editing 由来 chip は捨てられ、target の chip 1 個だけが残る。
+  expect(view.glassLayout?.rows[0]).toEqual([segKey(target.id, 'gA', 'x')])
 })

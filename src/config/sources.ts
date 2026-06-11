@@ -136,34 +136,45 @@ function reKeySegKey(key: string, oldId: string, newId: string): string {
   return parts.join('|')
 }
 
+// enabledSourceIds: fromId が有効なら toId も有効化する (fetch 範囲を維持)。
+function mergeEnabledSourceIds(p: Profile, fromId: string, toId: string): void {
+  if (p.enabledSourceIds.includes(fromId) && !p.enabledSourceIds.includes(toId)) {
+    p.enabledSourceIds.push(toId)
+  }
+}
+
+// view.groups: toId に無い groupId だけ fromId から移送する (clone)。既存は toId 側を優先。
+function mergeViewGroups(p: Profile, fromId: string, toId: string): void {
+  const fromGroups = p.view.groups[fromId]
+  if (!fromGroups) return
+  p.view.groups[toId] ??= {}
+  for (const [gid, vg] of Object.entries(fromGroups)) {
+    p.view.groups[toId][gid] ??= { ...vg, segments: { ...vg.segments } }
+  }
+}
+
+// groupOrder: toId に未登録の groupId だけ fromId から末尾へ追加する (順序維持)。
+function mergeGroupOrder(p: Profile, fromId: string, toId: string): void {
+  const present = new Set(
+    p.view.groupOrder.filter((r) => r.sourceId === toId).map((r) => r.groupId),
+  )
+  for (const r of p.view.groupOrder) {
+    if (r.sourceId === fromId && !present.has(r.groupId)) {
+      p.view.groupOrder.push({ sourceId: toId, groupId: r.groupId })
+      present.add(r.groupId)
+    }
+  }
+}
+
 // fromId の view 断片を toId へ統合する (同一マシンへの合流時。reKeySource と違い toId が
 // 既存なので additive にマージし、toId の現状を優先する = ユーザーの現配置を壊さない)。
 // 統合後も fromId 参照が残るが、呼び出し側の discardSource が物理削除する。
 function mergeSourceViewInto(cfg: Config, fromId: string, toId: string): void {
   if (fromId === toId) return
   for (const p of cfg.profiles) {
-    // enabledSourceIds: fromId が有効なら toId も有効化 (fetch 範囲を維持)。
-    if (p.enabledSourceIds.includes(fromId) && !p.enabledSourceIds.includes(toId)) {
-      p.enabledSourceIds.push(toId)
-    }
-    // view.groups: toId に無い groupId だけ移送 (clone)。既存は toId 側を優先。
-    const fromGroups = p.view.groups[fromId]
-    if (fromGroups) {
-      p.view.groups[toId] ??= {}
-      for (const [gid, vg] of Object.entries(fromGroups)) {
-        p.view.groups[toId][gid] ??= { ...vg, segments: { ...vg.segments } }
-      }
-    }
-    // groupOrder: toId に未登録の groupId だけ末尾へ追加 (順序維持)。
-    const present = new Set(
-      p.view.groupOrder.filter((r) => r.sourceId === toId).map((r) => r.groupId),
-    )
-    for (const r of p.view.groupOrder) {
-      if (r.sourceId === fromId && !present.has(r.groupId)) {
-        p.view.groupOrder.push({ sourceId: toId, groupId: r.groupId })
-        present.add(r.groupId)
-      }
-    }
+    mergeEnabledSourceIds(p, fromId, toId)
+    mergeViewGroups(p, fromId, toId)
+    mergeGroupOrder(p, fromId, toId)
     // 行集合 (glassLayout / 各 page.layout / 各 page.grid) ごとに remap する。
     // dedup の状態 (present) は集合内で共有し、集合間では共有しない (grid とその凍結
     // layout は別の表示面なので、片方に在る chip がもう片方の remap を妨げない)。

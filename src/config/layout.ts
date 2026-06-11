@@ -21,6 +21,8 @@ import type {
   GlassPage,
   GridCellSpec,
   GridImageSpec,
+  GroupMeta,
+  Profile,
   ProfileView,
   SegMeta,
 } from './types'
@@ -59,21 +61,15 @@ function sanitizeCustomLabels(x: unknown): Record<string, { text: string }> {
   return out
 }
 
-// 永続化された glassLayout を新形式 (固定 MAX_ROWS 行) に正規化する。
-// 旧 anchor 形式 ({rows:[{anchor,items}]}) は絶対行へ移行 (top は上から / bottom は下から)。
-// 壊れていれば undefined (= 自動描画にフォールバック)。
-export function normalizeGlassLayout(x: unknown): GlassLayout | undefined {
-  if (!x || typeof x !== 'object') return undefined
-  const rowsRaw = (x as { rows?: unknown }).rows
-  if (!Array.isArray(rowsRaw)) return undefined
-  const customLabels = sanitizeCustomLabels((x as { customLabels?: unknown }).customLabels)
-  // 新形式: rows が string[][]
-  if (rowsRaw.every((r) => Array.isArray(r))) {
-    const rows = emptyRows()
-    for (let i = 0; i < MAX_ROWS; i++) rows[i] = onceDivider(sanitizeRowKeys(rowsRaw[i]))
-    return { rows, customLabels }
-  }
-  // 旧 anchor 形式 → 絶対行 (top は上から / bottom は下から詰める)
+// 新形式 (rows が string[][]) を固定 MAX_ROWS 行へ正規化する。
+function normalizeRowsArrayFormat(rowsRaw: unknown[]): string[][] {
+  const rows = emptyRows()
+  for (let i = 0; i < MAX_ROWS; i++) rows[i] = onceDivider(sanitizeRowKeys(rowsRaw[i]))
+  return rows
+}
+
+// 旧 anchor 形式 ({rows:[{anchor,items}]}) を絶対行へ移行する (top は上から / bottom は下から詰める)。
+function normalizeAnchorRowsFormat(rowsRaw: unknown[]): string[][] {
   const top: string[][] = []
   const bottom: string[][] = []
   for (const r of rowsRaw) {
@@ -88,6 +84,21 @@ export function normalizeGlassLayout(x: unknown): GlassLayout | undefined {
   for (const r of top) if (i < MAX_ROWS) rows[i++] = r
   let j = MAX_ROWS - 1
   for (let k = bottom.length - 1; k >= 0 && j >= i; k--) rows[j--] = bottom[k]
+  return rows
+}
+
+// 永続化された glassLayout を新形式 (固定 MAX_ROWS 行) に正規化する。
+// 旧 anchor 形式 ({rows:[{anchor,items}]}) は絶対行へ移行 (top は上から / bottom は下から)。
+// 壊れていれば undefined (= 自動描画にフォールバック)。
+export function normalizeGlassLayout(x: unknown): GlassLayout | undefined {
+  if (!x || typeof x !== 'object') return undefined
+  const rowsRaw = (x as { rows?: unknown }).rows
+  if (!Array.isArray(rowsRaw)) return undefined
+  const customLabels = sanitizeCustomLabels((x as { customLabels?: unknown }).customLabels)
+  // 新形式: rows が string[][]
+  const rows = rowsRaw.every((r) => Array.isArray(r))
+    ? normalizeRowsArrayFormat(rowsRaw)
+    : normalizeAnchorRowsFormat(rowsRaw)
   return { rows, customLabels }
 }
 
@@ -195,27 +206,32 @@ function sanitizeGridCell(raw: unknown, ids: Set<string>): GridCellSpec | null {
   return cell
 }
 
+// grid 正規化の累積状態。セル数上限 (text 7 / image 4) と overlap 判定 (定義順で先勝ち) に使う。
+type GridAccum = { cells: GridCellSpec[]; ids: Set<string>; texts: number; images: number }
+
+// 1 セルを累積状態へ採用するか判定する。上限超過 / 既存セルとの overlap なら drop (採用しない)。
+// 採用したセルは ids/cells/カウンタへ反映する (in-place mutation)。
+function acceptGridCell(acc: GridAccum, c: GridCellSpec): void {
+  if (c.kind === 'image' ? acc.images >= IMAGE_CELL_MAX : acc.texts >= 7) return
+  if (acc.cells.some((p) => cellsIntersect(p, c))) return
+  acc.ids.add(c.id)
+  acc.cells.push(c)
+  if (c.kind === 'image') acc.images++
+  else acc.texts++
+}
+
 // 永続化された grid 定義 (GlassPage.grid) を正規化する。セル数は text 7 / image 4 まで、
 // overlap は定義順で先勝ち。空 cells は有効 (編集途中の状態)。形が壊れていれば undefined。
 export function normalizeGlassGrid(x: unknown): GlassGrid | undefined {
   if (!x || typeof x !== 'object') return undefined
   const cellsRaw = (x as { cells?: unknown }).cells
   if (!Array.isArray(cellsRaw)) return undefined
-  const cells: GridCellSpec[] = []
-  const ids = new Set<string>()
-  let texts = 0
-  let images = 0
+  const acc: GridAccum = { cells: [], ids: new Set<string>(), texts: 0, images: 0 }
   for (const raw of cellsRaw) {
-    const c = sanitizeGridCell(raw, ids)
-    if (!c) continue
-    if (c.kind === 'image' ? images >= IMAGE_CELL_MAX : texts >= 7) continue
-    if (cells.some((p) => cellsIntersect(p, c))) continue
-    ids.add(c.id)
-    cells.push(c)
-    if (c.kind === 'image') images++
-    else texts++
+    const c = sanitizeGridCell(raw, acc.ids)
+    if (c) acceptGridCell(acc, c)
   }
-  return { cells }
+  return { cells: acc.cells }
 }
 
 // 行集合の旧 clock|time/date を datetime へ畳む (集合内で 1 箇所のみ・重複排除)。
@@ -235,40 +251,46 @@ function consolidateClockIn(rows: string[][]): string[][] {
   )
 }
 
+// 素材 (GroupMeta) 側の clock segments から time/date を除去し datetime を確保する。
+// 既存 datetime があれば format をそのまま保持 (上書きしない)。
+function consolidateClockSegments(clock: GroupMeta): void {
+  const timeSeg = clock.segments.find((s) => s.id === 'time')
+  const dateSeg = clock.segments.find((s) => s.id === 'date')
+  const dt = clock.segments.find((s) => s.id === 'datetime')
+  if (!dt) {
+    // 旧 time/date を 1 つの datetime に統合: format を合成 (区切り 2 スペース)。
+    const fmt = [timeSeg?.format ?? '', dateSeg?.format ?? ''].filter(Boolean).join('  ')
+    const sm: SegMeta = { id: 'datetime' }
+    if (fmt) sm.format = fmt
+    clock.segments.push(sm)
+  }
+  clock.segments = clock.segments.filter((s) => s.id !== 'time' && s.id !== 'date')
+}
+
+// 1 profile の view (segment 可視性 + 全行集合) の旧 clock time/date を datetime へ畳む。
+function consolidateClockInView(p: Profile): void {
+  const vg = p.view.groups[BUILTIN_SOURCE_ID]?.clock
+  if (vg) {
+    const tEn = vg.segments.time
+    const dEn = vg.segments.date
+    vg.segments.datetime ??= tEn != null || dEn != null ? !!(tEn || dEn) : true
+    delete vg.segments.time
+    delete vg.segments.date
+  }
+  // 行集合 (glassLayout / 各 page.layout / 各 page.grid) ごとに畳む。backfill 前なので壊れた
+  // pages (layout=null 等) を含みうるが、viewRowSets が安全に無視する。
+  for (const rs of viewRowSets(p.view)) rs.write(consolidateClockIn(rs.read()))
+}
+
 // clock を単一 datetime segment に統合する (旧 time/date を廃止)。同バージョン additive 移行:
 // 素材 SegMeta から time/date を除去し datetime を確保、active view の segment 可視性と
 // glassLayout の旧キーを datetime へ remap する (重複は 1 つに)。
 export function consolidateClock(c: Config): void {
   const clock = c.groups[BUILTIN_SOURCE_ID]?.clock
-  if (clock) {
-    const timeSeg = clock.segments.find((s) => s.id === 'time')
-    const dateSeg = clock.segments.find((s) => s.id === 'date')
-    const dt = clock.segments.find((s) => s.id === 'datetime')
-    if (!dt) {
-      // 旧 time/date を 1 つの datetime に統合: format を合成 (区切り 2 スペース)。
-      const fmt = [timeSeg?.format ?? '', dateSeg?.format ?? ''].filter(Boolean).join('  ')
-      const sm: SegMeta = { id: 'datetime' }
-      if (fmt) sm.format = fmt
-      clock.segments.push(sm)
-    }
-    // 既存 datetime は format をそのまま保持 (上書きしない)
-    clock.segments = clock.segments.filter((s) => s.id !== 'time' && s.id !== 'date')
-  }
+  if (clock) consolidateClockSegments(clock)
   // 全 profile の view(segment 可視性 + glassLayout + pages)を datetime へ畳む。
   // active 限定だと非 active profile に旧 time/date key が残り、切替時に時計 chip が消える。
-  for (const p of c.profiles) {
-    const vg = p.view.groups[BUILTIN_SOURCE_ID]?.clock
-    if (vg) {
-      const tEn = vg.segments.time
-      const dEn = vg.segments.date
-      vg.segments.datetime ??= tEn != null || dEn != null ? !!(tEn || dEn) : true
-      delete vg.segments.time
-      delete vg.segments.date
-    }
-    // 行集合 (glassLayout / 各 page.layout / 各 page.grid) ごとに畳む。backfill 前なので壊れた
-    // pages (layout=null 等) を含みうるが、viewRowSets が安全に無視する。
-    for (const rs of viewRowSets(p.view)) rs.write(consolidateClockIn(rs.read()))
-  }
+  for (const p of c.profiles) consolidateClockInView(p)
 }
 
 // glassLayout を pages[0] へ additive 投影する。pages 既存なら id/name 補完・空 layout 除去・各 layout 正規化のみ。
