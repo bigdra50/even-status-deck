@@ -153,6 +153,91 @@ function toastContainers(baseLines: string[], t: Toast): TextContainerProperty[]
   return [base, row]
 }
 
+// toast 表示中の次回 tick 待ち時間。head 無し = Infinity (toast 解除済)、未 arm (expiresAt null) = 0
+// (即 tick して arm させる)、arm 済は残り時間。
+function toastNextWakeMs(toasts: Toast[], now: number): number {
+  const head = toasts[0]
+  if (!head) return Number.POSITIVE_INFINITY
+  return head.expiresAt == null ? 0 : Math.max(0, head.expiresAt - now)
+}
+
+// notification 表示中の次回 tick 待ち時間。durationMs を持つ (自動消去 arm 対象の) notif のみ見る
+// (手動 notif は期限なし)。該当無しなら Infinity。
+function notificationNextWakeMs(notifStack: StoredNotif[], now: number): number {
+  let min = Number.POSITIVE_INFINITY
+  for (const n of notifStack) {
+    if (n.durationMs == null) continue // 手動 notif は期限なし
+    const t = n.expiresAt == null ? 0 : Math.max(0, n.expiresAt - now)
+    if (t < min) min = t
+  }
+  return min
+}
+
+// toast の expiry を進める (表示開始で期限を設定し、満了で head を除去)。配列を直接 mutate する。
+function tickToast(toasts: Toast[], now: number): void {
+  const head = toasts[0]
+  if (!head) return
+  if (head.expiresAt == null) head.expiresAt = now + head.durationMs
+  else if (head.expiresAt <= now) toasts.shift()
+}
+
+// notification stack の expiry を進める (durationMs を持つ notif のみ arm + 満了除去。手動 notif は残す)。
+// 選択中 notif (notifIdx) を保持して filter 後も同じものを指すよう notifIdx を引き直す。
+// stack を再代入する (filter のため)。呼び出し元の let を更新する。
+function tickNotifications(
+  notifStack: StoredNotif[],
+  notifIdx: number,
+  now: number,
+): { stack: StoredNotif[]; idx: number } {
+  for (const n of notifStack) {
+    if (n.durationMs != null && n.expiresAt == null) n.expiresAt = now + n.durationMs
+  }
+  // 選択中 notif を保持して filter 後も同じものを指す (前方が消えて別 notif にズレるのを防ぐ)。
+  const focused = notifStack[notifIdx]
+  const stack = notifStack.filter((n) => n.expiresAt == null || n.expiresAt > now)
+  const ni = focused ? stack.indexOf(focused) : -1
+  const idx = ni >= 0 ? ni : Math.min(notifIdx, Math.max(0, stack.length - 1))
+  return { stack, idx }
+}
+
+// notification overlay のコンテナ列。context (上下2行ずつ) を baseContent から切り出して
+// notificationContainers へ渡す (上=top/先頭2行目、下=末尾2行。重複は bStart で回避)。
+function notificationOverlayContainers(
+  top: string,
+  lines: string[],
+  notifStack: Notif[],
+  notifIdx: number,
+): TextContainerProperty[] {
+  const top2 = [top, lines[1] ?? ''].join('\n')
+  const bStart = Math.max(2, lines.length - 2)
+  const bottom2 = lines.slice(bStart).join('\n')
+  return notificationContainers(top2, bottom2, notifStack, notifIdx)
+}
+
+// toast overlay のコンテナ列。banner 表示中は下地の先頭行を banner で差し替えてから渡す。
+function toastOverlayContainers(
+  top: string,
+  lines: string[],
+  showBanner: boolean,
+  toast: Toast,
+): TextContainerProperty[] {
+  const bl = showBanner ? [top, ...lines.slice(1)] : lines
+  return toastContainers(bl, toast)
+}
+
+// containers の下地行から top/bottom/showBanner を解決する。banner は上 1 行を上書き
+// (dialog 中は隠す)。bottom は末尾行 (1 行のみなら上書き対象と重複するため空)。
+function overlayBaseLines(
+  banner: string | null,
+  activeKind: 'dialog' | 'notification' | 'toast' | null,
+  lines: string[],
+): { top: string; bottom: string; showBanner: boolean } {
+  const showBanner = banner !== null && activeKind !== 'dialog'
+  const top = showBanner ? (banner ?? '') : (lines[0] ?? '')
+  const bottom = lines.length > 1 ? (lines[lines.length - 1] ?? '') : ''
+  return { top, bottom, showBanner }
+}
+
 export function createOverlayManager() {
   let notifStack: StoredNotif[] = []
   let notifIdx = 0
@@ -232,20 +317,8 @@ export function createOverlayManager() {
     // 次に tick が必要になる ms (toast / 自動消去 notification 用)。無ければ Infinity。
     nextWakeMs(now: number): number {
       const k = activeKind()
-      if (k === 'toast') {
-        const head = toasts[0]
-        if (!head) return Number.POSITIVE_INFINITY
-        return head.expiresAt == null ? 0 : Math.max(0, head.expiresAt - now)
-      }
-      if (k === 'notification') {
-        let min = Number.POSITIVE_INFINITY
-        for (const n of notifStack) {
-          if (n.durationMs == null) continue // 手動 notif は期限なし
-          const t = n.expiresAt == null ? 0 : Math.max(0, n.expiresAt - now)
-          if (t < min) min = t
-        }
-        return min
-      }
+      if (k === 'toast') return toastNextWakeMs(toasts, now)
+      if (k === 'notification') return notificationNextWakeMs(notifStack, now)
       return Number.POSITIVE_INFINITY
     },
 
@@ -253,22 +326,13 @@ export function createOverlayManager() {
     tick(now: number): void {
       const k = activeKind()
       if (k === 'toast') {
-        const head = toasts[0]
-        if (!head) return
-        if (head.expiresAt == null) head.expiresAt = now + head.durationMs
-        else if (head.expiresAt <= now) toasts.shift()
+        tickToast(toasts, now)
         return
       }
       if (k === 'notification') {
-        // durationMs を持つ notif のみ arm + 満了除去 (手動 notif は残す)。
-        for (const n of notifStack) {
-          if (n.durationMs != null && n.expiresAt == null) n.expiresAt = now + n.durationMs
-        }
-        // 選択中 notif を保持して filter 後も同じものを指す (前方が消えて別 notif にズレるのを防ぐ)。
-        const focused = notifStack[notifIdx]
-        notifStack = notifStack.filter((n) => n.expiresAt == null || n.expiresAt > now)
-        const ni = focused ? notifStack.indexOf(focused) : -1
-        notifIdx = ni >= 0 ? ni : Math.min(notifIdx, Math.max(0, notifStack.length - 1))
+        const { stack, idx } = tickNotifications(notifStack, notifIdx, now)
+        notifStack = stack
+        notifIdx = idx
       }
     },
 
@@ -311,23 +375,14 @@ export function createOverlayManager() {
     // 現在ビュー(baseContent)の上に active overlay を重ねたコンテナ列。
     containers(baseContent: string): TextContainerProperty[] {
       const lines = baseContent.split('\n')
-      // banner は上 1 行を上書き (dialog 中は隠す)。
-      const showBanner = banner !== null && activeKind() !== 'dialog'
-      const top = showBanner ? (banner ?? '') : (lines[0] ?? '')
-      const bottom = lines.length > 1 ? (lines[lines.length - 1] ?? '') : ''
       const k = activeKind()
-      if (k === 'notification') {
-        // context を上下2行ずつ残す (上=banner/先頭2行、下=末尾2行)。重複は bStart で回避。
-        const top2 = [top, lines[1] ?? ''].join('\n')
-        const bStart = Math.max(2, lines.length - 2)
-        const bottom2 = lines.slice(bStart).join('\n')
-        return notificationContainers(top2, bottom2, notifStack, notifIdx)
-      }
+      const { top, bottom, showBanner } = overlayBaseLines(banner, k, lines)
+      // context を上下2行ずつ残す (上=banner/先頭2行、下=末尾2行)。重複は bStart で回避。
+      if (k === 'notification')
+        return notificationOverlayContainers(top, lines, notifStack, notifIdx)
       if (k === 'dialog' && dialogs[0]) return dialogContainers(lines[0] ?? '', bottom, dialogs[0])
-      if (k === 'toast' && toasts[0]) {
-        const bl = showBanner ? [top, ...lines.slice(1)] : lines
-        return toastContainers(bl, toasts[0])
-      }
+      if (k === 'toast' && toasts[0])
+        return toastOverlayContainers(top, lines, showBanner, toasts[0])
       // banner のみ。
       return [fullContainer([top, ...lines.slice(1)].join('\n'))]
     },

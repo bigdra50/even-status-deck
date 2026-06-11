@@ -8,6 +8,8 @@ import {
   OsEventTypeList,
   RebuildPageContainer,
   StartUpPageCreateResult,
+  type Sys_ItemEvent,
+  type Text_ItemEvent,
   TextContainerProperty,
   TextContainerUpgrade,
 } from '@evenrealities/even_hub_sdk'
@@ -405,57 +407,66 @@ async function initDeviceBattery(bridge: EvenAppBridge): Promise<void> {
   })
 }
 
+// sysEvent 分岐 (onEvent から分離)。ライフサイクル (foreground/exit) と IMU サンプルは
+// click 判定より先に処理し、残りを click (single/double) として扱う。
+function handleSysEvent(sys: Sys_ItemEvent): void {
+  const et = sys.eventType
+  if (et === OsEventTypeList.FOREGROUND_ENTER_EVENT) {
+    void storeRefresh() // 復帰時に全ソース取り直し
+    return
+  }
+  if (et === OsEventTypeList.FOREGROUND_EXIT_EVENT) return
+  if (et === OsEventTypeList.ABNORMAL_EXIT_EVENT || et === OsEventTypeList.SYSTEM_EXIT_EVENT) {
+    cleanup()
+    return
+  }
+  // IMU サンプルは click fallback より前に捌く (未知 sysEvent を click 扱いする下の分岐に
+  // 落とすとビューリセット + BLE 洪水を起こすため)。
+  if (et === OsEventTypeList.IMU_DATA_REPORT) {
+    const d = sys.imuData
+    if (d) feedImuSample({ x: d.x ?? 0, y: d.y ?? 0, z: d.z ?? 0 }, Date.now())
+    return
+  }
+  const now = Date.now()
+  if (now - lastClickAt < 200) return
+  lastClickAt = now
+  if (et === OsEventTypeList.DOUBLE_CLICK_EVENT) {
+    void gbridge?.shutDownPageContainer(1)
+  } else if (overlay.handleTap()) {
+    // overlay が tap を消費 (dialog 確定 / 通知既読→次 / toast dismiss / banner 消去)。
+    refresh()
+  } else {
+    // overlay 非アクティブ時のタップは summary に戻す。
+    idx = 0
+    refresh()
+  }
+}
+
+// textEvent 分岐 (onEvent から分離)。scroll 方向を解決し、overlay が消費しなければビュー巡回。
+function handleTextEvent(txt: Text_ItemEvent): void {
+  const dir =
+    txt.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT
+      ? 1
+      : txt.eventType === OsEventTypeList.SCROLL_TOP_EVENT
+        ? -1
+        : 0
+  if (dir === 0) return
+  // overlay が scroll を消費 (dialog 選択 / 通知切替) すれば再描画、無ければビュー巡回。
+  if (overlay.handleScroll(dir)) refresh()
+  else cycle(dir)
+}
+
 // single click → summary、double click → 終了、swipe → ビュー巡回。
 // click は sysEvent、swipe(scroll) は textEvent。ライフサイクルも sysEvent で来るので
 // click 判定より先に分岐する。
 function onEvent(event: EvenHubEvent): void {
   const sys = event.sysEvent
   if (sys) {
-    const et = sys.eventType
-    if (et === OsEventTypeList.FOREGROUND_ENTER_EVENT) {
-      void storeRefresh() // 復帰時に全ソース取り直し
-      return
-    }
-    if (et === OsEventTypeList.FOREGROUND_EXIT_EVENT) return
-    if (et === OsEventTypeList.ABNORMAL_EXIT_EVENT || et === OsEventTypeList.SYSTEM_EXIT_EVENT) {
-      cleanup()
-      return
-    }
-    // IMU サンプルは click fallback より前に捌く (未知 sysEvent を click 扱いする下の分岐に
-    // 落とすとビューリセット + BLE 洪水を起こすため)。
-    if (et === OsEventTypeList.IMU_DATA_REPORT) {
-      const d = sys.imuData
-      if (d) feedImuSample({ x: d.x ?? 0, y: d.y ?? 0, z: d.z ?? 0 }, Date.now())
-      return
-    }
-    const now = Date.now()
-    if (now - lastClickAt < 200) return
-    lastClickAt = now
-    if (et === OsEventTypeList.DOUBLE_CLICK_EVENT) {
-      void gbridge?.shutDownPageContainer(1)
-    } else if (overlay.handleTap()) {
-      // overlay が tap を消費 (dialog 確定 / 通知既読→次 / toast dismiss / banner 消去)。
-      refresh()
-    } else {
-      // overlay 非アクティブ時のタップは summary に戻す。
-      idx = 0
-      refresh()
-    }
+    handleSysEvent(sys)
     return
   }
   const txt = event.textEvent
-  if (txt) {
-    const dir =
-      txt.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT
-        ? 1
-        : txt.eventType === OsEventTypeList.SCROLL_TOP_EVENT
-          ? -1
-          : 0
-    if (dir === 0) return
-    // overlay が scroll を消費 (dialog 選択 / 通知切替) すれば再描画、無ければビュー巡回。
-    if (overlay.handleScroll(dir)) refresh()
-    else cycle(dir)
-  }
+  if (txt) handleTextEvent(txt)
 }
 
 // 各ソースの status を config に in-memory sync (永続化は companion 側)。
