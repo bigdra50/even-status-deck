@@ -1192,31 +1192,35 @@ button.owner-badge:hover {
   flex: 1;
   display: flex;
   align-items: center;
+  /* flex-start (順次配置) + 右ゾーンの margin-left:auto で「収まる行=右端へ / over-full 行=左ゾーン
+     直後に順次配置」を実現する。space-between は 2 アイテムを常に両端に置き over-full で重なるため不可。 */
   gap: 1cqh;
   border-bottom: 1px dashed rgba(60, 250, 68, 0.08);
   min-height: 0;
+  overflow: hidden; /* over-full 行のはみ出し (右端) をクリップ。実機の truncate と同じ見え方 */
 }
 .fs-row:last-child {
   border-bottom: none;
 }
-/* 左ゾーンは右半分にはみ出しても描画する (クリップしない)。折返しは禁止 (縦衝突を防ぐ)。
-   チップは positioned (.fs-glass .fs-chip) にして zone ボックスより上にペイントする。
-   こうしないと DOM 上で後の .fs-zone-r (透明) がはみ出しチップのヒットテストを奪い、
-   ドラッグ開始 (pointerdown) と × (fs-unplace) が効かなくなる。drop 先はチップではなく
-   zone ボックスの幾何学的な半分で決める (fs-editor.ts fsZoneAt がチップを skip して解決)。 */
+/* ゾーンは内容幅で縮まない (flex:0 0 auto)。50/50 強制をやめ、実機グラスと同じく左クラスタ=左 /
+   右クラスタ=右に置く。flexbox はアイテム同士が重ならないので、左クラスタが中央を越えて右 chip の
+   上に重なり後 sibling にドラッグを奪われる旧不具合が原理的に消える (収まる行は隙間あり、over-full
+   行は順次詰めて右端がはみ出す = 実機の truncate と同じ。左クラスタは常に左にあり全て掴める)。
+   over-full のはみ出しは .fs-row が overflow:hidden でクリップ。折返しは禁止 (隣行と縦衝突する)。
+   drop 先は fsZoneAt が解決 (chip/ゾーン箱の上 = そのクラスタ / 中央の隙間 = 行の幾何学的な半分)。 */
 .fs-zone {
-  flex: 1;
+  flex: 0 0 auto;
   display: flex;
-  flex-wrap: nowrap; /* 折り返さない (折り返すと行高を超えて隣行と衝突する) */
+  flex-wrap: nowrap;
   align-items: center;
   gap: 1cqh;
-  min-width: 0;
   height: 100%;
   padding: 0 0.5cqh;
   border-radius: 6px;
 }
 .fs-zone-r {
   justify-content: flex-end;
+  margin-left: auto; /* 空き有: 右端へ押し出す / over-full: auto=0 で左ゾーン直後に詰む (重なり無し) */
 }
 .fs-zone.fs-hot,
 .fs-tray.fs-hot {

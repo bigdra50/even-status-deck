@@ -183,15 +183,34 @@ function moveFsKeyToZone(key: string, rowIdx: number, side: 'left' | 'right'): v
   normalizeFsRows()
 }
 
-// drop 先 zone の解決。チップは zone ボックスより上にペイントされる (.fs-glass .fs-chip の
-// position:relative) ため、チップ内要素を skip してその下の zone ボックスで決める。
-// これで drop 先は「ポインタが乗っているチップの所属クラスタ」ではなく「幾何学的な半分」で
-// 決まる (左クラスタがはみ出していても右半分への drop は右ゾーン、という従来意図の維持)。
+// drop 先 zone の解決。ゾーンは内容幅 (flex:0 0 auto) なので:
+//  - chip / その zone 箱の上 → そのクラスタへ (chip を skip して下の zone 箱で決める)
+//  - 左右クラスタの間の隙間 (zone 箱が無い) → 同じ行でポインタに近い方のゾーンへ
+// tray (未配置 list) への drop は unplace。
+// portrait では stage が 90° 回転し行の主軸が画面 Y になるため、半分判定は軸固定にせず
+// ゾーン中心への距離で選ぶ (orientation 非依存)。
 function fsZoneAt(e: PointerEvent): HTMLElement | null {
-  for (const el of document.elementsFromPoint(e.clientX, e.clientY)) {
+  const stack = document.elementsFromPoint(e.clientX, e.clientY)
+  for (const el of stack) {
     if (el.closest('.fs-chip')) continue
     const zone = el.closest('.fs-zone, .fs-tray')
     if (zone instanceof HTMLElement) return zone
+  }
+  // 隙間 (zone 箱の外) に落ちたとき: 同じ行のゾーンのうちポインタに近い方へ。
+  for (const el of stack) {
+    const row = el.closest('.fs-row')
+    if (!(row instanceof HTMLElement)) continue
+    let best: HTMLElement | null = null
+    let bestDist = Number.POSITIVE_INFINITY
+    for (const z of row.querySelectorAll<HTMLElement>('.fs-zone')) {
+      const r = z.getBoundingClientRect()
+      const d = Math.hypot(e.clientX - (r.left + r.width / 2), e.clientY - (r.top + r.height / 2))
+      if (d < bestDist) {
+        bestDist = d
+        best = z
+      }
+    }
+    return best
   }
   return null
 }
