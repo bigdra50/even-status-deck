@@ -49,7 +49,7 @@
     "@biomejs/biome": "2.4.16",
     "@evenrealities/evenhub-cli": "^0.1.11",
     "@evenrealities/evenhub-simulator": "^0.7.3",
-    "@playwright/test": "1.60.0",
+    "@playwright/test": "1.61.0",
     "@types/bun": "latest",
     "@types/sortablejs": "^1.15.9",
     "dependency-cruiser": "^17.4.3",
