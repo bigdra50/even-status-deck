@@ -38,7 +38,7 @@
     "test:e2e:headed": "playwright test --headed"
   },
   "dependencies": {
-    "@evenrealities/even_hub_sdk": "^0.0.10",
+    "@evenrealities/even_hub_sdk": "^0.0.11",
     "@evenrealities/pretext": "^0.1.4",
     "lucide-static": "^1.16.0",
     "smol-toml": "^1.6.1",
