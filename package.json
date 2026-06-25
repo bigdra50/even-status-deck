@@ -46,7 +46,7 @@
     "systeminformation": "^5.23.5"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.4.16",
+    "@biomejs/biome": "2.5.1",
     "@evenrealities/evenhub-cli": "^0.1.11",
     "@evenrealities/evenhub-simulator": "^0.7.3",
     "@playwright/test": "1.60.0",
